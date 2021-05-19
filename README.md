@@ -1,20 +1,20 @@
 # BayesOptTol
-<<<<<<< HEAD
 BayesOptTol is a repository of the R code that was used in the following publication
 
 (citation)
-=======
+
 This R repository shows a methodology for using Gaussian processes to obtain the tolerances around multi-objective Bayesian optimization and inform which input variables are most important for study.
 
 This work is licensed under the MIT license. See LICENSE.txt for details.
 
 # Citing
 A fully detailed description of this work can be found in the following paper:
->>>>>>> 3bbe92ee4d2a9b89d33965fa085a84de10b7a01b
+
+(citation)
 
 This paper describes a method for using Gaussian processes to obtain the tolerances around multi-objective Bayesian optimization and inform which input variables are most important for study.
 
-The program was written in R v.4.0.3 with the following packages: [dplyr](https://cran.r-project.org/web/packages/dplyr/index.html), GPareto
+The program was written in R v.4.0.3 with the following packages: [dplyr](https://cran.r-project.org/web/packages/dplyr/index.html), [GPareto](https://cran.r-project.org/web/packages/GPareto/index.html), [GA](https://cloud.r-project.org/web/packages/GA/index.html)
 
 The following additional packages are suggested, but not necessary for implementation: [patchwork](https://cran.r-project.org/web/packages/patchwork/index.html), [ggplot2](https://cran.r-project.org/web/packages/ggplot2/index.html)
 
