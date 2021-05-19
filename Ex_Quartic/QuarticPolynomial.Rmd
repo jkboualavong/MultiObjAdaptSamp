@@ -1,0 +1,2165 @@
+---
+title: "Proof of concept attempt 2: Polynomial equation"
+output: html_notebook
+---
+
+Algorithm concept:
+1. Solve objective functions with a space filling method
+2. Use GPareto to find the Pareto front
+3. Calculatate the distance and f1/f2 balance of each point to the Pareto front
+4. Create a new objective function that describes the probability of meeting the desired distance and objective function criteria, multiplied by the variance. 
+5. Sample the points which maximize this function until (a) the objective function value drops below half of its starting value or (b) the computational budget is expended.
+6. Determine variable importance based on the inverse function: x_i ~ f(distance, theta) + error; higher average leave-on-out error is the least important variable to fit to reach optimal conditions.
+
+Visualization methods:
+1. x_i vs theta, with color indicating how close it is to the Pareto front; ordered from top-to-bottom of most important to least important
+2. Map of posterior probability of meeting specified criteria.
+
+
+Changes from the v20210323:
+* Quartic equation for F1 to include a local minimum
+
+```{r warning=FALSE}
+# Setup
+rm(list = ls())
+library(dplyr)
+library(graphics) # Convex hull function chull
+library(ggplot2)
+library(patchwork)
+library(DiceKriging)
+library(DiceOptim)
+library(parallel)
+library(doParallel)
+library(GPareto)
+library(GA)
+
+```
+
+```{r warning=FALSE}
+plot.present <- function () # Based on bbc_style(), then modified for clarity
+{
+    font <- "sans"
+    ft.big = 23
+    ft.small = 18
+    ggplot2::theme(plot.title = ggplot2::element_text(family = font, 
+        size = ft.big, face = "bold", color = "#222222"), 
+        plot.subtitle = ggplot2::element_text(family = font, size = ft.big, margin = ggplot2::margin(9, 0, 9, 0)), plot.caption = ggplot2::element_blank(),
+        legend.position = "right", legend.text.align = 0, legend.background = ggplot2::element_blank(),
+        legend.title = ggplot2::element_text(family = font, size = ft.small, color = "#222222"), 
+        legend.key = ggplot2::element_blank(),
+        legend.text = ggplot2::element_text(family = font, size = ft.small,
+            color = "#222222"), 
+        axis.title = ggplot2::element_text(family = font, size = ft.small, color = "#222222"),
+        axis.text = ggplot2::element_text(family = font, size = ft.small,
+            color = "#222222"), 
+        axis.text.x = ggplot2::element_text(margin = ggplot2::margin(5, b = 10)), 
+        axis.line = ggplot2::element_line(color = "black"), panel.grid.minor = ggplot2::element_blank(),
+        panel.grid.major.y = ggplot2::element_blank(),
+        panel.grid.major.x = ggplot2::element_blank(), panel.background = ggplot2::element_blank(),
+        strip.background = ggplot2::element_rect(fill = "white"),
+        strip.text = ggplot2::element_text(size = ft.small, hjust = 0))
+}
+
+# Example simultaneous minimization function
+# Set (x1, x2) on range of [0, 5]
+f1 = function(x1, x2){
+     return(20*(x1 - 0.75)^2 + (2*x2 - 2)^2)
+}
+f2 = function(x1, x2){
+     return((x1 - 2.5)^2 + (x2 - 1.5)^2)
+}
+# Using GPareto: Need inputs and outputs as vectors/matrices not as dataframes. Coarse initial design
+fun = function(x){
+  x1 = x[1]; x2 = x[2]
+  return(c(f1(x1, x2), f2(x1, x2)))
+}
+
+```
+
+Modify F1 and F2 to quartic equations
+
+```{r warning=FALSE}
+f1 = function(x1, x2){
+     return(20*(x1 - 0.75)^2 + (2*x2 - 2)^2)
+}
+
+sz.fine = 50
+x2.rng = seq(from = 0, to = 5, length.out = sz.fine)
+f1.slice = f1(x1 = 0.75, x2 = x2.rng)
+
+# ggplot(data.frame(x = x2.rng, y = f1.slice)) +
+#   geom_path(mapping = aes(x = x, y = y))
+
+# points to fit
+x = c(0.85, 1.15, 3.5, 4, 4.5)
+y = f1(x1 = 0.75, x2 = x)
+y[4] = 10
+
+ft.pt = data.frame(x = x, y = y)
+mod = lm(y ~ I(x^4) + I(x^3)  + I(x^2)  + I(x), data = ft.pt)
+f1.quart = predict(mod, data.frame(x = x2.rng))
+
+ggplot(data.frame(x = x2.rng, y = f1.slice, y2 = f1.quart)) +
+  geom_path(mapping = aes(x = x, y = y, color = 'quad')) +
+  geom_path(mapping = aes(x = x, y = y2, color = 'quart')) +
+  scale_color_manual(name = '', values = c('quad' = 'black', 'quart' = 'red'), labels = c('quad' = 'Quadratic', 'quart' = 'Quartic')) +
+  theme_classic() + theme(legend.position = c(0.5, 0.8)) + labs(x = 'x2', y = 'f1')
+
+summary(mod)
+
+f2 = function(x1, x2){
+     return((x1 - 2.5)^2 + (x2 - 1.5)^2)
+}
+
+sz.fine = 50
+x2.rng = seq(from = 0, to = 5, length.out = sz.fine)
+f2.slice = f2(x1 = 2.5, x2 = x2.rng)
+
+ggplot(data.frame(x = x2.rng, y = f2.slice)) +
+  geom_path(mapping = aes(x = x, y = y))
+
+# points to fit
+x = c(1.45, 1.55, 3.5, 4.5, 4.75)
+y = f2(x1 = 2.5, x2 = x)
+y[4] = 5
+
+ft.pt = data.frame(x = x, y = y)
+mod = lm(y ~ I(x^4) + I(x^3)  + I(x^2)  + I(x), data = ft.pt)
+f2.quart = predict(mod, data.frame(x = x2.rng))
+
+ggplot(data.frame(x = x2.rng, y = f2.slice, y2 = f2.quart)) +
+  geom_path(mapping = aes(x = x, y = y, color = 'quad')) +
+  geom_path(mapping = aes(x = x, y = y2, color = 'quart')) +
+  scale_color_manual(name = '', values = c('quad' = 'black', 'quart' = 'red'), labels = c('quad' = 'Quadratic', 'quart' = 'Quartic')) +
+  theme_classic() + theme(legend.position = c(0.5, 0.8)) + labs(x = 'x2', y = 'f1') +
+  lims(y = c(0, 10))
+
+summary(mod)
+
+```
+
+```{r warning=FALSE}
+# Update F1
+f1 = function(x1, x2){
+  return(20*(x1 - 0.75)^2 + 190 + 11.58*x2^4 - 115.85*x2^3 + 383.13*x2^2 - 463.50*x2)
+}
+f2 = function(x1, x2){
+  # Remap both variables: rotate 30 degrees counterclockwise
+  ang = -pi/24
+  n1 = x1*cos(ang) - x2*sin(ang)
+  n2 = x1*sin(ang) + x2*cos(ang)
+  # return((x1 - 2.5)^2 + 80 + 1.778*x2^4 - 20*x2^3 + 78.573*x2^2 - 124.664*x2)
+  return((n1 - 2.5)^2 + 80 + 1.778*n2^4 - 20*n2^3 + 78.573*n2^2 - 124.664*n2)
+}
+
+
+# Fine grid spacing
+sz.fine = 50
+x1.rng = seq(from = 0, to = 5, length.out = sz.fine)
+x2.rng = seq(from = 0, to = 5, length.out = sz.fine)
+con.fine = expand.grid(x1.rng, x2.rng)
+con.fine = con.fine[,1:2]
+names(con.fine) = c('x1', 'x2')
+
+# Calculate
+con.fine$f1 = f1(x1 = con.fine$x1, x2 = con.fine$x2)
+con.fine$f2 = f2(x1 = con.fine$x1, x2 = con.fine$x2)
+
+ggplot() +
+  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = (f1), color = 'f1'), breaks = c(0, 10, 20, 30, 100, 300)) +
+  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = (f2), color = 'f2'), breaks = c(0, 10, 15, 20, 25, 50, 100)) +
+  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  scale_color_manual(name = 'Objective', values = c('f1' = 'red', 'f2' = 'blue'), 
+                     labels = c('f1' = expression('F'[1]), 'f2' = expression('F'[2]))) +
+  plot.present() + theme(legend.position = c(0.9, 0.85), legend.background = element_rect(fill = 'white')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+# ggsave(filename = '/home/jkboualavong/Desktop/PSU/Reports/Comps/FiguresPresent/Ch1-FunctionContour_quart.png', units = c("in"), width = 8, height = 6)
+
+ggplot(data = filter(con.fine)) +
+  geom_contour_filled(mapping = aes(x = x1, y = x2, z = f1, color = f1), breaks = c(0, 10, 20, 30, 100, 300)) +
+  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  plot.present() + theme(legend.background = element_rect(fill = 'white')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+ggplot(data = filter(con.fine)) +
+  geom_contour_filled(mapping = aes(x = x1, y = x2, z = f2, color = f2), breaks = c(0, 10, 15, 20, 25, 50, 100)) +
+  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  plot.present() + theme(legend.background = element_rect(fill = 'white')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+```
+
+1. Solve objective functions with a space filling method
+2. Use GPareto to find the Pareto front
+
+```{r warning=FALSE}
+# Set up simple grid
+sz = 7
+x1.rng = seq(from = 0, to = 5, length.out = sz)
+x2.rng = seq(from = 0, to = 5, length.out = sz)
+des.start = expand.grid(x1.rng, x2.rng)
+des.start = des.start[,1:2]
+names(des.start) = c('x1', 'x2')
+
+# Solve edge cases
+des.start$f1 = f1(x1 = des.start$x1, x2 = des.start$x2)
+des.start$f2 = f2(x1 = des.start$x1, x2 = des.start$x2)
+
+Pareto.budget = 20
+res.start = matrix(c(des.start$f1, des.start$f2), ncol = 2, nrow = nrow(des.start))
+des.start = matrix(c(des.start$x1, des.start$x2), ncol = 2, nrow = nrow(des.start))
+
+```
+
+Running the GPareto solver - skip if already generated the file
+
+```{r warning=FALSE}
+res = easyGParetoptim(fn = fun, budget = Pareto.budget, lower = c(0, 0), upper = c(5, 5), par = des.start, value = res.start, ncores = 2)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(x1 = res$par[,1], x2 = res$par[,2], f1 = res$value[,1], f2 = res$value[,2])
+GPar.all =  data.frame(x1 = res$history$X[,1], x2 = res$history$X[,2], f1 = res$history$y[,1], f2 = res$history$y[,2])
+GPar.all$order = c(rep(0, nrow(des.start)), seq(from = 1, to = Pareto.budget, by = 1))
+rm(res)
+
+write.csv(GPar.all, file = 'GPar_all_data_quart.csv')
+write.csv(GPar.front, file = 'GPar_fnt_data_quart.csv')
+```
+
+
+3. Calculatate the distance and f1/f2 balance of each point to the Pareto front
+
+```{r warning=FALSE}
+GPar.all = read.csv(file = 'GPar_all_data_quart.csv')
+GPar.front = read.csv(file = 'GPar_fnt_data_quart.csv')
+
+# Saved data have an index
+GPar.all = GPar.all[, !(names(GPar.all) %in% c("X"))]
+GPar.front = GPar.front[, !(names(GPar.front) %in% c("X"))]
+# Normalized objective functions
+n.obj = function(GPar.data, GPar.front){
+  # Given dataframes that describe the entire dataset and the front, find the normalized (x,y)
+  # Objective functions are named 'f1' and 'f2'
+  
+  # Normalize the objective outputs so that the utopia point is (0,0) and the nadir point is (1,1)
+  f1.up = GPar.front$f1[which.min(GPar.front$f2)]
+  f2.up = GPar.front$f2[which.min(GPar.front$f1)]
+  GPar.data$f1.norm = (GPar.data$f1 - min(GPar.front$f1))/(f1.up - min(GPar.front$f1))
+  GPar.data$f2.norm = (GPar.data$f2 - min(GPar.front$f2))/(f2.up - min(GPar.front$f2))
+
+  return(GPar.data)
+}
+# Run normalization
+GPar.all = n.obj(GPar.data = GPar.all, GPar.front = GPar.front)
+GPar.front = n.obj(GPar.data = GPar.front, GPar.front = GPar.front)
+GPar.front = GPar.front[order(GPar.front$f1.norm),]
+
+n.dist = function(f1.norm, f2.norm, GPar.front){
+  # Given normalized function values, calculate the distance to the Pareto front
+  
+  # Sort the Pareto front dataframe so neighbors in objective space are sequential
+  GPar.front = GPar.front[order(GPar.front$f1.norm),]
+  
+  # Set up distance vector for 
+  dist = c()
+  for(pair in 1:(nrow(GPar.front)-1)){
+    # For each line segment, find the vector projection of the point onto the segment
+    points = GPar.front[pair:(pair+1),]
+    vector = points[2,] - points[1,]
+    projection = (vector$f1.norm*f1.norm + vector$f2.norm*f2.norm) / (sqrt( vector$f1.norm^2 + vector$f2.norm^2) )
+    # If the projection falls outside of the segment, take the distance to the nearest point
+    if(projection < 0){dist[pair] = sqrt( (points$f1.norm[1] - f1.norm)^2 + (points$f2.norm[1] - f2.norm)^2 )}
+    else if(projection > 1){dist[pair] = sqrt( (points$f1.norm[2] - f1.norm)^2 + (points$f2.norm[2] - f2.norm)^2 )}
+    else{ # Use the property that the cross product is the area of the parallelogram bounded by those vectors,
+      # This means that 1/2 of the cross product is the area of the triangle, and that area divided by
+      # the segment length is the triangle height, i.e. the minimum distance
+      v2.x = f1.norm - points$f1.norm[1]; v2.y = f2.norm - points$f2.norm[1]
+      area = abs( v2.x*vector$f2.norm - v2.y*vector$f1.norm )/2
+      dist[pair] = area/sqrt(vector$f1.norm^2 + vector$f2.norm^2)
+    }
+  }
+  return(min(dist))
+}
+# Run distance calculations in parallel to speed up
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(GPar.all)) %dopar%
+  n.dist(f1.norm = GPar.all$f1.norm[row], f2.norm = GPar.all$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+GPar.all$dist = unlist(dist)
+rm(dist)
+
+```
+
+
+Plot the full dataset in the objective space
+```{r warning=FALSE}
+ggplot() +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
+  geom_line(data = GPar.front, mapping = aes(x = f1, y = f2), color = "black") +
+  geom_point(data = GPar.all, mapping = aes(x = f1, y = f2, color = (order > 0))) +
+  labs(x = "Function 1", y = "Function 2", color = "") +  
+  scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
+  plot.present() + theme(legend.position = c(0.85, 0.15), legend.background = element_rect(fill = 'white'))
+
+ggplot() +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
+  geom_line(data = GPar.front, mapping = aes(x = f1.norm, y = f2.norm), color = "black") +
+  geom_point(data = GPar.all, mapping = aes(x = f1.norm, y = f2.norm, color = (order > 0))) +
+  labs(x = "Normalized Function 1", y = "Normalized Function 2", color = "") +  
+  scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
+  scale_x_continuous(breaks = c(seq(from = 0, to = 6, by = 2), 1)) +
+  scale_y_continuous(breaks = c(seq(from = 0, to = 6, by = 2), 1)) +
+  plot.present() + theme(legend.position = c(0.85, 0.15), legend.background = element_rect(fill = 'white'))
+
+GPar.all$theta = atan(GPar.all$f2.norm/GPar.all$f1.norm)*180/pi*10/9
+
+ggplot() +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
+  # Pareto front
+  geom_line(data = GPar.front, mapping = aes(x = f1.norm, y = f2.norm), color = "black") +
+  # Delta = 1
+  geom_line(data = data.frame(x = seq(from = 0, to = 2, by = 0.1), 
+                              y = c(sqrt(1 - seq(from = 0, to = 1, by = 0.1))+1, sqrt(1 - (seq(from = 0.1, to = 1, by = 0.1))^2) )),
+            mapping = aes(x = x, y = y), color = "black", linetype = 2) +
+  # Points
+  geom_point(data = filter(GPar.all, f1.norm < 3, f2.norm < 3), mapping = aes(x = f1.norm, y = f2.norm, color = (order > 0))) +
+  labs(x = "Normalized Function 1", y = "Normalized Function 2", color = "") +  
+  scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
+  scale_x_continuous(breaks = c(seq(from = 0, to = 6, by = 2), 1)) +
+  scale_y_continuous(breaks = c(seq(from = 0, to = 6, by = 2), 1)) +
+  plot.present() + theme(legend.position = c(0.85, 0.85), legend.background = element_rect(fill = 'white'))
+
+# Plot in parameter space
+g1 = ggplot() +
+  geom_smooth(data = filter(GPar.all, dist == 0, order < Pareto.budget+1),
+              mapping = aes(x = theta, y = x1), color = "red", level = 0.05, method = 'loess', formula = (y~x)) +
+  geom_point(data = filter(GPar.all, dist <= 2.5, order < Pareto.budget+1), mapping = aes(x = theta, y = x1, color = dist)) +
+  labs(x = "", y = expression("x"[1]), color = expression(delta)) +
+  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression('F'[2]*' min'), "", "50:50", "", expression("F"[1]*" min"))) +
+  plot.present()
+g2 = ggplot() +
+  geom_smooth(data = filter(GPar.all, dist == 0, order < Pareto.budget+1),
+              mapping = aes(x = theta, y = x2), color = "red", level = 0.05, method = 'loess', formula = (y~x)) +
+  geom_point(data = filter(GPar.all, dist <= 2.5, order < Pareto.budget+1), mapping = aes(x = theta, y = x2, color = dist)) +
+  labs(x = "Priority", y = expression("x"[2]), color = "Normalized Proximity") +
+  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression('F'[2]*' min'), "", "50:50", "", expression("F"[1]*" min"))) +
+  plot.present() + guides(color = FALSE)
+g1 / g2
+rm(g1, g2)
+
+ggplot() +
+  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = (f1), color = 'f1'), breaks = c(0, 5, 10, 15, 20, 30, 100, 300)) +
+  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = (f2), color = 'f2'), breaks = c(0, 5, 10, 12.5, 15, 20, 25, 50, 100)) +
+  geom_point(data = filter(GPar.all, dist > 0), mapping = aes(x = x1, y = x2, fill = log(dist)), shape = 23, size = 2, color = 'black') +
+  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') +
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black', level = 0.5) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), fill = '') +
+  scale_color_manual(name = 'Objective', values = c('f1' = 'red', 'f2' = 'blue'), 
+                     labels = c('f1' = expression('F'[1]), 'f2' = expression('F'[2]))) +
+  scale_fill_gradient(low = '#fee0d2', high = '#54278f', breaks = c(-4, 2), labels = c('Close', 'Far')) +
+  plot.present() + 
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+# Save the starting data to test multiple types of acceptance criteria
+write.csv(x = GPar.all, file = 'GPar_all_start_quart.csv')
+write.csv(x = GPar.front, file = 'GPar_fnt_start_quart.csv')
+
+```
+
+4. Create a new objective function that describes the probability of meeting the desired criteria, multiplied by the variance.
+5. Sample the points which maximize this function until (a) the objective function value drops below half of its starting value or (b) the computational budget is expended.
+
+4.1., 5.1 The acceptance criteria is a normalized distance less than 1.
+
+```{r warning=FALSE, echo=FALSE, message=FALSE}
+# Load data
+GPar.all = read.csv(file = 'GPar_all_start_quart.csv')
+GPar.front = read.csv(file = 'GPar_fnt_start_quart.csv')
+
+# Remove leading indices: the names are:
+nm = c("x1",  "x2", "f1", "f2", "order",  "f1.norm", "f2.norm", "dist", "theta")
+GPar.all = GPar.all[,nm]
+nm = c("x1",  "x2", "f1", "f2",  "f1.norm", "f2.norm")
+GPar.front = GPar.front[,nm]
+
+```
+
+```{r message=FALSE, warning=FALSE}
+fill.sample.obj = function(x, model){
+  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
+  # the function will output the objective function evaluated at x = (x1, x2)
+  
+  # Evaluate the Kriging model function at x 
+  res = predict(object = model, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  
+  # Probability distribution fits a Gaussian distribution
+  prob = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+
+  # Objective result
+  return(res$sd*prob*(1-prob))
+}
+
+fill.sample.model = function(GPar.data, input.name, output.name){
+  # Find the GP model to use. Using the km function, but applying checks on the system to make sure that the predictions match the starting data within tolerances
+  # Based on testing, the model is bad when the 10% percentile and 90% percentile of the standard deviation are of the same order of magnitude
+  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
+  while(log10(pt90/pt10) <= log10(pt75/pt25)){
+    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
+                 covtyp = 'gauss', # Gaussian uncertainty
+                 optim.method = 'gen', # Genetic algorithm optimization
+                 control = list(trace = FALSE, # Turn off tracking to simplify output
+                                pop.size = 50), # Increase the population size of the initial guess for robustness
+                 nugget = 1e-6, # Avoid eigenvalues of 0
+                 )
+    
+    # Randomly sample 200 points from the search space
+    pt = 200; i = 1
+    lims = range(GPar.data[,input.name[i]])
+    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
+    for(i in 2:length(input.name)){
+      lims = range(GPar.data[,input.name[i]])
+      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
+    }
+    names(samp) = input.name
+    
+    # Find model output
+    res = predict(object = mod.out, newdata = samp, type = 'UK')
+    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
+    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
+  }
+  return(mod.out)
+}
+
+# fill.sample.obj(x = c(2,2), GPar.data = GPar.all)
+
+# Search for the first point
+# Create a Kriging model for the distance
+mod.dist = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('dist'))
+GA.pred = ga(type = 'real-valued',
+             fitness = function(x){fill.sample.obj(x, model = mod.dist)},
+             lower = c(0, 0), upper = c(5, 5),
+             popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
+             parallel = 2)
+# Next point to sample is the solution to this optimization
+point.next = GA.pred@solution[1,]
+
+# Account for the possibility that the genetic algorithm converges on multiple equivalent points
+GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
+GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
+GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
+# Fill in the remaining caluclations: normalized outputs, distance, theta, order
+GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(GPar.new)) %dopar%
+  n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+GPar.new$dist = unlist(dist)
+GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
+GPar.new$order = max(GPar.all$order) + 1
+
+# The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
+start.fit = max(GA.pred@fitness)
+# Store first point for plotting
+GPar.new1 = GPar.new
+rm(dist)
+
+# Store the initial mod.dist for later
+mod.dist.init = mod.dist
+
+```
+
+
+Visualize the first loop - show that it actually samples the point that is most useful
+
+
+```{r warning=FALSE}
+# Kriging model of the distance
+# mod.dist.init = km(design = GPar.all[,c("x1", "x2")], response  = GPar.all$dist, nugget = 1e-8, control = list(pop.size = 50, trace = FALSE), covtype = 'gauss', optim.method = 'gen', multistart = 5)
+
+# Grid of the relevant region to visualize
+lower = c(0, 0); upper = c(5,5)
+fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 49), 
+                        x2 = seq(from = lower[2], to = upper[2], length.out = 49))
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+# Apply Kriging function of distance
+res = predict(object = mod.dist.init, newdata = fine.grid, type = "UK")
+fine.grid$dist.mean = res$mean
+fine.grid$dist.sd = res$sd
+
+# Probability that the distance is less than 1
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+
+ncolor = 7; pt.size = 2.5
+g1 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = ((dist.p1)*(1-dist.p1)-1e-10), 
+                                                      color = ((dist.p1)*(1-dist.p1)-1e-10)), alpha = 0.5,
+                      breaks = seq(from = -0.01, to = 0.25, length.out = ncolor)
+                      )+
+  # geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob), breaks = c(0.25, 0.75), color = 'blue') +
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0, order < Pareto.budget+1),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(palette = "PuOr") + 
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "", y = expression("x"[2]), subtitle = 'Uncertainty') +  guides(fill = FALSE, color = FALSE, shape = FALSE)
+
+g2 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist.sd, color = dist.sd), bins = ncolor, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(palette = "PuOr") + 
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  labs(x = expression("x"[1]), y = "", subtitle = 'Information Gain') +  guides(fill = FALSE, color = FALSE, shape = FALSE)
+
+g3 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist.sd*(dist.p1)*(1-dist.p1), color = dist.sd*(dist.p1)*(1-dist.p1)),
+                      bins = ncolor, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-3), "High"), palette = "PuOr")  +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = "", y = "", subtitle = "Sample Utility", fill = "", shape = 'Collection\nProcess', color = 'Collection\nProcess') +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  guides(color=guide_legend(override.aes=list(fill=NA))) # Remove fill in the legend
+
+g1 + g2 + g3 
+# g1 + plot.present() + g2 + plot.present() + g3 + plot.present()
+
+```
+
+```{r}
+ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = log10(dist.mean - min(dist.mean) + 1), 
+                                                      color = log10(dist.mean - min(dist.mean) + 1)), alpha = 0.75,
+                      # breaks = seq(from = -0.01, to = 1, length.out = ncolor)
+                      bins = 11
+                      )+
+  # geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob), breaks = c(0.25, 0.75), color = 'b10e') +
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0, order < Pareto.budget+1),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(palette = "PuOr", labels = c('Close', rep('', 8), 'Far')) + 
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  labs(x = expression("x"[1]), y = expression("x"[2]), subtitle = 'Distance to Pareto Front (GP estimate)', fill = 'Distance') +  
+  guides(color = FALSE, shape = FALSE)
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+budget = 20
+next.fit = start.fit
+while(next.fit > start.fit*0.05 & max(GPar.all$order) < budget+Pareto.budget){
+  # Add the  new point to the dataset
+  GPar.all = rbind(GPar.all, GPar.new)
+  
+  # Create new Kriging model
+  mod.dist = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('dist'))
+
+  # Run the optimization to find the best point
+  GA.pred = ga(type = 'real-valued',
+               fitness = function(x){fill.sample.obj(x, model = mod.dist)},
+               lower = c(0, 0), upper = c(5, 5),
+               popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
+               parallel = 2)
+  
+  # Next point to sample is the solution to this optimization. 
+  # Account for the possibility that the genetic algorithm converges on multiple equivalent points
+  point.next = GA.pred@solution[1,]
+  
+  # Find values of the selected point
+  GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
+  GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
+  GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
+  
+  # Fill in the remaining caluclations: normalized outputs, distance, theta, order
+  GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
+  cl <- makeCluster(2)
+  registerDoParallel(cl)
+  dist = foreach(row = 1:nrow(GPar.new)) %dopar%
+    n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
+  stopCluster(cl)
+  GPar.new$dist = unlist(dist)
+  GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
+  GPar.new$order = max(GPar.all$order) + 1
+  
+  # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
+  next.fit = max(GA.pred@fitness)
+}
+
+GPar.all = rbind(GPar.all, GPar.new)
+write.csv(GPar.all, 'GPar_Accept_Delta1_quart.csv')
+
+# rm(budget, n.samples)
+```
+
+```{r warning=FALSE}
+# Plot results on top of the most recent Kriging model
+mod.dist = km(design = GPar.all[, c('x1', 'x2')], response = GPar.all$dist, 
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-10) # Add the nugget to avoid eigenvalues of 0
+
+res = predict(object = mod.dist, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+fine.grid$dist.mean = res$mean
+fine.grid$dist.sd = res$sd
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+
+ncolor = 7; pt.size = 2.5
+g4 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = (dist.p1)*(1-dist.p1)-1e-10, color = (dist.p1)*(1-dist.p1)-1e-10), alpha = 0.5,
+                      breaks = seq(from = -0.01, to = 0.25, length.out = ncolor))+ # Need to expand the range to include the edge cases
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist.p1), breaks = c(0.25, 0.75), color = 'blue') +
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'),
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'),
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = "", y = expression("x"[2]), subtitle = 'Uncertainty',
+       color = 'Collection\nProcess', shape = 'Collection\nProcess') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-2), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  guides(color = FALSE, shape = FALSE, fill = FALSE)
+
+g5 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist.sd, color = dist.sd), bins = ncolor, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = expression("x"[1]), y = "", color = 'Collection\nProcess', shape = 'Collection\nProcess', subtitle = 'Information Gain') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-2), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) + 
+  guides(color = FALSE, shape = FALSE, fill = FALSE)
+  
+g6 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist.sd*(dist.p1)*(1-dist.p1), color = dist.sd*(dist.p1)*(1-dist.p1)), 
+                      bins = ncolor, alpha = 0.5) +
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = '', y = '', color = 'Collection\nProcess', shape = 'Collection\nProcess', subtitle = 'Sample Utility', fill = '') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-3), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) + guides(color=guide_legend(override.aes=list(fill=NA)))
+
+g4 + g5 + g6
+
+
+```
+
+4.2., 5.2 Acceptance criteria: within the square of normalized values from (0,0) to (1,1)
+
+```{r warning=FALSE}
+# Load data
+GPar.all = read.csv(file = 'GPar_all_start_quart.csv')
+GPar.front = read.csv(file = 'GPar_fnt_start_quart.csv')
+
+# Remove leading indices: the names are:
+nm = c("x1",  "x2", "f1", "f2", "order",  "f1.norm", "f2.norm", "dist", "theta")
+GPar.all = GPar.all[,nm]
+nm = c("x1",  "x2", "f1", "f2",  "f1.norm", "f2.norm")
+GPar.front = GPar.front[,nm]
+
+```
+
+```{r message=FALSE, warning=FALSE}
+fill.sample.obj2 = function(x, model.f1, model.f2){
+  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
+  # the function will output the objective function evaluated at x = (x1, x2)
+  
+  # Evaluate the Kriging model function at x 
+  res.f1 = predict(object = model.f1, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  
+  # Probability distribution fits a Gaussian distribution
+  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * pnorm(q = 0, mean = res.f2$mean - 1, sd = res.f2$sd)
+  
+  # Variance based on propagation of errors
+  sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2) 
+
+  # Objective result
+  return(sd*prob*(1-prob))
+}
+
+# fill.sample.obj(x = c(2,2), GPar.data = GPar.all)
+
+# Search for the first point
+# Create a Kriging model for the distance
+mod.f1 = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('f1.norm'))
+mod.f2 = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('f2.norm'))
+
+GA.pred = ga(type = 'real-valued',
+             fitness = function(x){fill.sample.obj2(x, model.f1 = mod.f1, model.f2 = mod.f2)},
+             lower = c(0, 0), upper = c(5, 5),
+             popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
+             parallel = 2)
+# Next point to sample is the solution to this optimization
+point.next = GA.pred@solution[1,]
+
+# Account for the possibility that the genetic algorithm converges on multiple equivalent points
+GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
+GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
+GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
+# Fill in the remaining caluclations: normalized outputs, distance, theta, order
+GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(GPar.new)) %dopar%
+  n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+GPar.new$dist = unlist(dist)
+GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
+GPar.new$order = max(GPar.all$order) + 1
+
+# The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
+start.fit = max(GA.pred@fitness)
+# Store first point for plotting
+GPar.new1 = GPar.new
+rm(dist)
+
+# Store the initial mod.dist for later
+mod.f1.init = mod.f1
+mod.f2.init = mod.f2
+```
+
+Visualize the first loop - show that it actually samples the point that is most useful
+
+```{r warning=FALSE}
+# Kriging model of the distance
+# mod.dist.init = km(design = GPar.all[,c("x1", "x2")], response = GPar.all$dist, nugget = 1e-8, control = list(trace = FALSE), covtype = 'gauss', optim.method = 'gen')
+
+# Grid of the relevant region to visualize
+lower = c(0, 0); upper = c(5,5)
+fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 50), 
+                        x2 = seq(from = lower[2], to = upper[2], length.out = 50))
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+# Apply Kriging functions
+res = predict(object = mod.f1.init, newdata = fine.grid, type = "UK")
+fine.grid$f1.mean = res$mean
+fine.grid$f1.sd = res$sd
+
+res = predict(object = mod.f2.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$f2.mean = res$mean
+fine.grid$f2.sd = res$sd
+
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+# Reset the ranges for plotting
+fine.grid$prob.plot = fine.grid$prob
+# fine.grid$prob.plot[fine.grid$prob.plot < 0.05] = min(fine.grid$prob.plot[fine.grid$prob > 0.05])*0.99
+# fine.grid$prob.plot[fine.grid$prob.plot > 0.95] = max(fine.grid$prob.plot[fine.grid$prob < 0.95])*1.01
+
+# Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
+fine.grid$info = (fine.grid$f1.sd/max(fine.grid$f1.sd))^2 + (fine.grid$f2.sd/max(fine.grid$f2.sd))^2
+
+ncolor = 7; pt.size = 2.5
+g1 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = (prob.plot)*(1-prob.plot)-1e-10, 
+                                                      color = (prob.plot)*(1-prob.plot)-1e-10), alpha = 0.5, bins = ncolor)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0, order < Pareto.budget+1),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(palette = "PuOr") + 
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "", y = expression("x"[2]), subtitle = 'Uncertainty') +  guides(fill = FALSE, color = FALSE, shape = FALSE)
+
+g2 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = info, color = info), bins = ncolor, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(palette = "PuOr") + 
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  labs(x = expression("x"[1]), y = "", subtitle = 'Information Gain') +  guides(fill = FALSE, color = FALSE, shape = FALSE)
+
+g3 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = log10(info*(prob)*(1-prob)+1e-10), color = log10(info*(prob)*(1-prob)+1e-10)),
+                      bins = ncolor-1, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-3), "High"), palette = "PuOr")  +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = "", y = "", subtitle = "Sample Utility", fill = "", shape = 'Collection\nProcess', color = 'Collection\nProcess') +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  guides(color=guide_legend(override.aes=list(fill=NA))) # Remove fill in the legend
+
+g1 + g2 + g3
+
+```
+
+Loop up to 20 times
+```{r message=FALSE, warning=FALSE}
+budget = 20
+next.fit = start.fit
+while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
+  # Add the  new point to the dataset
+  GPar.all = rbind(GPar.all, GPar.new)
+  
+  # Create a Kriging model for the distance
+  mod.f1 = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('f1.norm'))
+  mod.f2 = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('f2.norm'))
+
+  GA.pred = ga(type = 'real-valued',
+               fitness = function(x){fill.sample.obj2(x, model.f1 = mod.f1, model.f2 = mod.f2)},
+               lower = c(0, 0), upper = c(5, 5),
+               popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
+               parallel = 2)
+  
+  # Next point to sample is the solution to this optimization. 
+  # Account for the possibility that the genetic algorithm converges on multiple equivalent points
+  point.next = GA.pred@solution[1,]
+  
+  # Find values of the selected point
+  GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
+  GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
+  GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
+  
+  # Fill in the remaining caluclations: normalized outputs, distance, theta, order
+  GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
+  cl <- makeCluster(2)
+  registerDoParallel(cl)
+  dist = foreach(row = 1:nrow(GPar.new)) %dopar%
+    n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
+  stopCluster(cl)
+  GPar.new$dist = unlist(dist)
+  GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
+  GPar.new$order = max(GPar.all$order) + 1
+  
+  # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
+  next.fit = max(GA.pred@fitness)
+}
+
+GPar.all = rbind(GPar.all, GPar.new)
+write.csv(GPar.all, 'GPar_Accept_Threshold_quart.csv')
+
+# rm(budget, n.samples)
+```
+
+```{r warning=FALSE}
+# Plot results on top of the most recent Kriging model
+# Create a Kriging model for the distance
+mod.f1 = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('f1.norm'))
+mod.f2 = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('f2.norm'))
+
+# Apply Kriging functions
+res = predict(object = mod.f1.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$f1.mean = res$mean
+fine.grid$f1.sd = res$sd
+
+res = predict(object = mod.f2.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$f2.mean = res$mean
+fine.grid$f2.sd = res$sd
+
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+# Reset the ranges for plotting
+fine.grid$prob.plot = fine.grid$prob
+# fine.grid$prob.plot[fine.grid$prob.plot < 0.05] = min(fine.grid$prob.plot[fine.grid$prob > 0.05])*0.99
+# fine.grid$prob.plot[fine.grid$prob.plot > 0.95] = max(fine.grid$prob.plot[fine.grid$prob < 0.95])*1.01
+
+# Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
+fine.grid$info = (fine.grid$f1.sd/max(fine.grid$f1.sd))^2 + (fine.grid$f2.sd/max(fine.grid$f2.sd))^2
+
+ncolor = 7; pt.size = 2.5
+g4 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = (prob.plot)*(1-prob.plot)-1e-10, 
+                                                      color = (prob.plot)*(1-prob.plot)-1e-10), alpha = 0.5, bins = ncolor)+
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.plot), breaks = c(0.25, 0.75), color = 'blue') +
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'),
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'),
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = "", y = expression("x"[2]), subtitle = 'Uncertainty',
+       color = 'Collection\nProcess', shape = 'Collection\nProcess') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-2), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  guides(color = FALSE, shape = FALSE, fill = FALSE)
+
+g5 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = info, color = info), bins = ncolor, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = expression("x"[1]), y = "", color = 'Collection\nProcess', shape = 'Collection\nProcess', subtitle = 'Information Gain') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-2), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) + 
+  guides(color = FALSE, shape = FALSE, fill = FALSE)
+  
+g6 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = log10(info*(prob)*(1-prob)+1e-10), color = log10(info*(prob)*(1-prob)+1e-10)),
+                      bins = ncolor-1, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = '', y = '', color = 'Collection\nProcess', shape = 'Collection\nProcess', subtitle = 'Sample Utility', fill = '') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-3), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) + guides(color=guide_legend(override.aes=list(fill=NA)))
+
+g4 + g5 + g6
+
+# write.csv(GPar.all, 'GPar_Accept_Threshold_quart.csv')
+
+```
+
+4.3., 5.3 Acceptance criteria: Within a normalized radius of 1; 80% priority of F1 (theta as percentage over 20)
+
+```{r warning=FALSE}
+# Load data
+GPar.all = read.csv(file = 'GPar_all_start_quart.csv')
+GPar.front = read.csv(file = 'GPar_fnt_start_quart.csv')
+
+# Remove leading indices: the names are:
+nm = c("x1",  "x2", "f1", "f2", "order",  "f1.norm", "f2.norm", "dist", "theta")
+GPar.all = GPar.all[,nm]
+nm = c("x1",  "x2", "f1", "f2",  "f1.norm", "f2.norm")
+GPar.front = GPar.front[,nm]
+
+```
+
+```{r message=FALSE, warning=FALSE}
+fill.sample.obj3 = function(x, model.f1, model.f2){
+  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
+  # the function will output the objective function evaluated at x = (x1, x2)
+  
+  # Evaluate the Kriging model function at x 
+  res.f1 = predict(object = model.f1, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  
+  # Probability distribution fits a Gaussian distribution
+  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * (1 - pnorm(q = 0, mean = res.f2$mean - 20, sd = res.f2$sd))
+  
+  # Variance based on propagation of errors
+  sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2) 
+
+  # Objective result
+  return(sd*prob*(1-prob))
+}
+
+# fill.sample.obj(x = c(2,2), GPar.data = GPar.all)
+
+# Search for the first point
+# Create a Kriging model for the distance
+GPar.all$rad = sqrt(GPar.all$f1.norm^2 + GPar.all$f2.norm^2)
+mod.rad = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('rad'))
+mod.ang = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('theta'))
+
+GA.pred = ga(type = 'real-valued',
+             fitness = function(x){fill.sample.obj3(x, model.f1 = mod.rad, model.f2 = mod.ang)},
+             lower = c(0, 0), upper = c(5, 5),
+             popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
+             parallel = 2)
+# Next point to sample is the solution to this optimization
+point.next = GA.pred@solution[1,]
+
+# Account for the possibility that the genetic algorithm converges on multiple equivalent points
+GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
+GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
+GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
+# Fill in the remaining caluclations: normalized outputs, distance, theta, order
+GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(GPar.new)) %dopar%
+  n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+GPar.new$dist = unlist(dist)
+GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
+GPar.new$order = max(GPar.all$order) + 1
+GPar.new$rad = sqrt(GPar.new$f1.norm^2 + GPar.new$f2.norm^2)
+
+# The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
+start.fit = max(GA.pred@fitness)
+# Store first point for plotting
+GPar.new1 = GPar.new
+rm(dist)
+
+# Store the initial mod.dist for later
+mod.rad.init = mod.rad
+mod.ang.init = mod.ang
+```
+
+Visualize the first loop - show that it actually samples the point that is most useful
+
+```{r warning=FALSE}
+# Kriging model of the distance
+# mod.dist.init = km(design = GPar.all[,c("x1", "x2")], response = GPar.all$dist, nugget = 1e-8, control = list(trace = FALSE), covtype = 'gauss', optim.method = 'gen')
+
+# Grid of the relevant region to visualize
+lower = c(0, 0); upper = c(5,5)
+fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 50), 
+                        x2 = seq(from = lower[2], to = upper[2], length.out = 50))
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+# Apply Kriging functions
+res = predict(object = mod.rad.init, newdata = fine.grid, type = "UK")
+fine.grid$rad.mean = res$mean
+fine.grid$rad.sd = res$sd
+
+res = predict(object = mod.ang.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$ang.mean = res$mean
+fine.grid$ang.sd = res$sd
+
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+  (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
+# Reset the ranges for plotting
+fine.grid$prob.plot = fine.grid$prob
+# fine.grid$prob.plot[fine.grid$prob.plot < 0.05] = min(fine.grid$prob.plot[fine.grid$prob > 0.05])*0.99
+# fine.grid$prob.plot[fine.grid$prob.plot > 0.95] = max(fine.grid$prob.plot[fine.grid$prob < 0.95])*1.01
+
+# Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
+fine.grid$info = (fine.grid$rad.sd/max(fine.grid$rad.sd))^2 + (fine.grid$ang.sd/max(fine.grid$ang.sd))^2
+
+ncolor = 7; pt.size = 2.5
+g1 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = (prob.plot)*(1-prob.plot)-1e-10, 
+                                                      color = (prob.plot)*(1-prob.plot)-1e-10), alpha = 0.5, bins = ncolor)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0, order < Pareto.budget+1),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(palette = "PuOr") + 
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "", y = expression("x"[2]), subtitle = 'Uncertainty') +  guides(fill = FALSE, color = FALSE, shape = FALSE)
+
+g2 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = info, color = info), bins = ncolor, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(palette = "PuOr") + 
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  labs(x = expression("x"[1]), y = "", subtitle = 'Information Gain') +  guides(fill = FALSE, color = FALSE, shape = FALSE)
+
+g3 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = log10(info*(prob)*(1-prob)+1e-10), color = log10(info*(prob)*(1-prob)+1e-10)),
+                      bins = ncolor-1, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order == 0),
+             mapping = aes(x = x1, y = x2, color = 'initial', shape = 'initial'), size = pt.size) +  
+  geom_point(data = filter(GPar.all, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2], order > 0),
+             mapping = aes(x = x1, y = x2, color = 'Pareto', shape = 'Pareto'), size = pt.size) +  
+  geom_point(data = GPar.new1, mapping = aes(x = x1, y = x2, color = 'Post', shape = 'Post'), size = pt.size) +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-3), "High"), palette = "PuOr")  +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = "", y = "", subtitle = "Sample Utility", fill = "", shape = 'Collection\nProcess', color = 'Collection\nProcess') +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  guides(color=guide_legend(override.aes=list(fill=NA))) # Remove fill in the legend
+
+# g1 + plot.present() + g2 + plot.present() + g3 + plot.present()
+g1 + g2 + g3
+```
+
+Loop
+```{r message=FALSE, warning=FALSE}
+budget = 20
+next.fit = start.fit
+while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
+  # Add the  new point to the dataset
+  GPar.all = rbind(GPar.all, GPar.new)
+  
+  # Create a Kriging model for the distance
+  mod.rad = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('rad'))
+  mod.ang = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('theta'))
+  
+  GA.pred = ga(type = 'real-valued',
+               fitness = function(x){fill.sample.obj3(x, model.f1 = mod.rad, model.f2 = mod.ang)},
+               lower = c(0, 0), upper = c(5, 5),
+               popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
+               parallel = 2)
+  
+  # Next point to sample is the solution to this optimization. 
+  # Account for the possibility that the genetic algorithm converges on multiple equivalent points
+  point.next = GA.pred@solution[1,]
+  
+  # Find values of the selected point
+  GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
+  GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
+  GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
+  
+  # Fill in the remaining caluclations: normalized outputs, distance, theta, order
+  GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
+  cl <- makeCluster(2)
+  registerDoParallel(cl)
+  dist = foreach(row = 1:nrow(GPar.new)) %dopar%
+    n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
+  stopCluster(cl)
+  GPar.new$dist = unlist(dist)
+  GPar.new$rad = sqrt(GPar.new$f1.norm^2 + GPar.new$f2.norm^2)
+  GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
+  GPar.new$order = max(GPar.all$order) + 1
+  
+  # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
+  next.fit = max(GA.pred@fitness)
+}
+
+GPar.all = rbind(GPar.all, GPar.new)
+write.csv(GPar.all, 'GPar_Accept_Radius_quart.csv')
+
+# rm(budget, n.samples)
+```
+
+```{r warning=FALSE}
+# Plot results on top of the most recent Kriging model
+# Create a Kriging model for the distance
+mod.rad = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('rad'))
+mod.ang = fill.sample.model(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = c('theta'))
+
+# Apply Kriging functions
+res = predict(object = mod.rad.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$rad.mean = res$mean
+fine.grid$rad.sd = res$sd
+
+res = predict(object = mod.ang.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$ang.mean = res$mean
+fine.grid$ang.sd = res$sd
+
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+  (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
+# Reset the ranges for plotting
+fine.grid$prob.plot = fine.grid$prob
+# fine.grid$prob.plot[fine.grid$prob.plot < 0.05] = min(fine.grid$prob.plot[fine.grid$prob > 0.05])*0.99
+# fine.grid$prob.plot[fine.grid$prob.plot > 0.95] = max(fine.grid$prob.plot[fine.grid$prob < 0.95])*1.01
+
+# Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
+fine.grid$info = (fine.grid$rad.sd/max(fine.grid$rad.sd))^2 + (fine.grid$ang.sd/max(fine.grid$ang.sd))^2
+
+ncolor = 7; pt.size = 2.5
+g4 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = (prob.plot)*(1-prob.plot)-1e-10, 
+                                                      color = (prob.plot)*(1-prob.plot)-1e-10), alpha = 0.5, bins = ncolor)+
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.plot), breaks = c(0.25, 0.75), color = 'blue') +
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'),
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'),
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = "", y = expression("x"[2]), subtitle = 'Uncertainty',
+       color = 'Collection\nProcess', shape = 'Collection\nProcess') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-2), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  guides(color = FALSE, shape = FALSE, fill = FALSE)
+
+g5 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = info, color = info), bins = ncolor, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = expression("x"[1]), y = "", color = 'Collection\nProcess', shape = 'Collection\nProcess', subtitle = 'Information Gain') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-2), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) + 
+  guides(color = FALSE, shape = FALSE, fill = FALSE)
+  
+g6 = ggplot() +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = log10(info*(prob)*(1-prob)+1e-10), color = log10(info*(prob)*(1-prob)+1e-10)),
+                      bins = ncolor-1, alpha = 0.5)+
+  geom_point(data = filter(GPar.all, order == 0, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'initial', color = 'initial'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > 0, order <= Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Pareto', color = 'Pareto'), size = pt.size) +
+  geom_point(data = filter(GPar.all, order > Pareto.budget, x1 <= upper[1], x1 >= lower[1], x2 <= upper[2], x2 >= lower[2]), 
+             mapping = aes(x = x1, y = x2, shape = 'Post', color = 'Post'), size = pt.size) +
+  scale_shape_manual(values = c('initial' = 15, 'Pareto' = 16, 'Post' = 17), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  scale_color_manual(values = c('initial' = 'black', 'Pareto' = 'darkorchid3', 'Post' = 'red3'), labels = c('Initial', 'Pareto', 'Post'), 
+                     breaks = c('initial', 'Pareto', 'Post')) +
+  labs(x = '', y = '', color = 'Collection\nProcess', shape = 'Collection\nProcess', subtitle = 'Sample Utility', fill = '') +
+  scale_fill_brewer(labels = c("Low", rep("", ncolor-3), "High"), palette = "PuOr") +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) + guides(color=guide_legend(override.aes=list(fill=NA)))
+
+g4 + g5 + g6
+
+# write.csv(GPar.all, 'GPar_Accept_Radius_quart.csv')
+
+```
+
+Comparison of the boundaries to show how changing the acceptance criteria changes the shape of the near-Pareto set
+
+```{r warning=FALSE}
+# Load datasets for obtaining the refined probability functions
+data.delta = read.csv('GPar_Accept_Delta1_quart.csv')
+data.cutof = read.csv('GPar_Accept_Threshold_quart.csv')
+data.radan = read.csv('GPar_Accept_Radius_quart.csv')
+
+##
+# Grid of the relevant region to visualize
+lower = c(0, 0); upper = c(5,5)
+fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 50), 
+                        x2 = seq(from = lower[2], to = upper[2], length.out = 50))
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+
+##
+# Normalized distance
+mod.dist = km(design = data.delta[, c('x1', 'x2')], response = data.delta$dist, 
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-10) # Add the nugget to avoid eigenvalues of 0
+
+res = predict(object = mod.dist, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+fine.grid$dist.mean = res$mean
+fine.grid$dist.sd = res$sd
+fine.grid$prob.delta = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+
+##
+# Threshold cutoff
+mod.f1 = km(design = data.cutof[, c('x1', 'x2')], response = data.cutof$f1.norm,
+              optim.method = 'gen',
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-12) # Add the nugget to avoid eigenvalues of 0
+mod.f2 = km(design = data.cutof[, c('x1', 'x2')], response = data.cutof$f2.norm,
+              optim.method = 'gen',
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-12) # Add the nugget to avoid eigenvalues of 0
+
+# Apply Kriging functions
+res = predict(object = mod.f1.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$f1.mean = res$mean
+fine.grid$f1.sd = res$sd
+
+res = predict(object = mod.f2.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$f2.mean = res$mean
+fine.grid$f2.sd = res$sd
+
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob.cutof = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+
+##
+# Radius-angle
+mod.rad = km(design = data.radan[, c('x1', 'x2')], response = sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2),
+              optim.method = 'gen',
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-12) # Add the nugget to avoid eigenvalues of 0
+mod.ang = km(design = data.radan[, c('x1', 'x2')], response = data.radan$theta,
+              optim.method = 'gen',
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-12) # Add the nugget to avoid eigenvalues of 0
+
+# Apply Kriging functions
+res = predict(object = mod.rad.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$rad.mean = res$mean
+fine.grid$rad.sd = res$sd
+res = predict(object = mod.ang.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$ang.mean = res$mean
+fine.grid$ang.sd = res$sd
+
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob.radan = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+  (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
+
+```
+
+```{r warning=FALSE}
+GPar.all = read.csv(file = 'GPar_all_start_quart.csv')
+GPar.front = read.csv(file = 'GPar_fnt_start_quart.csv')
+
+ggplot() +
+  # Boundaries: Lower
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), breaks = c(0.5)) +
+  # # Boundaries: Upper
+  # geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), breaks = c(0.85)) +
+  # geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), breaks = c(0.85)) +
+  # geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), breaks = c(0.85)) +
+  # Pareto frontier
+  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), level = 0.95) + 
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Acceptance Criteria') +
+  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green', 'Pareto' = 'black'),
+                     labels = c('delta' = expression(delta*' < 1'), 'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
+                                'radan' = expression('r < 1, '*theta*' > 18'^'o'),
+                                'Pareto' = expression('Pareto Front')),
+                     breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
+  plot.present() + theme(legend.position = c(0.85, 0.75)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
+
+
+```
+
+6. Determine variable importance based on the inverse function: x_i ~ f(distance, theta) + error; higher average leave-on-out error is the least important variable to fit to reach optimal conditions.
+
+Variable importance: given a particular region in the objective space, what is the most important variable to constrain first?
+
+The most important input variable has the largest impact on the distance and theta of the output point. Mathematically, this means its correlation between input {x_n and distance} and {x_n and theta} are both high. This can be aggregated into a single function by taking advantage of the fact that correlation(x,y) = correlation(y,x)
+Doing so means that one can produce a local regression function to predict x_n given both distance and theta. The most important variable x_n will have the smallest regression error in this form, as
+
+(theta, distance) = f(x_n) + error
+
+can be approximately transformed as
+
+x_n = f(theta, distance) + error
+
+With similar error terms.
+
+Kriging function option instead of regression:
+Use the leave-one-out error in place of the regression error.
+
+```{r warning=FALSE}
+GPar.all = read.csv('GPar_Accept_Delta1_quart.csv')
+GPar.all = GPar.all[, !(names(GPar.all) %in% c("X"))]
+# Separate into regions for visualization purposes
+GPar.all$region = "f1"
+GPar.all$region[GPar.all$theta < 66] = "50:50"
+GPar.all$region[GPar.all$theta < 33] = "f2"
+
+# Create model
+mod.pred.x1 = km(formula = (x1 ~ theta*dist), 
+                 design = data.frame(dist = GPar.all$dist, theta = GPar.all$theta), 
+                 response = GPar.all$x1,
+                 control = list(trace = FALSE, pop.size = 50),
+                 nugget = 1e-10) # Nugget fixes issues with imaginary and 0 eigenvalues
+# plot(mod.pred.x1)
+n = leaveOneOut.km(mod.pred.x1, type = "UK")
+GPar.all$x1.kmErr = n$mean - mod.pred.x1@y
+
+mod.pred.x2 = km(formula = (x1 ~ theta*dist), 
+                 design = data.frame(dist = GPar.all$dist, theta = GPar.all$theta), 
+                 response = GPar.all$x2,
+                 nugget = 1e-10,
+                 control = list(trace=FALSE, pop.size = 50))
+# plot(mod.pred.x2)
+n = leaveOneOut.km(mod.pred.x2, type = "UK")
+GPar.all$x2.kmErr = n$mean - mod.pred.x2@y
+
+g1 = ggplot(filter(GPar.all)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_point(mapping = aes(x = x1, y = x1.kmErr, color = dist, shape = region)) +
+  labs(x = expression('x'[1]), y = 'Model Error', color = 'Pareto\nProximty', shape = 'Priority',
+       subtitle = paste('Error variance = ', round(sd(GPar.all$x1.kmErr), 2))) +
+  scale_shape(breaks = c('f1', '50:50', 'f2')) +
+  guides(shape = FALSE)
+g2 = ggplot(filter(GPar.all)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_point(mapping = aes(x = x2, y = x2.kmErr, color = dist, shape = region)) +
+  labs(x = expression('x'[2]), y = 'Model Error', color = 'Distance', shape = 'Priority',
+       subtitle = paste('Error variance = ', round(sd(GPar.all$x2.kmErr), 2))) +
+  scale_shape(breaks = c('f1', '50:50', 'f2')) +
+  guides(color = FALSE)
+
+g1 / g2
+
+ggplot(filter(GPar.all)) +
+  # geom_vline(xintercept = sd(GPar.all$x1.kmErr), color = "red") +
+  # geom_vline(xintercept = sd(GPar.all$x2.kmErr), color = "blue") +
+  geom_density(mapping = aes(x = x1.kmErr, color = 'x1')) +
+  geom_density(mapping = aes(x = x2.kmErr, color = 'x2')) +
+  labs(x = expression('Model Error'), y = 'Probability Density', color = 'Variable') +
+  scale_color_manual(values = c('x1' = 'red', 'x2' = 'blue'), 
+                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])))
+
+rm(g1, g2, n)
+
+# Can compare the variances with chi-square test F-statistic
+# F = var1/var2 (> 1), degrees of freedom = nrow -1
+F = (sd(GPar.all$x1.kmErr)/sd(GPar.all$x2.kmErr))^2
+if(F < 1){
+  F = 1/F
+}
+1 - pf(q = F, df1 = nrow(GPar.all)-1, df2 = nrow(GPar.all)-2)
+
+sd(GPar.all$x1.kmErr)
+sd(GPar.all$x2.kmErr)
+
+```
+
+Compare to finding the most important based solely on distance
+
+```{r warning=FALSE}
+GPar.all = read.csv('GPar_Accept_Delta1_quart.csv')
+GPar.all = GPar.all[, !(names(GPar.all) %in% c("X"))]
+# Separate into regions for visualization purposes
+GPar.all$region = "f1"
+GPar.all$region[GPar.all$theta < 66] = "50:50"
+GPar.all$region[GPar.all$theta < 33] = "f2"
+
+# Create model
+mod.pred.x1 = km(formula = (x1 ~ dist), 
+                 design = data.frame(dist = GPar.all$dist), 
+                 response = GPar.all$x1,
+                 control = list(trace = FALSE, pop.size = 50),
+                 nugget = 1e-10) # Nugget fixes issues with imaginary and 0 eigenvalues
+# plot(mod.pred.x1)
+n = leaveOneOut.km(mod.pred.x1, type = "UK")
+GPar.all$x1.kmErr = n$mean - mod.pred.x1@y
+
+mod.pred.x2 = km(formula = (x1 ~ dist), 
+                 design = data.frame(dist = GPar.all$dist), 
+                 response = GPar.all$x2,
+                 nugget = 1e-10,
+                 control = list(trace=FALSE, pop.size = 50))
+# plot(mod.pred.x2)
+n = leaveOneOut.km(mod.pred.x2, type = "UK")
+GPar.all$x2.kmErr = n$mean - mod.pred.x2@y
+
+g1 = ggplot(filter(GPar.all)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_point(mapping = aes(x = x1, y = x1.kmErr, color = log10(dist), shape = region)) +
+  labs(x = expression('x'[1]), y = 'Model Error', color = 'Pareto\nProximty', shape = 'Priority',
+       subtitle = paste('Error variance = ', round(sd(GPar.all$x1.kmErr), 2))) +
+  scale_shape(breaks = c('f1', '50:50', 'f2')) +
+  guides(shape = FALSE)
+g2 = ggplot(filter(GPar.all)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_point(mapping = aes(x = x2, y = x2.kmErr, color = log10(dist), shape = region)) +
+  labs(x = expression('x'[2]), y = 'Model Error', color = 'log Distance', shape = 'Priority',
+       subtitle = paste('Error variance = ', round(sd(GPar.all$x2.kmErr), 2))) +
+  scale_shape(breaks = c('f1', '50:50', 'f2')) +
+  guides(color = FALSE)
+
+g1 / g2
+
+ggplot(filter(GPar.all)) +
+  # geom_vline(xintercept = sd(GPar.all$x1.kmErr), color = "red") +
+  # geom_vline(xintercept = sd(GPar.all$x2.kmErr), color = "blue") +
+  geom_density(mapping = aes(x = x1.kmErr, color = 'x1')) +
+  geom_density(mapping = aes(x = x2.kmErr, color = 'x2')) +
+  labs(x = expression('Model Error'), y = 'Probability Density', color = 'Variable') +
+  scale_color_manual(values = c('x1' = 'red', 'x2' = 'blue'), 
+                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])))
+
+rm(g1, g2, n)
+
+# Can compare the variances with chi-square test F-statistic
+# F = var1/var2 (> 1), degrees of freedom = nrow -1
+F = (sd(GPar.all$x1.kmErr)/sd(GPar.all$x2.kmErr))^2
+if(F < 1){
+  F = 1/F
+}
+1 - pf(q = F, df1 = nrow(GPar.all)-1, df2 = nrow(GPar.all)-2)
+
+sd(GPar.all$x1.kmErr)
+sd(GPar.all$x2.kmErr)
+
+```
+
+Compare to finding the most important variable based on f1 and f2 objectives
+
+```{r warning=FALSE}
+GPar.all = read.csv('GPar_Accept_Delta1_quart.csv')
+GPar.all = GPar.all[, !(names(GPar.all) %in% c("X"))]
+# Separate into regions for visualization purposes
+GPar.all$region = "f1"
+GPar.all$region[GPar.all$theta < 66] = "50:50"
+GPar.all$region[GPar.all$theta < 33] = "f2"
+
+# Create model
+mod.pred.x1 = km(formula = (x1 ~ f1*f2), 
+                 design = data.frame(f1 = GPar.all$f1, f2 = GPar.all$f2), 
+                 response = GPar.all$x1,
+                 control = list(trace = FALSE, pop.size = 50),
+                 nugget = 1e-10) # Nugget fixes issues with imaginary and 0 eigenvalues
+# plot(mod.pred.x1)
+n = leaveOneOut.km(mod.pred.x1, type = "UK")
+GPar.all$x1.kmErr = n$mean - mod.pred.x1@y
+
+mod.pred.x2 = km(formula = (x2 ~ f1*f2), 
+                 design = data.frame(f1 = GPar.all$f1, f2 = GPar.all$f2), 
+                 response = GPar.all$x2,
+                 nugget = 1e-10,
+                 control = list(trace=FALSE, pop.size = 50))
+# plot(mod.pred.x2)
+n = leaveOneOut.km(mod.pred.x2, type = "UK")
+GPar.all$x2.kmErr = n$mean - mod.pred.x2@y
+
+g1 = ggplot(filter(GPar.all)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_point(mapping = aes(x = x1, y = x1.kmErr, color = log10(dist), shape = region)) +
+  labs(x = expression('x'[1]), y = 'Model Error', color = 'Pareto\nProximty', shape = 'Priority',
+       subtitle = paste('Error variance = ', round(sd(GPar.all$x1.kmErr), 2))) +
+  scale_shape(breaks = c('f1', '50:50', 'f2')) +
+  guides(shape = FALSE)
+g2 = ggplot(filter(GPar.all)) +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_point(mapping = aes(x = x2, y = x2.kmErr, color = log10(dist), shape = region)) +
+  labs(x = expression('x'[2]), y = 'Model Error', color = 'log Distance', shape = 'Priority',
+       subtitle = paste('Error variance = ', round(sd(GPar.all$x2.kmErr), 2))) +
+  scale_shape(breaks = c('f1', '50:50', 'f2')) +
+  guides(color = FALSE)
+
+g1 / g2
+
+ggplot(filter(GPar.all)) +
+  # geom_vline(xintercept = sd(GPar.all$x1.kmErr), color = "red") +
+  # geom_vline(xintercept = sd(GPar.all$x2.kmErr), color = "blue") +
+  geom_density(mapping = aes(x = x1.kmErr, color = 'x1')) +
+  geom_density(mapping = aes(x = x2.kmErr, color = 'x2')) +
+  labs(x = expression('Model Error'), y = 'Probability Density', color = 'Variable') +
+  scale_color_manual(values = c('x1' = 'red', 'x2' = 'blue'), 
+                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])))
+
+rm(g1, g2, n)
+
+# Can compare the variances with chi-square test F-statistic
+# F = var1/var2 (> 1), degrees of freedom = nrow -1
+F = (sd(GPar.all$x1.kmErr)/sd(GPar.all$x2.kmErr))^2
+if(F < 1){
+  F = 1/F
+}
+1 - pf(q = F, df1 = nrow(GPar.all)-1, df2 = nrow(GPar.all)-2)
+
+sd(GPar.all$x1.kmErr)
+sd(GPar.all$x2.kmErr)
+
+```
+Visualizing the relative importance based on the scatter and dynamics of the Pareto frontier estimations
+```{r warning=FALSE}
+GPar.all$proc = 'Initial'
+GPar.all$proc[GPar.all$order > 0] = 'Pareto'
+GPar.all$proc[GPar.all$order > 20] = 'Post'
+pt.size = 3
+g1 = ggplot() +
+  geom_point(data = filter(GPar.all, dist > 1), mapping = aes(x = theta, y = x1, shape = proc), color = 'red', size = pt.size) +
+  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1), color = "black", level = 0) +
+  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x1, color = dist, shape = proc), size = pt.size) +
+  labs(x = "", y = expression("x"[1]), color = "Pareto\nProximity") +
+  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
+                     expand = c(0.01, 0.01)) +
+  guides(shape = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
+g2 = ggplot() +
+  geom_point(data = filter(GPar.all, dist >  1), mapping = aes(x = theta, y = x2, shape = proc), color = 'red', size = pt.size) +
+  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2), color = "black", level = 0) +
+  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x2, color = dist, shape = proc), size = pt.size) +
+  labs(x = "Trade-Off", y = expression("x"[2]), color = "", shape = 'Collection\nProcess') +
+  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
+                     expand = c(0.01, 0.01)) +
+  guides(color = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
+g1 / g2
+
+```
+
+Rather than plot as above, find the regression distance between the point and the Pareto frontier curve
+
+```{r}
+# GPar.all
+Pfront.x1 = loess(x1 ~ theta,
+                data = data.frame(theta = filter(GPar.all, dist == 0)$theta, x1 = filter(GPar.all, dist == 0)$x1))
+Pfront.x2 = loess(x2 ~ theta,
+                data = data.frame(theta = filter(GPar.all, dist == 0)$theta, x2 = filter(GPar.all, dist == 0)$x2))
+plt = data.frame(theta = seq(from = 0, to = 100, length.out = 100))
+res1 = predict(object = Pfront.x1, newdata = plt)
+res2 = predict(object = Pfront.x2, newdata = plt)
+plt$x1 = unname(res1); plt$x2 = unname(res2)
+
+# Check the Savitzky–Golay filter smoothing quality
+# gx1 = ggplot() +
+#   geom_path(plt, mapping = aes(x = theta, y = x1)) +
+#   geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1))
+# gx2 = ggplot() +
+#   geom_path(plt, mapping = aes(x = theta, y = x2)) +
+#   geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2))
+# gx1 / gx2
+
+# Apply the model to find the linear distance (regression)
+GPar.all$x1.loess.Err = abs(GPar.all$x1 - predict(object = Pfront.x1, newdata = GPar.all$theta))
+GPar.all$x2.loess.Err = abs(GPar.all$x2 - predict(object = Pfront.x2, newdata = GPar.all$theta))
+
+# Calculate the correlation coefficient of the log(objective distance) with the linear distance
+x1.cor = cor(x = filter(GPar.all, dist > 0)$x1.loess.Err, 
+             y = log10(filter(GPar.all, dist > 0)$dist), 
+             method = 'pearson')
+x2.cor = cor(x = filter(GPar.all, dist > 0)$x2.loess.Err, 
+             y = log10(filter(GPar.all, dist > 0)$dist), 
+             method = 'pearson')
+
+sz = 3
+g1 / g2
+GPar.cor.plt = data.frame(obj.dist = rep(GPar.all$dist, 2),
+                          inp.dist = c(GPar.all$x1.loess.Err, GPar.all$x2.loess.Err),
+                          var = c(rep('x1', nrow(GPar.all)), rep('x2', nrow(GPar.all))),
+                          region = rep(GPar.all$region, 2),
+                          val = c(GPar.all$x1, GPar.all$x2))
+var.labs <- c('x1, r = 0.65', 'x2, r = 0.05')
+names(var.labs) <- c("x1", "x2")
+
+ggplot(GPar.cor.plt) +
+  geom_point(mapping = aes(x = inp.dist, y = log10(obj.dist), shape = region, color = val), size = sz) +
+  facet_grid(~var, labeller = labeller(var = var.labs)) + 
+  labs(x = 'Distance: Input Space', y = 'log10 Distance: Objective Space', shape = 'Priority',
+       color = 'Input Value')
+
+```
+
+# Bayesian probability presentation: probability of meeting the selection criteria (distance < 1) given only the provided information
+(in this case, only x1 or x2, but not both)
+
+Based on the Krigin model errors
+
+Can marginalize the original model to obtain the single-variable probability densities, i.e. P[$\delta$ < 1 | $x_1$] = $\int$ P[$\delta$ < 1 | $x_1$, $x_2$]P[$x_2$] d$x_2$.
+
+For the delta < 1 criteria
+
+```{r, warning = FALSE}
+# Create the GP model
+mod.dist = km(design = GPar.all[, c('x1', 'x2')], response = GPar.all$dist, 
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-10) # Add the nugget to avoid eigenvalues of 0
+
+# Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
+resolution = 50; MCsamp = 1500
+x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
+x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+Infer.x1 = data.frame(); Infer.x2 = data.frame()
+
+for(i in 1:resolution){
+  # x1
+  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
+  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x1 = rbind(Infer.x1, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
+  
+  # x2
+  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
+  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x2 = rbind(Infer.x2, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+}
+
+# Generate a fine grid map to compare against
+fine.grid = expand.grid(x1.seq, x2.seq)
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+res = predict(object = mod.dist, newdata = fine.grid, type = 'UK')
+fine.grid$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+
+
+```
+
+```{r}
+g1 = ggplot() +
+  geom_path(data = Infer.x1, mapping = aes(x = x1, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x2, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  theme_bw()
+
+nbin = 7
+g2 = ggplot(fine.grid) +
+  geom_contour_filled(mapping = aes(x = x1, y = x2, color = p.del1, z = p.del1), breaks = seq(from = -1e-10, to = 1+1e-10, length.out = nbin)) +
+  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  scale_fill_brewer(labels = c('0', rep('', nbin-3), '1'), name = 'P[Accept]', palette = "PuOr") +
+  scale_y_continuous(expand = c(0, 0)) + scale_x_continuous(expand = c(0, 0))
+g1; g2; g1 / g2
+```
+
+Determine the conditional probability of accepting the input x2 given x1.condition satisfies P[accept | x1 = x1.condition] >= P[accept | x1]_max and the inverse (x1 given x2)
+
+```{r}
+# Detrmining the ranges
+p.target1 = 0.5*max(Infer.x1$prob)
+# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
+x1.lims = range(filter(Infer.x1, prob > p.target1)$x1)
+# Adjust the extremes if they are not already at the extreme
+if(x1.lims[1] > min(Infer.x1$x1)){
+  pos = which.min(abs(Infer.x1$x1 - x1.lims[1]))
+  sub = Infer.x1[c(pos-1, pos), ]
+  mod = lm(x1 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target1))
+  x1.lims[1] = res
+  rm(mod)
+}
+if(x1.lims[2] < max(Infer.x1$x1)){
+  pos = which.min(abs(Infer.x1$x1 - x1.lims[2]))
+  sub = Infer.x1[c(pos, pos+1), ]
+  mod = lm(x1 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target1))
+  x1.lims[2] = res
+  rm(mod)
+}
+
+p.target2 = 0.5*max(Infer.x2$prob)
+# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
+x2.lims = range(filter(Infer.x2, prob > p.target2)$x2)
+# Adjust the extremes if they are not already at the extreme
+if(x2.lims[1] > min(Infer.x2$x2)){
+  pos = which.min(abs(Infer.x2$x2 - x2.lims[1]))
+  sub = Infer.x2[c(pos-1, pos), ]
+  mod = lm(x2 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target2))
+  x2.lims[1] = res
+  rm(mod)
+}
+if(x2.lims[2] < max(Infer.x2$x2)){
+  pos = which.min(abs(Infer.x2$x2 - x2.lims[2]))
+  sub = Infer.x2[c(pos, pos+1), ]
+  mod = lm(x2 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target2))
+  x2.lims[2] = res
+  rm(mod)
+}
+
+# Marginalize over the specific region of x1
+resolution = 50; MCsamp = 1500
+x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+Infer.x2.x1 = data.frame(); Infer.x1.x2 = data.frame()
+
+for(i in 1:resolution){
+  # x2 | x1
+  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)))
+  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+  # x1 | x2
+  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)))
+  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
+}
+
+```
+
+```{r}
+# Combine results for visualization
+Infer.x1$var = 'x1';    Infer.x1$cond = 'Single Input';          names(Infer.x1)[1] = 'x'
+Infer.x1.x2$var = 'x1'; Infer.x1.x2$cond = 'Conditional Input';  names(Infer.x1.x2)[1] = 'x'
+Infer.x2$var = 'x2';    Infer.x2$cond = 'Single Input';          names(Infer.x2)[1] = 'x'
+Infer.x2.x1$var = 'x2'; Infer.x2.x1$cond = 'Conditional Input';  names(Infer.x2.x1)[1] = 'x'
+Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1);
+
+ggplot(Infer.plt) +
+  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+  facet_wrap(var~., nrow = 2) + 
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), color = '') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+```
+
+Repeat this screening process using the other criteria to show its robustness to concavities and discontinuities
+
+Within a particular radius
+```{r, warning = FALSE}
+# Load appropriate dataset
+GPar.all = read.csv(file = "GPar_Accept_Threshold_quart.csv")
+
+# Create the GP model
+mod.f1 = km(design = GPar.all[, c('x1', 'x2')], response = GPar.all$f1.norm, 
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-10) # Add the nugget to avoid eigenvalues of 0
+mod.f2 = km(design = GPar.all[, c('x1', 'x2')], response = GPar.all$f2.norm, 
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-10) # Add the nugget to avoid eigenvalues of 0
+
+# Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
+resolution = 50; MCsamp = 1500
+x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
+x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+Infer.x1 = data.frame(); Infer.x2 = data.frame()
+
+for(i in 1:resolution){
+  # x1
+  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
+  res = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+  p.f1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+  p.f2 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x1 = rbind(Infer.x1, data.frame(x1 = x1.seq[i], prob = mean(p.f1*p.f2)))
+  
+  # x2
+  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
+  res = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+  p.f1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+  p.f2 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x2 = rbind(Infer.x2, data.frame(x2 = x2.seq[i], prob = mean(p.f1*p.f2)))
+}
+
+# Generate a fine grid map to compare against
+fine.grid = expand.grid(x1.seq, x2.seq)
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+res = predict(object = mod.f1, newdata = fine.grid, type = 'UK')
+p.f1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+res = predict(object = mod.f2, newdata = fine.grid, type = 'UK')
+p.f2 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+fine.grid$prob = p.f1 * p.f2
+
+```
+
+```{r}
+g1 = ggplot() +
+  geom_path(data = Infer.x1, mapping = aes(x = x1, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x2, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  theme_bw()
+
+nbin = 7
+g2 = ggplot(fine.grid) +
+  geom_contour_filled(mapping = aes(x = x1, y = x2, color = prob, z = prob), breaks = seq(from = -1e-10, to = 1+1e-10, length.out = nbin)) +
+  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  scale_fill_brewer(labels = c('0', rep('', nbin-3), '1'), name = 'P[Accept]', palette = "PuOr") +
+  scale_y_continuous(expand = c(0, 0)) + scale_x_continuous(expand = c(0, 0))
+g1; g2; g1 / g2
+```
+
+Determine the conditional probability of accepting the input x2 given x1.condition satisfies P[accept | x1 = x1.condition] >= P[accept | x1]_max and the inverse (x1 given x2)
+
+```{r}
+# Detrmining the ranges
+p.target1 = 0.5*max(Infer.x1$prob)
+# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
+x1.lims = range(filter(Infer.x1, prob > p.target1)$x1)
+# Adjust the extremes if they are not already at the extreme
+if(x1.lims[1] > min(Infer.x1$x1)){
+  pos = which.min(abs(Infer.x1$x1 - x1.lims[1]))
+  sub = Infer.x1[c(pos-1, pos), ]
+  mod = lm(x1 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target1))
+  x1.lims[1] = res
+  rm(mod)
+}
+if(x1.lims[2] < max(Infer.x1$x1)){
+  pos = which.min(abs(Infer.x1$x1 - x1.lims[2]))
+  sub = Infer.x1[c(pos, pos+1), ]
+  mod = lm(x1 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target1))
+  x1.lims[2] = res
+  rm(mod)
+}
+
+p.target2 = 0.5*max(Infer.x2$prob)
+# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
+x2.lims = range(filter(Infer.x2, prob > p.target2)$x2)
+# Adjust the extremes if they are not already at the extreme
+if(x2.lims[1] > min(Infer.x2$x2)){
+  pos = which.min(abs(Infer.x2$x2 - x2.lims[1]))
+  sub = Infer.x2[c(pos-1, pos), ]
+  mod = lm(x2 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target2))
+  x2.lims[1] = res
+  rm(mod)
+}
+if(x2.lims[2] < max(Infer.x2$x2)){
+  pos = which.min(abs(Infer.x2$x2 - x2.lims[2]))
+  sub = Infer.x2[c(pos, pos+1), ]
+  mod = lm(x2 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target2))
+  x2.lims[2] = res
+  rm(mod)
+}
+
+# Marginalize over the specific region of x1
+resolution = 50; MCsamp = 1500
+x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+Infer.x2.x1 = data.frame(); Infer.x1.x2 = data.frame()
+
+for(i in 1:resolution){
+  # x2 | x1
+  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)))
+  res = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+  p.f1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+  p.f2 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x2 = x2.seq[i], prob = mean(p.f1*p.f2)))
+  # x1 | x2
+  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)))
+  res = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+  p.f1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+  p.f2 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x1 = x1.seq[i], prob = mean(p.f1*p.f2)))
+}
+
+```
+
+```{r}
+# Combine results for visualization
+Infer.x1$var = 'x1';    Infer.x1$cond = 'Single Input';          names(Infer.x1)[1] = 'x'
+Infer.x1.x2$var = 'x1'; Infer.x1.x2$cond = 'Conditional Input';  names(Infer.x1.x2)[1] = 'x'
+Infer.x2$var = 'x2';    Infer.x2$cond = 'Single Input';          names(Infer.x2)[1] = 'x'
+Infer.x2.x1$var = 'x2'; Infer.x2.x1$cond = 'Conditional Input';  names(Infer.x2.x1)[1] = 'x'
+Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1);
+
+ggplot(Infer.plt) +
+  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+  facet_wrap(var~., nrow = 2) + 
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), color = '') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+```
+
+Within a particular radius and theta
+
+```{r, warning = FALSE}
+# Load appropriate dataset
+GPar.all = read.csv(file = "GPar_Accept_Radius_quart.csv")
+
+# Create the GP model
+mod.rad = km(design = GPar.all[, c('x1', 'x2')], response = GPar.all$rad, 
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-10) # Add the nugget to avoid eigenvalues of 0
+mod.theta = km(design = GPar.all[, c('x1', 'x2')], response = GPar.all$theta, 
+              control = list(trace=FALSE, pop.size = 50), # Turn off tracking to simpify output
+              nugget = 1e-10) # Add the nugget to avoid eigenvalues of 0
+
+# Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
+resolution = 50; MCsamp = 1500
+x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
+x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+Infer.x1 = data.frame(); Infer.x2 = data.frame()
+
+for(i in 1:resolution){
+  # x1
+  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
+  res = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+  p.rad = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.theta, newdata = fill.frame, type = 'UK')
+  p.theta = 1 - pnorm(q = 0, mean = res$mean - 20, sd = res$sd)
+  Infer.x1 = rbind(Infer.x1, data.frame(x1 = x1.seq[i], prob = mean(p.rad*p.theta)))
+  
+  # x2
+  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
+  res = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+  p.rad = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.theta, newdata = fill.frame, type = 'UK')
+  p.theta = 1 - pnorm(q = 0, mean = res$mean - 20, sd = res$sd)
+  Infer.x2 = rbind(Infer.x2, data.frame(x2 = x2.seq[i], prob = mean(p.rad*p.theta)))
+}
+
+# Generate a fine grid map to compare against
+fine.grid = expand.grid(x1.seq, x2.seq)
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+res = predict(object = mod.rad, newdata = fine.grid, type = 'UK')
+p.rad = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+res = predict(object = mod.theta, newdata = fine.grid, type = 'UK')
+p.theta = 1 - pnorm(q = 0, mean = res$mean - 20, sd = res$sd)
+fine.grid$prob = p.rad * p.theta
+
+```
+
+```{r}
+g1 = ggplot() +
+  geom_path(data = Infer.x1, mapping = aes(x = x1, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x2, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  theme_bw()
+
+nbin = 7
+g2 = ggplot(fine.grid) +
+  geom_contour_filled(mapping = aes(x = x1, y = x2, color = prob, z = prob), breaks = seq(from = -1e-10, to = 1+1e-10, length.out = nbin)) +
+  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  scale_fill_brewer(labels = c('0', rep('', nbin-4), '1'), name = 'P[Accept]', palette = "PuOr") +
+  scale_y_continuous(expand = c(0, 0)) + scale_x_continuous(expand = c(0, 0))
+g1; g2; g1 / g2
+```
+
+Determine the conditional probability of accepting the input x2 given x1.condition satisfies P[accept | x1 = x1.condition] >= P[accept | x1]_max and the inverse (x1 given x2)
+
+```{r}
+# Detrmining the ranges
+p.target1 = 0.5*max(Infer.x1$prob)
+# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
+x1.lims = range(filter(Infer.x1, prob > p.target1)$x1)
+# Adjust the extremes if they are not already at the extreme
+if(x1.lims[1] > min(Infer.x1$x1)){
+  pos = which.min(abs(Infer.x1$x1 - x1.lims[1]))
+  sub = Infer.x1[c(pos-1, pos), ]
+  mod = lm(x1 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target1))
+  x1.lims[1] = res
+  rm(mod)
+}
+if(x1.lims[2] < max(Infer.x1$x1)){
+  pos = which.min(abs(Infer.x1$x1 - x1.lims[2]))
+  sub = Infer.x1[c(pos, pos+1), ]
+  mod = lm(x1 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target1))
+  x1.lims[2] = res
+  rm(mod)
+}
+
+p.target2 = 0.5*max(Infer.x2$prob)
+# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
+x2.lims = range(filter(Infer.x2, prob > p.target2)$x2)
+# Adjust the extremes if they are not already at the extreme
+if(x2.lims[1] > min(Infer.x2$x2)){
+  pos = which.min(abs(Infer.x2$x2 - x2.lims[1]))
+  sub = Infer.x2[c(pos-1, pos), ]
+  mod = lm(x2 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target2))
+  x2.lims[1] = res
+  rm(mod)
+}
+if(x2.lims[2] < max(Infer.x2$x2)){
+  pos = which.min(abs(Infer.x2$x2 - x2.lims[2]))
+  sub = Infer.x2[c(pos, pos+1), ]
+  mod = lm(x2 ~ prob, data = sub)
+  res = predict(object = mod, newdata = data.frame(prob = p.target2))
+  x2.lims[2] = res
+  rm(mod)
+}
+
+# Marginalize over the specific region of x1
+resolution = 50; MCsamp = 1500
+x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+Infer.x2.x1 = data.frame(); Infer.x1.x2 = data.frame()
+
+for(i in 1:resolution){
+  # x2 | x1
+  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)))
+  res = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+  p.rad = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.theta, newdata = fill.frame, type = 'UK')
+  p.theta = 1 - pnorm(q = 0, mean = res$mean - 20, sd = res$sd)
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x2 = x2.seq[i], prob = mean(p.rad*p.theta)))
+  # x1 | x2
+  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)))
+  res = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+  p.rad = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  res = predict(object = mod.theta, newdata = fill.frame, type = 'UK')
+  p.theta = 1 - pnorm(q = 0, mean = res$mean - 20, sd = res$sd)
+  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x1 = x1.seq[i], prob = mean(p.rad*p.theta)))
+}
+
+```
+
+
+```{r}
+# Combine results for visualization
+Infer.x1$var = 'x1';    Infer.x1$cond = 'Single Input';          names(Infer.x1)[1] = 'x'
+Infer.x1.x2$var = 'x1'; Infer.x1.x2$cond = 'Conditional Input';  names(Infer.x1.x2)[1] = 'x'
+Infer.x2$var = 'x2';    Infer.x2$cond = 'Single Input';          names(Infer.x2)[1] = 'x'
+Infer.x2.x1$var = 'x2'; Infer.x2.x1$cond = 'Conditional Input';  names(Infer.x2.x1)[1] = 'x'
+Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1);
+
+ggplot(Infer.plt) +
+  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+  facet_wrap(var~., nrow = 2) + 
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), color = '') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+```
+
