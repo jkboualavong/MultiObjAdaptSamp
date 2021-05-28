@@ -96,7 +96,7 @@ names(des.start) = c('x1', 'x2')
 des.start$f1 = f1(x1 = des.start$x1, x2 = des.start$x2)
 des.start$f2 = f2(x1 = des.start$x1, x2 = des.start$x2)
 
-Pareto.budget = 10
+Pareto.budget = 20
 res.start = matrix(c(des.start$f1, des.start$f2), ncol = 2, nrow = nrow(des.start))
 des.start = matrix(c(des.start$x1, des.start$x2), ncol = 2, nrow = nrow(des.start))
 
@@ -195,7 +195,7 @@ dist = foreach(row = 1:nrow(GPar.all)) %dopar%
   n.dist(f1.norm = GPar.all$f1.norm[row], f2.norm = GPar.all$f2.norm[row], GPar.front = GPar.front)
 stopCluster(cl)
 GPar.all$dist = unlist(dist)
-rm(dist)
+rm(dist, cl)
 
 
 # Save the starting data to test multiple types of acceptance criteria
@@ -226,9 +226,10 @@ ggplot() +
   geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2), color = "black", method = 'loess', formula = (y~x)) +
   scale_color_manual(name = 'Objective', values = c('f1' = 'red', 'f2' = 'blue'), 
                      labels = c('f1' = expression('F'[1]), 'f2' = expression('F'[2]))) +
-  plot.present() + theme(legend.position = c(0.9, 0.85), legend.background = element_rect(fill = 'white')) +
+  theme_classic() + theme(legend.position = c(0.9, 0.85), legend.background = element_rect(fill = 'white')) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
 
+rm(con.fine)
 ```
 Plot the full dataset in the objective space
 ```{r Visualize GPareto and Normalization, fig.width=6, fig.height=8}
@@ -237,7 +238,7 @@ gplt.start = ggplot() +
   geom_point(data = filter(GPar.all, order == 0), mapping = aes(x = f1, y = f2, color = (order > 0))) +
   labs(x = "Function 1", y = "Function 2", color = "") +  
   scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
-  plot.present() + theme(legend.position = c(0.85, 0.2), legend.background = element_rect(fill = 'white', linetype = 1, color = 'black'), legend.title = element_blank())
+  theme_classic() + theme(legend.position = c(0.85, 0.2), legend.background = element_rect(fill = 'white', linetype = 1, color = 'black'), legend.title = element_blank())
 
 gplt.GPar = ggplot() +
   geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
@@ -245,7 +246,7 @@ gplt.GPar = ggplot() +
   geom_point(data = GPar.all, mapping = aes(x = f1, y = f2, color = (order > 0))) +
   labs(x = "Function 1", y = "Function 2", color = "") +  
   scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
-  plot.present() + theme(legend.position = c(0.85, 0.3), legend.background = element_rect(fill = 'white', linetype = 1, color = 'black'), legend.title = element_blank())
+  theme_classic() + theme(legend.position = c(0.85, 0.3), legend.background = element_rect(fill = 'white', linetype = 1, color = 'black'), legend.title = element_blank())
 
 gplt.Norm = ggplot() +
   geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
@@ -255,9 +256,10 @@ gplt.Norm = ggplot() +
   scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
   scale_x_continuous(breaks = c(seq(from = 0, to = 6, by = 2), 1)) +
   scale_y_continuous(breaks = c(seq(from = 0, to = 6, by = 2), 1)) +
-  plot.present() + theme(legend.position = c(0.85, 0.3), legend.background = element_rect(fill = 'white', linetype = 1, color = 'black'), legend.title = element_blank())
+  theme_classic() + theme(legend.position = c(0.85, 0.3), legend.background = element_rect(fill = 'white', linetype = 1, color = 'black'), legend.title = element_blank())
 
 gplt.start / gplt.GPar / gplt.Norm
+rm(gplt.start, gplt.GPar, gplt.Norm)
 ```
 
 ## II. Acceptable suboptimal performance (the "near-Pareto set")
@@ -374,9 +376,7 @@ rm(dist)
 
 # Store the initial mod.dist for later
 mod.dist.init = mod.dist
-```
 
-```{r Iteration 1: Plotting}
 # Grid of the relevant region to visualize
 lower = c(0, 0); upper = c(5,5)
 fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 50), 
@@ -390,6 +390,10 @@ fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
 fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+# Calculate the fraction of the search space that is uncertain
+start.perc = rep(0, nrow(fine.grid))
+start.perc[fine.grid$dist.p1 >= 0.25 & fine.grid$dist.p1 <= 0.75] = 1
+start.perc = mean(start.perc)
 
 ncolor = 7; pt.size = 2.5
 g1 = ggplot() +
@@ -443,17 +447,17 @@ g3 = ggplot() +
   guides(color=guide_legend(override.aes=list(fill=NA))) # Remove fill in the legend
 
 g1 + g2 + g3
-
+rm(g1, g2, g3)
 ```
 
-6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or the sample utility function maximum drops below a specified threshold, often relative to first maximum.
+6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or a stop criteria is met.
 
-The threshold is when the sample utility function's maximum falls below 5% of the sample utility of the first iteration.
+A typical stop criteria is based on the hypervolume fraction that is uncertain, i.e. an acceptance probability between 0.25 and 0.75. The fraction of the total input hypervolume space should be less than 0.5% of the total hypervolume space. This can be easily approximated by Monte Carlo sampling from the space and taking the fraction of points that are uncertain.
 
-```{r Iteration loop: Accept distance less than 1, message=FALSE, warning=FALSE}
+```{r Iteration loop: Accept distance less than 1 percent uncertainty cutoff, message=FALSE, warning=FALSE}
 budget = 20
-next.fit = start.fit
-while(next.fit > start.fit*0.05 & max(GPar.all$order) < budget+Pareto.budget){
+next.perc = start.perc
+while(next.perc > 0.005 & max(GPar.all$order) < budget+Pareto.budget){
   # Add the  new point to the dataset
   GPar.all = rbind(GPar.all, GPar.new)
   
@@ -488,14 +492,25 @@ while(next.fit > start.fit*0.05 & max(GPar.all$order) < budget+Pareto.budget){
   GPar.new$order = max(GPar.all$order) + 1
   
   # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
-  next.fit = max(GA.pred@fitness)
+  # next.fit = max(GA.pred@fitness)
+  
+  # Collect samples for the Monte Carlo. Sample >10^(2N) points for N dimensions
+  npt = 3000
+  samp = data.frame(x1 = runif(n = npt, min = min(x1.rng), max = max(x1.rng)), 
+                    x2 = runif(n = npt, min = min(x2.rng), max = max(x2.rng)))
+  res = predict(object = mod.dist, newdata = samp, type = 'UK')
+  samp$dist.p1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  next.perc = rep(0, nrow(samp))
+  next.perc[samp$dist.p1 >= 0.25 & samp$dist.p1 <= 0.75] = 1
+  next.perc = mean(next.perc)
+
 }
 
 GPar.all = rbind(GPar.all, GPar.new)
 # Save the data for later
 write.csv(GPar.all, 'GPar_Accept_Delta1.csv')
 
-# rm(budget, n.samples)
+# rm(budget, n.samples, res, samp, next.perc)
 ```
 
 ```{r}
@@ -1997,7 +2012,7 @@ ggplot() +
                                 'radan' = expression('r < 1, '*theta*' > 18'^'o'),
                                 'Pareto' = expression('Pareto Front')),
                      breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
-  plot.present() + theme(legend.position = c(0.85, 0.75)) + 
+  theme_classic() + theme(legend.position = c(0.85, 0.75)) + 
   scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 3.5)) +
   guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
 
