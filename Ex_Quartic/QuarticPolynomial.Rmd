@@ -345,7 +345,9 @@ fill.sample.obj = function(x, model){
   prob = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
 
   # Objective result
-  return(res$sd*prob*(1-prob))
+  return(res$sd*(prob*(1-prob) + 0.25/9)) 
+  # Offset on the uncertainty so that 0 uncertainty (p = 0 or 1) does not give a 0 result; 
+  # instead these points give a 1 order of magnitude less weight
 }
 
 ```
@@ -509,6 +511,7 @@ write.csv(GPar.all, 'GPar_Accept_Delta1.csv')
 ```
 
 ```{r}
+GPar.all = read.csv(file = 'GPar_Accept_Delta1.csv')
 # Plot results on top of the most recent Kriging model
 mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'dist')
 
@@ -902,7 +905,7 @@ fill.sample.obj2 = function(x, model.f1, model.f2){
   sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2)
 
   # Objective result
-  return(sd*prob*(1-prob))
+  return(sd*(prob*(1-prob) + 0.25/9))
 }
 
 # Search for the first point
@@ -1073,6 +1076,7 @@ rm(budget, n.samples)
 
 ```{r Treshold: Visualize Iterations}
 # Plot results on top of the most recent Kriging model
+GPar.all = read.csv(file = 'GPar_Accept_Threshold.csv')
 # Create a Kriging model for the distance
 mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f1.norm')
 mod.f2 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f2.norm')
@@ -1452,7 +1456,7 @@ fill.sample.obj3 = function(x, model.f1, model.f2){
   sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2) 
 
   # Objective result
-  return(sd*prob*(1-prob))
+  return(sd*(prob*(1-prob) + 0.25/9))
 }
 
 # Search for the first point
@@ -1616,11 +1620,12 @@ GPar.all = rbind(GPar.all, GPar.new)
 
 write.csv(GPar.all, 'GPar_Accept_Radius.csv')
 
-rm(budget, n.samples)
+# rm(budget)
 ```
 
 ```{r}
 # Plot results on top of the most recent Kriging model
+GPar.all = read.csv(file = 'GPar_Accept_Radius.csv')
 mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'rad')
 mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'theta')
 
@@ -1963,11 +1968,11 @@ mod.f1 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), out
 mod.f2 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), output.name = 'f2.norm')
 
 # Apply Kriging functions
-res = predict(object = mod.f1.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.f1, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$f1.mean = res$mean
 fine.grid$f1.sd = res$sd
 
-res = predict(object = mod.f2.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.f2, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
@@ -1981,10 +1986,10 @@ mod.rad = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), ou
 mod.ang = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), output.name = 'theta')
 
 # Apply Kriging functions
-res = predict(object = mod.rad.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.rad, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$rad.mean = res$mean
 fine.grid$rad.sd = res$sd
-res = predict(object = mod.ang.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 
@@ -2013,3 +2018,332 @@ ggplot() +
 
 
 ```
+Comparison to a continuous delta cutoff to see the dynamics.
+```{r}
+fine.grid$prob.delta05 = pnorm(q = 0, mean = fine.grid$dist.mean - 0.5, sd = fine.grid$dist.sd)
+fine.grid$prob.delta1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+fine.grid$prob.delta2 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
+fine.grid$prob.delta4 = pnorm(q = 0, mean = fine.grid$dist.mean - 4, sd = fine.grid$dist.sd)
+
+sep = 0.1
+
+# Compare to actual
+fine.grid$f1 = f1(x1 = fine.grid$x1, x2 = fine.grid$x2)
+fine.grid$f2 = f2(x1 = fine.grid$x1, x2 = fine.grid$x2)
+fine.grid = n.obj(GPar.data = fine.grid, GPar.front = GPar.front)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(fine.grid)) %dopar%
+  n.dist(f1.norm = fine.grid$f1.norm[row], f2.norm = fine.grid$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+# fine.grid$dist = unlist(dist)
+fine.grid$dist = NaN
+for(i in 1:nrow(fine.grid)){
+  if(length(dist[[i]]) > 0){fine.grid$dist[i] = dist[[i]]}
+}
+
+rm(dist)
+
+ggplot() +
+  # Boundaries: where the probability is 0.5
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta05, color = '0.5'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta1, color = '1'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta2, color = '2'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta4, color = '4'), breaks = c(0.5)) +
+  # Uncertainty around it: +/- the separation
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta05, color = '0.5'), 
+               breaks = c(-sep, sep)+0.5, linetype = 2) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta1, color = '1'), 
+               breaks = c(-sep, sep)+0.5, linetype = 2) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta2, color = '2'), 
+               breaks = c(-sep, sep)+0.5, linetype = 2) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta4, color = '4'), 
+               breaks = c(-sep, sep)+0.5, linetype = 2) +
+  # Pareto frontier
+  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black', 
+              level = 0.95, method = 'loess', formula = y~x) + 
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Normalized\nPareto Distance') +
+  theme_classic() + theme(legend.position = c(0.9, 0.5), 
+                          legend.background = element_rect(fill = alpha(colour = 'white', alpha = 0.5))) + 
+  scale_color_brewer(palette = 'BrBG') +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5))
+
+ggplot() +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(0.5, 1, 2, 4)) +
+  theme_classic() +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5))
+ggplot() +
+  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = (f1.norm < 1 & f2.norm < 1)))
+
+```
+
+# Pattern recognition?
+
+```{r}
+library(mclust)
+GPar.all = read.csv(file = 'GPar_all_start.csv')
+
+names(GPar.all)
+# Only want the input-output data: x1, x2, f1, f2
+# GPar.all = GPar.all[,c('x1', 'x2', 'f1', 'f2')]
+# names(GPar.all)
+cluster = Mclust(data = GPar.all[,c('x1', 'x2', 'f1', 'f2')], G = 2:5)
+
+# GPar.all = GPar.all[,c('x1', 'x2', 'f1', 'f2')]
+# names(GPar.all)
+cluster2d = Mclust(data = GPar.all[,c('x1', 'x2')], G = 2:5)
+
+```
+
+```{r}
+# cluster$BIC
+# cluster$G
+summary(cluster, parameters = TRUE)
+
+GPar.all$typ = cluster$classification
+GPar.all$typ2 = cluster2d$classification
+
+
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  # Pareto frontier
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), 
+              level = 0.95, formula = (y~x), method = 'loess') + 
+  # Clustering
+  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, shape = as.factor(typ)), size = 2.5) +
+
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Acceptance Criteria', shape = 'Cluster') +
+  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green', 'Pareto' = 'black'),
+                     labels = c('delta' = expression(delta*' < 1'), 'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
+                                'radan' = expression('r < 1, '*theta*' > 18'^'o'),
+                                'Pareto' = expression('Pareto Front')),
+                     breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
+  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
+
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  # Pareto frontier
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), 
+              level = 0.95, formula = (y~x), method = 'loess') + 
+  # Clustering
+  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, shape = as.factor(typ2)), size = 2.5) +
+
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Acceptance Criteria', shape = 'Cluster') +
+  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green', 'Pareto' = 'black'),
+                     labels = c('delta' = expression(delta*' < 1'), 'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
+                                'radan' = expression('r < 1, '*theta*' > 18'^'o'),
+                                'Pareto' = expression('Pareto Front')),
+                     breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
+  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
+```
+
+```{r}
+# Multivariate pdf of the 2nd cluster - the accepted cluster
+mu = cluster$parameters$mean[,1]
+Sigma = cluster$parameters$variance$sigma[,,1]
+
+mvnorm.cov.inv <- function(Sigma) {
+  # Eigendecomposition of covariance matrix
+  E <- eigen(Sigma)
+  Lambda.inv <- diag(E$values^-1)   # diagonal matrix
+  Q <- E$vectors
+  return(Q %*% Lambda.inv %*% t(Q))
+}
+#multivariate Gaussian pdf
+mvn.pdf.i <- function(xi, mu, Sigma){
+  1/sqrt( (2*pi)^length(xi) * det(Sigma) ) *
+  exp(-(1/2) * t(xi - mu) %*% mvnorm.cov.inv(Sigma)
+  %*% (xi - mu)  )
+}
+
+mu
+Sigma
+mvn.pdf.i(xi = mu, mu = mu, Sigma = Sigma)
+
+```
+
+Finegrid?
+```{r}
+# rng = seq(from = 0, to = 5, length.out = 50)
+# new.pt = expand.grid(rng, rng)
+# new.pt = data.frame(x1 = new.pt[,1],
+#                     x2 = new.pt[,2])
+# new.pt$f1 = f1(x1 = new.pt$x1, x2 = new.pt$x2)
+# new.pt$f2 = f2(x1 = new.pt$x1, x2 = new.pt$x2)
+# new.pt = rbind(new.pt, GPar.all[,c('x1', 'x2', 'f1', 'f2')])
+# cluster.fine = Mclust(data = new.pt, G = 1:15)
+# new.pt$typ = cluster.fine$classification
+# cluster.fine = Mclust(data = GPar.all[,c('x1', 'x2', 'f1', 'f2')], G = 1:15)
+# GPar.all$typ = cluster.fine$classification
+ggplot() +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta), color = 'black', 
+               breaks = c(0.5)) +
+  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = as.factor(typ))) #+
+
+ggplot() +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta), color = 'black', 
+               breaks = c(0.5)) +
+  geom_point(data = new.pt, mapping = aes(x = x1, y = x2, color = as.factor(typ))) #+
+
+```
+
+## Just categorize by output, then characterize the inputs?
+
+```{r}
+cluster.out = Mclust(data = GPar.all[,c('f1', 'f2')], G = 2:5)
+
+GPar.all$typ.out = cluster.out$classification
+sep = 0
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  # Pareto frontier
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), 
+              level = 0.95, formula = (y~x), method = 'loess') + 
+  # Clustering
+  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, shape = as.factor(typ.out)), size = 2.5) +
+
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Acceptance Criteria', shape = 'Cluster') +
+  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green', 'Pareto' = 'black'),
+                     labels = c('delta' = expression(delta*' < 1'), 'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
+                                'radan' = expression('r < 1, '*theta*' > 18'^'o'),
+                                'Pareto' = expression('Pareto Front')),
+                     breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
+  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
+
+
+```
+
+```{r}
+# Predict fine grid split
+res = predict(object = cluster.out, newdata = fine.grid[,c('f1', 'f2')])
+fine.grid$class = res$classification
+fine.grid$class[fine.grid$class != 2] = 0
+
+ggplot(fine.grid) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist, color = 'tru'),
+               breaks = c(1), size = 1.5) +
+  geom_contour(mapping = aes(x = x1, y = x2, z = class, color = 'GM')) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'GP'),
+               breaks = c(0.5), size = 1.5) +
+
+  # Clustering
+  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, shape = as.factor(typ.out)), size = 2.5) +
+  labs(x = 'x1', y = 'x2', shape = 'GM Class') +
+  scale_color_manual(name = '', values = c('tru' = 'black', 'GP' = 'red', 'GM' = 'maroon'), 
+                     labels = c('tru' = 'True boundary', 'GP' = 'Gaussian Process', 'GM' = 'Gaussiam Mixture'), 
+                     breaks = c('tru', 'GP', 'GM')) +
+  theme_classic()
+
+ggplot(fine.grid) +
+  geom_contour(data = fine.grid, mapping = aes(x = f1, y = f2, z = dist, color = 'tru'),
+               breaks = c(1), size = 1.5) +
+  geom_contour(mapping = aes(x = f1, y = f2, z = class, color = 'GM')) +
+  geom_contour(data = fine.grid, mapping = aes(x = f1, y = f2, z = prob.delta, color = 'GP'),
+               breaks = c(0.5), size = 1.5) +
+
+  # Clustering
+  geom_point(data = GPar.all, mapping = aes(x = f1, y = f2, shape = as.factor(typ.out)), size = 2.5) +
+  labs(x = 'x1', y = 'x2', shape = 'GM Class') +
+  scale_color_manual(name = '', values = c('tru' = 'black', 'GP' = 'red', 'GM' = 'maroon'), 
+                     labels = c('tru' = 'True boundary', 'GP' = 'Gaussian Process', 'GM' = 'Gaussiam Mixture'), 
+                     breaks = c('tru', 'GP', 'GM')) +
+  theme_classic() + ylim(c(0, 50))
+
+```
+
+Probability mass function marginalization?
+
+The GM uses the f1 and f2 as inputs rather than x1 and x2. Descriptive statistics on the x1 and x2?
+
+```{r}
+c(mean(fine.grid$x1[fine.grid$class == 2]), mean(fine.grid$x1[fine.grid$class != 2]), 
+  mean(fine.grid$x2[fine.grid$class == 2]), mean(fine.grid$x2[fine.grid$class != 2]))
+c(sd(fine.grid$x1[fine.grid$class == 2]), sd(fine.grid$x1[fine.grid$class != 2]),
+  sd(fine.grid$x2[fine.grid$class == 2]), sd(fine.grid$x2[fine.grid$class != 2]))
+
+ggplot(fine.grid) +
+  geom_density(mapping = aes(x = x1, color = as.factor(class)), linetype = 1) +
+  geom_density(mapping = aes(x = x2, color = as.factor(class)), linetype = 2)
+
+# Since uniform sampling is possible, Bayes rule is not useful. 
+# As the number of dimensions increases, this becomes less useful. 
+# eg. Estimates from the sampled points must be corrected:
+
+c(mean(GPar.all$x1[GPar.all$typ.out == 2]), mean(GPar.all$x1[GPar.all$typ.out != 2]), 
+  mean(GPar.all$x2[GPar.all$typ.out == 2]), mean(GPar.all$x2[GPar.all$typ.out != 2]))
+c(sd(GPar.all$x1[GPar.all$typ.out == 2]), sd(GPar.all$x1[GPar.all$typ.out != 2]),
+  sd(GPar.all$x2[GPar.all$typ.out == 2]), sd(GPar.all$x2[GPar.all$typ.out != 2]))
+
+ggplot(GPar.all) +
+  geom_density(mapping = aes(x = x1, color = as.factor(typ.out == 2)), linetype = 1) +
+  geom_density(mapping = aes(x = x2, color = as.factor(typ.out == 2)), linetype = 2)
+
+```
+
+```{r}
+# Applying Bayes rule to find the cdf
+# P[A|B] = P[B|A] P[A]/P[B]
+x.rng = seq(from = 0, to = 5, length.out = 100)
+cdf.x1 = c(); cdf.x2 = c()
+for(i in 1:length(x.rng)){
+  cdf.x1[i] = nrow(filter(GPar.all, x1 <= x.rng[i], typ.out == 2))/nrow(filter(GPar.all, typ.out == 2)) * 
+    nrow(filter(GPar.all, typ.out == 2))/nrow(GPar.all) *
+    nrow(GPar.all)/nrow(filter(GPar.all, x1 <= x.rng[i]))
+  cdf.x2[i] = nrow(filter(GPar.all, x2 <= x.rng[i], typ.out == 2))/nrow(filter(GPar.all, typ.out == 2)) * 
+    nrow(filter(GPar.all, typ.out == 2))/nrow(GPar.all) *
+    nrow(GPar.all)/nrow(filter(GPar.all, x2 <= x.rng[i]))
+}
+
+ggplot(data.frame(x.rng, cdf.x1, cdf.x2)) +
+  geom_path(mapping = aes(x = x.rng, y = cdf.x1)) +
+  geom_path(mapping = aes(x = x.rng, y = cdf.x2), color = 'red')
+# Estimate the derivative to get pdf
+ggplot(data.frame(x.rng = x.rng[2:100], cdf.x1 = cdf.x1[2:100] - cdf.x1[1:99], cdf.x2 = cdf.x2[2:100] - cdf.x2[1:99])) +
+  geom_smooth(mapping = aes(x = x.rng, y = cdf.x1), color = 'blue',
+              level = 0.1, formula = y~x, method = 'loess') +
+  geom_smooth(mapping = aes(x = x.rng, y = cdf.x2), color = 'red',
+              level = 0.1, formula = y~x, method = 'loess') +
+  labs(x = 'x', y = 'density')
+  # geom_point(mapping = aes(x = x.rng, y = cdf.x1), color = 'blue') +
+  # geom_point(mapping = aes(x = x.rng, y = cdf.x2), color = 'red')
+```
+Reapply Bayes rule with additional sampling? would require
+```{r}
+x.rng = seq(from = 0, to = 5, length.out = 100)
+cdf.x1 = c(); cdf.x2 = c()
+for(i in 1:length(x.rng)){
+  cdf.x1[i] = nrow(filter(GPar.all, x1 <= x.rng[i], typ.out == 2))/nrow(filter(GPar.all, typ.out == 2)) * 
+    nrow(filter(GPar.all, typ.out == 2))/nrow(GPar.all) *
+    nrow(GPar.all)/nrow(filter(GPar.all, x1 <= x.rng[i]))
+  cdf.x2[i] = nrow(filter(GPar.all, x2 <= x.rng[i], typ.out == 2))/nrow(filter(GPar.all, typ.out == 2)) * 
+    nrow(filter(GPar.all, typ.out == 2))/nrow(GPar.all) *
+    nrow(GPar.all)/nrow(filter(GPar.all, x2 <= x.rng[i]))
+}
+
+ggplot(data.frame(x.rng, cdf.x1, cdf.x2)) +
+  geom_path(mapping = aes(x = x.rng, y = cdf.x1)) +
+  geom_path(mapping = aes(x = x.rng, y = cdf.x2), color = 'red')
+# Estimate the derivative to get pdf
+ggplot(data.frame(x.rng = x.rng[2:100], cdf.x1 = cdf.x1[2:100] - cdf.x1[1:99], cdf.x2 = cdf.x2[2:100] - cdf.x2[1:99])) +
+  geom_smooth(mapping = aes(x = x.rng, y = cdf.x1), level = 0.1, formula = y~x, method = 'loess') +
+  geom_smooth(mapping = aes(x = x.rng, y = cdf.x2), color = 'red',
+              level = 0.1, formula = y~x, method = 'loess')
+
+```
+
