@@ -186,98 +186,27 @@ fill.sample.mod = function(GPar.data, input.name, output.name){
 
 Comparison of the boundaries to show how changing the acceptance criteria changes the shape of the near-Pareto set. Showcases the robustness to different selection criteria, indicating flexibility in the design objectives.
 
-```{r Comparison of Acceptably Optimal Sets}
+```{r GP: Comparison of Acceptance Criteria}
+## Loading
 # Load datasets for obtaining the refined probability functions
 data.delta = read.csv('GPar_Accept_Delta1.csv')
 data.cutof = read.csv('GPar_Accept_Threshold.csv')
 data.radan = read.csv('GPar_Accept_Radius.csv')
+# Load datasets prior to refinement
+data.paret = read.csv('GPar_all_start.csv')
+data.paret$rad = sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2)
 # Compare to the estimate of the Pareto frontier
 GPar.front = read.csv(file = 'GPar_fnt_start.csv')
 
 ##
-# Grid of the relevant region to visualize
-lower = c(0, 0); upper = c(5,5); grid.sz = 100 # Based on previous samples, no boundary is greater than 3.5
+# Grid of the relevant region to visualize and interpret
+lower = c(0, 0); upper = c(5,5); grid.sz = 100
 fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = grid.sz), 
                         x2 = seq(from = lower[2], to = upper[2], length.out = grid.sz))
 fine.grid = fine.grid[,1:2]
 names(fine.grid) = c('x1', 'x2')
 
-##
-# Normalized distance
-mod.dist = fill.sample.mod(GPar.data = data.delta, input.name = c('x1', 'x2'), output.name = 'dist')
-res = predict(object = mod.dist, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
-fine.grid$dist.mean = res$mean
-fine.grid$dist.sd = res$sd
-fine.grid$prob.delta = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
-
-##
-# Threshold cutoff
-mod.f1 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), output.name = 'f1.norm')
-mod.f2 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), output.name = 'f2.norm')
-
-# Apply Kriging functions
-res = predict(object = mod.f1, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
-fine.grid$f1.mean = res$mean
-fine.grid$f1.sd = res$sd
-
-res = predict(object = mod.f2, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
-fine.grid$f2.mean = res$mean
-fine.grid$f2.sd = res$sd
-
-# Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob.cutof = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
-
-##
-# Radius-angle
-mod.rad = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), output.name = 'rad')
-mod.ang = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), output.name = 'theta')
-
-# Apply Kriging functions
-res = predict(object = mod.rad, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
-fine.grid$rad.mean = res$mean
-fine.grid$rad.sd = res$sd
-res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
-fine.grid$ang.mean = res$mean
-fine.grid$ang.sd = res$sd
-
-# Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob.radan = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
-  (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
-
-sep = 0
-ggplot() +
-  # Boundaries: +/- some separation from 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), breaks = c(0.5 + sep, 0.5 - sep)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), breaks = c(0.5 + sep, 0.5 - sep)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), breaks = c(0.5 + sep, 0.5 - sep)) +
-  # Pareto frontier
-  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
-  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), level = 0.95) + 
-  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Acceptance Criteria') +
-  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green', 'Pareto' = 'black'),
-                     labels = c('delta' = expression(delta*' < 1'), 'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
-                                'radan' = expression('r < 1, '*theta*' > 18'^'o'),
-                                'Pareto' = expression('Pareto Front')),
-                     breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
-  theme_classic() + theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
-  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
-
-
-```
-
-A closer inspection of each GP-discovered boundary compared to the actual boundary based on fine-resolution function evaluation.
-
-```{r GP-True Comparison: Distance}
-fine.grid$prob.delta05 = pnorm(q = 0, mean = fine.grid$dist.mean - 0.5, sd = fine.grid$dist.sd)
-fine.grid$prob.delta1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
-fine.grid$prob.delta2 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
-fine.grid$prob.delta4 = pnorm(q = 0, mean = fine.grid$dist.mean - 4, sd = fine.grid$dist.sd)
-
-sep = 0.1
-
-# Compare to actual
+# Calculate the actual results
 fine.grid$f1 = f1(x1 = fine.grid$x1, x2 = fine.grid$x2)
 fine.grid$f2 = f2(x1 = fine.grid$x1, x2 = fine.grid$x2)
 fine.grid = n.obj(GPar.data = fine.grid, GPar.front = GPar.front)
@@ -287,21 +216,251 @@ for(row in 1:nrow(fine.grid)){
                                f2.norm = fine.grid$f2.norm[row], 
                                GPar.front = GPar.front)
 }
+fine.grid$ang = atan(fine.grid$f2.norm/fine.grid$f1.norm)*180/pi*10/9
+fine.grid$rad = sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2)
+
+##
+# Normalized distance
+fine.grid$delta = 0
+fine.grid$delta[fine.grid$dist <= 1] = 1
+
+mod.dist = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2'), output.name = 'dist')
+res = predict(object = mod.dist, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+fine.grid$prob.delta.pre = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+
+mod.dist = fill.sample.mod(GPar.data = data.delta, input.name = c('x1', 'x2'), output.name = 'dist')
+res = predict(object = mod.dist, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+fine.grid$prob.delta.post = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+
+##
+# Threshold cutoff
+fine.grid$cutof = 0
+fine.grid$cutof[fine.grid$f1.norm <= 1 & fine.grid$f2.norm <= 1] = 1
+
+mod.f1 = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2'), output.name = 'f1.norm')
+mod.f2 = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2'), output.name = 'f2.norm')
+res1 = predict(object = mod.f1, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res2 = predict(object = mod.f2, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$prob.cutof.pre = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+
+mod.f1 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), output.name = 'f1.norm')
+mod.f2 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), output.name = 'f2.norm')
+res1 = predict(object = mod.f1, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res2 = predict(object = mod.f2, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$prob.cutof.post = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+
+##
+# Radius-angle
+fine.grid$radan = 0
+fine.grid$radan[fine.grid$rad <= 1 & fine.grid$ang > 20] = 1
+
+mod.rad = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2'), output.name = 'rad')
+mod.ang = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2'), output.name = 'theta')
+res1 = predict(object = mod.rad, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res2 = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$prob.radan.pre = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+  (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+
+mod.rad = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), output.name = 'rad')
+mod.ang = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), output.name = 'theta')
+res1 = predict(object = mod.rad, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res2 = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+fine.grid$prob.radan.post = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+  (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+
+sep = 0
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.pre, color = 'delta'), 
+               breaks = c(sep, -sep)+0.5) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.pre, color = 'cutof'), 
+               breaks = c(sep, -sep)+0.5) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.pre, color = 'radan'), 
+               breaks = c(sep, -sep)+0.5) +
+  # Pareto frontier
+  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), level = 0.95) + 
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Acceptance Criteria', subtitle = 'Before Refinement') +
+  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green', 'Pareto' = 'black'),
+                     labels = c('delta' = expression(delta*' < 1'), 'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
+                                'radan' = expression('r < 1, '*theta*' > 18'^'o'),
+                                'Pareto' = expression('Pareto Front')),
+                     breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
+  theme_classic() + theme(legend.position = c(0.85, 0.75)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
+
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.post, color = 'delta'), 
+               breaks = c(sep, -sep)+0.5) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.post, color = 'cutof'), 
+               breaks = c(sep, -sep)+0.5) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.post, color = 'radan'), 
+               breaks = c(sep, -sep)+0.5) +
+  # Pareto frontier
+  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), level = 0.95) + 
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Acceptance Criteria', subtitle = 'After Refinement') +
+  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green', 'Pareto' = 'black'),
+                     labels = c('delta' = expression(delta*' < 1'), 'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
+                                'radan' = expression('r < 1, '*theta*' > 18'^'o'),
+                                'Pareto' = expression('Pareto Front')),
+                     breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
+  theme_classic() + theme(legend.position = c(0.85, 0.75)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
+
+```
+
+```{r GP: Comparison of sets to the real result}
+# Plotting variables
+sep = 0.25; trans = 0.25; ln.sz = 1.25
+
+## Distance
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.pre, 
+               fill = 'pre'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.post, 
+               fill = 'post'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.pre, color = 'pre'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.post, color = 'post'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = delta, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), x = expression('x'[2]), subtitle = 'Criteria: Pareto Distance', color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+## Threshold
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.pre, 
+               fill = 'pre'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.post, 
+               fill = 'post'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.pre, color = 'pre'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.post, color = 'post'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), x = expression('x'[2]), subtitle = 'Criteria: Objective function values', color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+## Radius-angle
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.pre, 
+               fill = 'pre'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.post, 
+               fill = 'post'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.pre, color = 'pre'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.post, color = 'post'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), x = expression('x'[2]), color = '',
+       subtitle = expression('Criteria: Utopia point distance and f'[1]*' Priority < 80%')) +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+
+```
+
+The error rate in the GP model estimate should account for the built-in uncertainty in the model. 
+The probability that the model gives the wrong result given the (x1, x2) coordinates is the probability that it accepts the point when it should reject it, or vice versa.
+Since all (x1, x2) are equally likely in this mathematical function, the error rate of the GP model is the average of these probabilities.
+There should be an evident decrease in the error rate between the pre- and post-refinement models.
+
+The uncertainty in the error rate is sqrt(p*(1-p)/N).
+
+```{r GP: Error rate}
+error.rate = data.frame(method = 'GP', source = rep(c('0pre', '1post'), 3),
+                        criteria = c('Pareto Distance', 'Pareto Distance', 
+                                     'Objective Cutoff', 'Objective Cutoff', 
+                                     'Utopia Distance + Priority', 'Utopia Distance + Priority'))
+error.rate$rate =
+  c(mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.pre,  filter(fine.grid, delta == 0)$prob.delta.pre)),
+    mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.post, filter(fine.grid, delta == 0)$prob.delta.post)),
+    mean(c(1 - filter(fine.grid, cutof == 1)$prob.cutof.pre,  filter(fine.grid, cutof == 0)$prob.cutof.pre)),
+    mean(c(1 - filter(fine.grid, cutof == 1)$prob.cutof.post, filter(fine.grid, cutof == 0)$prob.cutof.post)),
+    mean(c(1 - filter(fine.grid, radan == 1)$prob.radan.pre,  filter(fine.grid, radan == 0)$prob.radan.pre)),
+    mean(c(1 - filter(fine.grid, radan == 1)$prob.radan.post, filter(fine.grid, radan == 0)$prob.radan.post)))
+error.rate$err = sqrt(error.rate$rate*(1-error.rate$rate)/nrow(fine.grid))
+error.rate
+
+ggplot(error.rate) +
+  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
+  geom_errorbar(mapping = aes(x = source, y = rate, ymin = rate - err, ymax = rate + err), width = 0.5) +
+  facet_wrap(~criteria, scales = 'free') +
+  scale_x_discrete(breaks = c(), labels = c()) +
+  labs(x = '', y = 'Error Probability') +
+  scale_fill_discrete(labels = c('0pre' = 'Before', '1post' = 'After'), name = '') +
+  theme_classic() + scale_y_continuous(expand = c(0.01,0))
+
+```
+
+
+A closer inspection of each GP-discovered boundary compared to the actual boundary based on fine-resolution function evaluation.
+
+```{r GP-True Comparison: Distance}
+res = predict(object = mod.dist, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+fine.temp = fine.grid[,c('x1', 'x2')]
+fine.temp$prob.delta05 = pnorm(q = 0, mean = res$mean - 0.5, sd = res$sd)
+fine.temp$prob.delta1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+fine.temp$prob.delta2 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+fine.temp$prob.delta4 = pnorm(q = 0, mean = res$mean - 4, sd = res$sd)
+
+sep = 0.1
 
 g.est = ggplot() +
   # Boundaries: where the probability is 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta05, color = '0.5'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta1, color = '1'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta2, color = '2'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta4, color = '4'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta05, color = '0.5'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta1, color = '1'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta2, color = '2'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta4, color = '4'), breaks = c(0.5)) +
   # Uncertainty around it: +/- the separation
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta05, color = '0.5'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta05, color = '0.5'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta1, color = '1'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta1, color = '1'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta2, color = '2'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta2, color = '2'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta4, color = '4'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.delta4, color = '4'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
   # Pareto frontier
   geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
@@ -338,48 +497,45 @@ ggplot(Infer.plt) +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
-# Calculate the error rate
-error.rate = data.frame(error = 
-                        mean(c(1 - filter(fine.grid, dist <= 1)$prob.delta, 
-                               filter(fine.grid, dist > 1)$prob.delta)),
-                        method = 'GP',
-                        criteria = 'Pareto Distance')
-
 ```
 
 ```{r GP-True Comparison: Threshold}
-fine.grid$prob.ff05 = pnorm(q = 0, mean = fine.grid$f1.mean - 0.5, sd = fine.grid$f1.sd) *
-  pnorm(q = 0, mean = fine.grid$f2.mean - 0.5, sd = fine.grid$f2.sd)
-fine.grid$prob.ff1 = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
-fine.grid$prob.ff2 = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
-fine.grid$prob.ff4 = pnorm(q = 0, mean = fine.grid$f1.mean - 4, sd = fine.grid$f1.sd) *
-  pnorm(q = 0, mean = fine.grid$f2.mean - 4, sd = fine.grid$f2.sd)
+res1 = predict(object = mod.f1, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+res2 = predict(object = mod.f2, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+
+fine.temp = fine.grid[,c('x1', 'x2')]
+fine.temp$prob.ff05 = pnorm(q = 0, mean = res1$mean - 0.5, sd = res1$sd) *
+  pnorm(q = 0, mean = res2$mean - 0.5, sd = res2$sd)
+fine.temp$prob.ff1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+fine.temp$prob.ff2 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+  pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+fine.temp$prob.ff4 = pnorm(q = 0, mean = res1$mean - 4, sd = res1$sd) *
+  pnorm(q = 0, mean = res2$mean - 4, sd = res2$sd)
 
 sep = 0.1
 
 # Compare to actual: set up to pass/fail 
-fine.grid$ff05 = 0; fine.grid$ff1 = 0; fine.grid$ff2 = 0; fine.grid$ff4 = 0
-fine.grid$ff05[fine.grid$f1.norm <= 0.5 & fine.grid$f2.norm <= 0.5] = 1; 
-fine.grid$ff1[fine.grid$f1.norm <= 1 & fine.grid$f2.norm <= 1] = 1; 
-fine.grid$ff2[fine.grid$f1.norm <= 2 & fine.grid$f2.norm <= 2] = 1; 
-fine.grid$ff4[fine.grid$f1.norm <= 4 & fine.grid$f2.norm <= 4] = 1
+fine.temp$ff05 = 0; fine.temp$ff1 = 0; fine.temp$ff2 = 0; fine.temp$ff4 = 0
+fine.temp$ff05[fine.grid$f1.norm <= 0.5 & fine.grid$f2.norm <= 0.5] = 1; 
+fine.temp$ff1[fine.grid$f1.norm <= 1 & fine.grid$f2.norm <= 1] = 1; 
+fine.temp$ff2[fine.grid$f1.norm <= 2 & fine.grid$f2.norm <= 2] = 1; 
+fine.temp$ff4[fine.grid$f1.norm <= 4 & fine.grid$f2.norm <= 4] = 1
 
 g.est = ggplot() +
   # Boundaries: where the probability is 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff05, color = '0.5'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff1, color = '1'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff2, color = '2'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff4, color = '4'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff05, color = '0.5'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff1, color = '1'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff2, color = '2'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff4, color = '4'), breaks = c(0.5)) +
   # Uncertainty around it: +/- the separation
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff05, color = '0.5'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff05, color = '0.5'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff1, color = '1'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff1, color = '1'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff2, color = '2'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff2, color = '2'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.ff4, color = '4'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.ff4, color = '4'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
   # Pareto frontier
   geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
@@ -393,10 +549,10 @@ g.est = ggplot() +
   scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5))
 
 g.tru = ggplot() +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff05, color = '0.5'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1, color = '1'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff2, color = '2'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff4, color = '4'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = ff05, color = '0.5'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = ff1, color = '1'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = ff2, color = '2'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = ff4, color = '4'), breaks = c(0.5)) +
   # Pareto frontier
   geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
   geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black', 
@@ -417,41 +573,33 @@ ggplot(Infer.plt) +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
-# Error rate
-error.rate = rbind(error.rate, data.frame(error = 
-                        mean(c(1 - filter(fine.grid, ff1 == 1)$prob.cutof, 
-                               filter(fine.grid, ff1 == 0)$prob.cutof)),
-                        method = 'GP',
-                        criteria = 'Threshold'))
-
-
 ```
 
 ```{r GP-True Comparison: Radius}
-fine.grid$prob.r05 = pnorm(q = 0, mean = fine.grid$rad.mean - 0.5, sd = fine.grid$rad.sd)
-fine.grid$prob.r1 = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd)
-fine.grid$prob.r2 = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd)
-fine.grid$prob.r4 = pnorm(q = 0, mean = fine.grid$rad.mean - 4, sd = fine.grid$rad.sd) 
+res = predict(object = mod.rad, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
+
+fine.temp = fine.grid[,c('x1', 'x2')]
+fine.temp$prob.r05 = pnorm(q = 0, mean = res$mean - 0.5, sd = res$sd)
+fine.temp$prob.r1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+fine.temp$prob.r2 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+fine.temp$prob.r4 = pnorm(q = 0, mean = res$mean - 4, sd = res$sd) 
 
 sep = 0.1
 
-# Compare to actual: set up to pass/fail 
-fine.grid$rad = sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2)
-
 g.est = ggplot() +
   # Boundaries: where the probability is 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r05, color = '0.5'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r1, color = '1'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r2, color = '2'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r4, color = '4'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r05, color = '0.5'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r1, color = '1'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r2, color = '2'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r4, color = '4'), breaks = c(0.5)) +
   # Uncertainty around it: +/- the separation
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r05, color = '0.5'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r05, color = '0.5'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r1, color = '1'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r1, color = '1'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r2, color = '2'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r2, color = '2'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.r4, color = '4'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.r4, color = '4'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
   # Pareto frontier
   geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
@@ -483,31 +631,31 @@ g.est + g.tru
 ```
 
 ```{r GP-True Comparison: Angle}
+res = predict(object = mod.ang, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
 
-fine.grid$prob.t05 = pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd)
-fine.grid$prob.t1 = pnorm(q = 0, mean = fine.grid$ang.mean - 40, sd = fine.grid$ang.sd)
-fine.grid$prob.t2 = pnorm(q = 0, mean = fine.grid$ang.mean - 60, sd = fine.grid$ang.sd)
-fine.grid$prob.t4 = pnorm(q = 0, mean = fine.grid$ang.mean - 80, sd = fine.grid$ang.sd) 
+fine.temp = fine.grid[,c('x1', 'x2')]
+fine.temp$prob.t05 = pnorm(q = 0, mean = res$mean - 20, sd = res$sd)
+fine.temp$prob.t1 = pnorm(q = 0, mean = res$mean - 40, sd = res$sd)
+fine.temp$prob.t2 = pnorm(q = 0, mean = res$mean - 60, sd = res$sd)
+fine.temp$prob.t4 = pnorm(q = 0, mean = res$mean - 80, sd = res$sd) 
 
 sep = 0.1
 
-# Compare to actual: set up to pass/fail 
-fine.grid$ang = atan(fine.grid$f2.norm/fine.grid$f1.norm)*180/pi*10/9
 
 g.est = ggplot() +
   # Boundaries: where the probability is 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t05, color = '20%'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t1, color = '40%'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t2, color = '60%'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t4, color = '80%'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t05, color = '20%'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t1, color = '40%'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t2, color = '60%'), breaks = c(0.5)) +
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t4, color = '80%'), breaks = c(0.5)) +
   # Uncertainty around it: +/- the separation
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t05, color = '20%'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t05, color = '20%'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t1, color = '40%'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t1, color = '40%'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t2, color = '60%'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t2, color = '60%'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.t4, color = '80%'), 
+  geom_contour(data = fine.temp, mapping = aes(x = x1, y = x2, z = prob.t4, color = '80%'), 
                breaks = c(-sep, sep)+0.5, linetype = 2) +
   # Pareto frontier
   geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
@@ -537,37 +685,6 @@ g.est + g.tru
 ```
 
 ```{r GP-True Comparison: Radius-Theta}
-fine.grid$prob.r05 = pnorm(q = 0, mean = fine.grid$rad.mean - 0.5, sd = fine.grid$rad.sd)
-fine.grid$prob.r1 = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd)
-fine.grid$prob.r2 = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd)
-fine.grid$prob.r4 = pnorm(q = 0, mean = fine.grid$rad.mean - 4, sd = fine.grid$rad.sd) 
-
-sep = 0.1
-
-# Compare to actual: set up to pass/fail 
-fine.grid$radan = 0
-fine.grid$radan[fine.grid$rad <= 1 & fine.grid$ang > 20] = 1
-
-ggplot() +
-  # Boundaries: where the probability is 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'est'), 
-               breaks = c(0.5)) +
-  # Uncertainty around it: +/- the separation
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'est'), 
-               breaks = c(0.5 + sep, 0.5 - sep), linetype = 2) +
-  # Actual result
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan, color = 'tru'), 
-               breaks = c(0.5)) +
-  # Pareto frontier
-  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
-  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black', 
-              level = 0.95, method = 'loess', formula = y~x) + 
-  labs(x = expression('x'[1]), y = expression('x'[2]), color = 'Boundaries') +
-  theme_classic() + theme(legend.position = c(0.9, 0.5), 
-                          legend.background = element_rect(fill = alpha(colour = 'white', alpha = 0.5))) + 
-  scale_color_manual(values = c('est' = 'red', 'tru' = 'black'), labels = c('est' = 'Estimate', 'tru' = 'True')) +
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5))
-
 Infer.plt = read.csv('Marginals_Radius.csv')
 ggplot(Infer.plt) +
   geom_path(mapping = aes(x = x, y = prob, color = as.factor(ncond))) +
@@ -577,15 +694,9 @@ ggplot(Infer.plt) +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
-# Error rate
-error.rate = rbind(error.rate, data.frame(error = 
-                        mean(c(1 - filter(fine.grid, radan == 1)$prob.radan, 
-                               filter(fine.grid, radan == 0)$prob.radan)),
-                        method = 'GP',
-                        criteria = 'Utopia + Priority'))
-
 ```
 Compared to the actual results, the model estimates match very well, even for boundaries that were farther or closer cutoffs and therefore not refined explicitly. 
+Accounting for the uncertainty shows that the error is within the 50% confidence interval.
 The worst performance is in estimating the distance to the Pareto frontier and the relative prioritization, which are the criteria where there are nonlinear calculations on the function values of f1 and f2 to determine. 
 This is likely because the GP model for the quartic polynomials are comparatively simple and easy to converge, but the nonlinear combinations of them to obtain the angle or Pareto distance are harder to tune the hyper-parameters for.
 
@@ -596,97 +707,109 @@ Additional samples may be necessary to refine the results, but there is no estab
 
 SVM methods require existing labels for the points; in this case, the labels are whether or not the point meets the same three selection criteria as tested with the new GP method.
 
+```{r SVM: Functions}
+# Create a function to output the plot of all 4 models compared to the real result
+SVM.input = function(fine.input, mod.rad, mod.lin, mod.pol, mod.sig, tit){
+  # Fine input has the variables x1, x2, and cat
+  res = predict(object = mod.lin, newdata = fine.input[, c('x1', 'x2')])
+  fine.input$res = res
+  g.lin = ggplot(fine.input) +
+    geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
+    geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
+    labs(subtitle = 'Linear', x = expression('x'[1]), y = expression('x'[2])) + 
+    guides(color = FALSE)
+  res = predict(object = mod.rad, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$res = res
+  g.rad = ggplot() +
+    geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
+    geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
+    labs(subtitle = 'Radial', x = expression('x'[1]), y = expression('x'[2]), title = tit) + guides(color = FALSE)
+  res = predict(object = mod.pol, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$res = res
+  g.pol = ggplot() +
+    geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
+    geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
+    labs(subtitle = 'Polynomial', x = expression('x'[1]), y = expression('x'[2])) + guides(color = FALSE)
+  res = predict(object = mod.sig, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$res = res
+  g.sig = ggplot() +
+    geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
+    geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
+    labs(subtitle = 'Sigmoid', x = expression('x'[1]), y = expression('x'[2])) + guides(color = FALSE)
+  return((g.rad + g.lin) / (g.pol + g.sig))
+}
+
+SVM.mod.all = function(input.data){
+  # Given input data, find all 4 default models and return as a list
+  fit.rad = svm(as.factor(cat) ~ x1*x2, data = input.data[,c('x1', 'x2', 'cat')], 
+            scale = FALSE, kernel = "radial", cost = 5)
+  fit.lin = svm(as.factor(cat) ~ x1*x2, data = input.data[,c('x1', 'x2', 'cat')], 
+            scale = FALSE, kernel = "linear", cost = 5)
+  fit.pol = svm(as.factor(cat) ~ x1*x2, data = input.data[,c('x1', 'x2', 'cat')], 
+            scale = FALSE, kernel = "polynomial", cost = 5)
+  fit.sig = svm(as.factor(cat) ~ x1*x2, data = input.data[,c('x1', 'x2', 'cat')], 
+            scale = FALSE, kernel = "sigmoid", cost = 5)
+  return(list(rad = fit.rad, lin = fit.lin, pol = fit.pol, sig = fit.sig))
+}
+
+SVM.err = function(fine.input, mod.list){
+  # Fine grid has the real result; mod.list is the 4 different SVM kernels
+  fine.input$rad = predict(object = mod.list$rad, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$lin = predict(object = mod.list$lin, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$pol = predict(object = mod.list$pol, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$sig = predict(object = mod.list$sig, newdata = fine.input[,c('x1', 'x2')])
+  
+  # Error rate
+  rad = nrow(filter(fine.input, cat == 0, rad == 1)) + nrow(filter(fine.input, cat == 1, rad == 0))
+  lin = nrow(filter(fine.input, cat == 0, lin == 1)) + nrow(filter(fine.input, cat == 1, lin == 0))
+  pol = nrow(filter(fine.input, cat == 0, pol == 1)) + nrow(filter(fine.input, cat == 1, pol == 0))
+  sig = nrow(filter(fine.input, cat == 0, sig == 1)) + nrow(filter(fine.input, cat == 1, sig == 0))
+  rate = c(rad, lin, pol, sig)/nrow(fine.input)
+  # Uncertainty
+  err = sqrt(rate*(1-rate)/nrow(fine.input))
+  
+  return(data.frame(method = c('SVM-rad', 'SVM-lin', 'SVM-pol', 'SVM-sig'), rate, err))
+}
+
+```
+
+
 ```{r SVM: Distance}
 GPar.all = read.csv(file = 'GPar_all_start.csv')
+data.delta = read.csv('GPar_Accept_Delta1.csv')
 
-# names(GPar.all)
-GPar.all$cat = 0;
+# Define acceptance
+GPar.all$cat = 0; data.delta$cat = 0; fine.grid$cat = 0
 GPar.all$cat[GPar.all$dist <= 1] = 1
-fit.rad = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "radial", cost = 5)
-fit.lin = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "linear", cost = 5)
-fit.pol = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "polynomia", cost = 5)
-fit.sig = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "sigmoid", cost = 5)
+data.delta$cat[data.delta$dist <= 1] = 1
+fine.grid$cat[fine.grid$dist <= 1] = 1
 
-res = predict(object = fit.rad, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.rad = res
-res = predict(object = fit.lin, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.lin = res
-res = predict(object = fit.pol, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.pol = res
-res = predict(object = fit.sig, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.sig = res
-sz = 1.5
-g.rad = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.rad, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Radial') + guides(color = FALSE, shape = FALSE)
-g.lin = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.lin, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Linear') + guides(color = FALSE, shape = FALSE)
-g.pol = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.pol, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Polynomial') + guides(color = FALSE, shape = FALSE)
-g.sig = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.sig, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Sigmoid', shape = 'True Class', color = 'SVM Class')
+mod.pre = SVM.mod.all(input.data = GPar.all)
 
-(g.rad + g.lin) / (g.pol + g.sig)
+SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
+          mod.rad = mod.pre$rad, mod.lin = mod.pre$lin, 
+          mod.pol = mod.pre$pol, mod.sig = mod.pre$sig,
+          tit = 'Pareto Distance, Pre-Refinement')
 
-res = predict(object = fit.lin, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.lin = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Linear') + guides(color = FALSE)
-res = predict(object = fit.rad, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.rad = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Radial') + guides(color = FALSE)
-res = predict(object = fit.pol, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.pol = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Polynomial') + guides(color = FALSE)
-res = predict(object = fit.sig, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.sig = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), breaks = c(1)) +
-  labs(subtitle = 'Sigmoid') + guides(color = FALSE)
+mod.post = SVM.mod.all(input.data = data.delta)
 
-(g.rad + g.lin) / (g.pol + g.sig)
+SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
+          mod.rad = mod.post$rad, mod.lin = mod.post$lin, 
+          mod.pol = mod.post$pol, mod.sig = mod.post$sig,
+          tit = 'Pareto Distance, Post-Refinement')
 
-# The only good quality fit is the radial and polynomial kernels. Find the error rates
-res = predict(object = fit.rad, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-error.rate = rbind(error.rate, data.frame(error =
-                        nrow(filter(fine.grid, (dist <= 1 & res == 0) | (dist > 1 & res == 1) )) /
-                          nrow(fine.grid),
-                        method = 'SVM-Radial',
-                        criteria = 'Pareto Distance'))
+err.pre = SVM.err(fine.input = fine.grid, mod.list = mod.pre)
+err.pre$source = '0pre'; err.pre$criteria = 'Pareto Distance'
+err.post = SVM.err(fine.input = fine.grid, mod.list = mod.post)
+err.post$source = '1post'; err.post$criteria = 'Pareto Distance'
 
-res = predict(object = fit.pol, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-error.rate = rbind(error.rate, data.frame(error =
-                        nrow(filter(fine.grid, (dist <= 1 & res == 0) | (dist > 1 & res == 1) )) /
-                          nrow(fine.grid),
-                        method = 'SVM-Polynomial',
-                        criteria = 'Pareto Distance'))
+err.svm.dist = rbind(err.pre, err.post)
+err.svm.dist
 
+ggplot(err.svm.dist) +
+  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
+  facet_wrap(~method, nrow = 1)
+rm(err.pre, err.post)
 
 ```
 Graphically, the selection of the kernel form has a large impact on the quality of the result. 
@@ -699,6 +822,11 @@ The polynomial kernel model does not have this issue at the cost of accuracy.
 The black-box function is not clearly invertible, making describing the boundary of what is accepted/rejected difficult.
 Using a Monte Carlo method to marginalize to find the probability given only a single input variable first.
 
+```{r SVM: Distance marginals}
+
+```
+
+
 ```{r}
 x.rng = seq(from = 0, to = 5, length.out = 50)
 svm.margin = data.frame()
@@ -706,15 +834,15 @@ nsamp = 2000
 for(x in x.rng){
   # x1 marginal
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
   # x1 marginal
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
 }
 
@@ -737,17 +865,17 @@ x2.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method =
 for(x in x.rng){
   # x1 marginal
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.pol.rng), max = max(x2.pol.rng)))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.rad.rng), max = max(x2.rad.rng)))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
   # x1 marginal
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.pol.rng), max = max(x1.pol.rng)))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.rad.rng), max = max(x1.rad.rng)))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
 }
 
@@ -770,98 +898,43 @@ Repeating for the f1 and f2 cutoffs.
 
 ```{r SVM: Threshold}
 GPar.all = read.csv(file = 'GPar_all_start.csv')
+data.cutof = read.csv('GPar_Accept_Threshold.csv')
 
-# names(GPar.all)
-GPar.all$cat = 0;
+# Define acceptance
+GPar.all$cat = 0; data.cutof$cat = 0; fine.grid$cat = 0
 GPar.all$cat[GPar.all$f1.norm <= 1 & GPar.all$f2.norm <= 1] = 1
-fit.rad = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "radial", cost = 5)
-fit.lin = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "linear", cost = 5)
-fit.pol = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "polynomia", cost = 5)
-fit.sig = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "sigmoid", cost = 5)
+data.cutof$cat[data.cutof$f1.norm <= 1 & data.cutof$f2.norm <= 1] = 1
+fine.grid$cat[fine.grid$f1.norm <= 1 & fine.grid$f2.norm <= 1] = 1
 
-res = predict(object = fit.rad, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.rad = res
-res = predict(object = fit.lin, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.lin = res
-res = predict(object = fit.pol, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.pol = res
-res = predict(object = fit.sig, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.sig = res
-sz = 1.5
-g.rad = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.rad, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Radial') + guides(color = FALSE, shape = FALSE)
-g.lin = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.lin, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Linear') + guides(color = FALSE, shape = FALSE)
-g.pol = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.pol, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Polynomial') + guides(color = FALSE, shape = FALSE)
-g.sig = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.sig, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Sigmoid', shape = 'True Class', color = 'SVM Class')
+mod.pre = SVM.mod.all(input.data = GPar.all)
 
-(g.rad + g.lin) / (g.pol + g.sig)
+SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
+          mod.rad = mod.pre$rad, mod.lin = mod.pre$lin, 
+          mod.pol = mod.pre$pol, mod.sig = mod.pre$sig,
+          tit = 'Pareto Distance, Pre-Refinement')
 
-res = predict(object = fit.lin, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.lin = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Linear') + guides(color = FALSE)
-res = predict(object = fit.rad, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.rad = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Radial') + guides(color = FALSE)
-res = predict(object = fit.pol, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.pol = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Polynomial') + guides(color = FALSE)
-res = predict(object = fit.sig, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.sig = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), breaks = c(1)) +
-  labs(subtitle = 'Sigmoid') + guides(color = FALSE)
+mod.post = SVM.mod.all(input.data = data.delta)
 
-(g.rad + g.lin) / (g.pol + g.sig)
+SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
+          mod.rad = mod.post$rad, mod.lin = mod.post$lin, 
+          mod.pol = mod.post$pol, mod.sig = mod.post$sig,
+          tit = 'Pareto Distance, Post-Refinement')
 
-# The only good quality fit is the radial and polynomial kernels. Find the error rates
-res = predict(object = fit.rad, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-error.rate = rbind(error.rate, data.frame(error =
-                        nrow(filter(fine.grid, (ff1 == 1 & res == 0) | 
-                                      (ff1 == 0 & res == 1) )) /
-                          nrow(fine.grid),
-                        method = 'SVM-Radial',
-                        criteria = 'Threshold'))
+err.pre = SVM.err(fine.input = fine.grid, mod.list = mod.pre)
+err.pre$source = '0pre'; err.pre$criteria = 'Objective Cutoff'
+err.post = SVM.err(fine.input = fine.grid, mod.list = mod.post)
+err.post$source = '1post'; err.post$criteria = 'Objective Cutoff'
 
-res = predict(object = fit.pol, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-error.rate = rbind(error.rate, data.frame(error =
-                        nrow(filter(fine.grid, (ff1 == 1 & res == 0) | 
-                                      (ff1 == 0 & res == 1) )) /
-                          nrow(fine.grid),
-                        method = 'SVM-Polynomial',
-                        criteria = 'Threshold'))
+err.svm.threshold = rbind(err.pre, err.post)
+err.svm.threshold
+
+ggplot(err.svm.threshold) +
+  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
+  facet_wrap(~method, nrow = 1)
+rm(err.pre, err.post)
 
 ```
+
 ```{r}
 x.rng = seq(from = 0, to = 5, length.out = 50)
 svm.margin = data.frame()
@@ -869,15 +942,15 @@ nsamp = 2000
 for(x in x.rng){
   # x1 marginal
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
   # x1 marginal
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
 }
 
@@ -900,17 +973,17 @@ x2.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method =
 for(x in x.rng){
   # x1 marginal
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.pol.rng), max = max(x2.pol.rng)))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.rad.rng), max = max(x2.rad.rng)))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
   # x1 marginal
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.pol.rng), max = max(x1.pol.rng)))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.rad.rng), max = max(x1.rad.rng)))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
 }
 
@@ -930,99 +1003,43 @@ Graphically, the results are the same as the distance cutoff: the polynomial and
 Repeat for radius-angle cutoff
 ```{r SVM: Radius and Priority}
 GPar.all = read.csv(file = 'GPar_all_start.csv')
+data.radan = read.csv('GPar_Accept_Radius.csv')
 
-# names(GPar.all)
-GPar.all$cat = 0;
+# Define acceptance
+GPar.all$cat = 0; data.radan$cat = 0; fine.grid$cat = 0
 GPar.all$cat[sqrt(GPar.all$f1.norm^2 + GPar.all$f2.norm^2) <= 1 & GPar.all$theta > 20] = 1
-fit.rad = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "radial", cost = 5)
-fit.lin = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "linear", cost = 5)
-fit.pol = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "polynomia", cost = 5)
-fit.sig = svm(as.factor(cat) ~ x1*x2, data = GPar.all[,c('x1', 'x2', 'cat')], 
-          scale = FALSE, kernel = "sigmoid", cost = 5)
+data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 1 & data.radan$theta > 20] = 1
+fine.grid$cat[sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2) <= 1 & fine.grid$ang > 20] = 1
 
-res = predict(object = fit.rad, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.rad = res
-res = predict(object = fit.lin, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.lin = res
-res = predict(object = fit.pol, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.pol = res
-res = predict(object = fit.sig, newdata = GPar.all[,c('x1', 'x2')])
-GPar.all$fit.sig = res
-sz = 1.5
-g.rad = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.rad, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(1)) +
-  labs(subtitle = 'Radial') + guides(color = FALSE, shape = FALSE)
-g.lin = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.lin, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(1)) +
-  labs(subtitle = 'Linear') + guides(color = FALSE, shape = FALSE)
-g.pol = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.pol, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(1)) +
-  labs(subtitle = 'Polynomial') + guides(color = FALSE, shape = FALSE)
-g.sig = ggplot() + 
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = fit.sig, shape = as.factor(cat)),
-             size = sz) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(1)) +
-  labs(subtitle = 'Sigmoid', shape = 'True Class', color = 'SVM Class')
+mod.pre = SVM.mod.all(input.data = GPar.all)
 
-(g.rad + g.lin) / (g.pol + g.sig)
+SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
+          mod.rad = mod.pre$rad, mod.lin = mod.pre$lin, 
+          mod.pol = mod.pre$pol, mod.sig = mod.pre$sig,
+          tit = 'Utopia Distance and Priority, Pre-Refinement')
 
-res = predict(object = fit.lin, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.lin = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(0.5)) +
-  labs(subtitle = 'Linear') + guides(color = FALSE)
-res = predict(object = fit.rad, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.rad = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(0.5)) +
-  labs(subtitle = 'Radial') + guides(color = FALSE)
-res = predict(object = fit.pol, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.pol = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(0.5)) +
-  labs(subtitle = 'Polynomial') + guides(color = FALSE)
-res = predict(object = fit.sig, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-g.sig = ggplot() +
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = res)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan), breaks = c(0.5)) +
-  labs(subtitle = 'Sigmoid') + guides(color = FALSE)
+mod.post = SVM.mod.all(input.data = data.delta)
 
-(g.rad + g.lin) / (g.pol + g.sig)
+SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
+          mod.rad = mod.post$rad, mod.lin = mod.post$lin, 
+          mod.pol = mod.post$pol, mod.sig = mod.post$sig,
+          tit = 'Utopia Distance and Priority, Post-Refinement')
 
-# The only good quality fit is the radial and polynomial kernels. Find the error rates
-res = predict(object = fit.rad, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-error.rate = rbind(error.rate, data.frame(error =
-                        nrow(filter(fine.grid, (radan == 1 & res == 0) | 
-                                      (radan == 0 & res == 1) )) /
-                          nrow(fine.grid),
-                        method = 'SVM-Radial',
-                        criteria = 'Utopia + Priority'))
+err.pre = SVM.err(fine.input = fine.grid, mod.list = mod.pre)
+err.pre$source = '0pre'; err.pre$criteria = 'Utopia Distance + Priority'
+err.post = SVM.err(fine.input = fine.grid, mod.list = mod.post)
+err.post$source = '1post'; err.post$criteria = 'Utopia Distance + Priority'
 
-res = predict(object = fit.pol, newdata = fine.grid[,c('x1', 'x2')])
-fine.grid$res = res
-error.rate = rbind(error.rate, data.frame(error =
-                        nrow(filter(fine.grid, (radan == 1 & res == 0) | 
-                                      (radan == 0 & res == 1) )) /
-                          nrow(fine.grid),
-                        method = 'SVM-Polynomial',
-                        criteria = 'Utopia + Priority'))
+err.svm.radan = rbind(err.pre, err.post)
+err.svm.radan
 
+ggplot(err.svm.radan) +
+  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
+  facet_wrap(~method, nrow = 1)
+rm(err.pre, err.post)
 
 ```
+
 ```{r}
 x.rng = seq(from = 0, to = 5, length.out = 50)
 svm.margin = data.frame()
@@ -1030,15 +1047,15 @@ nsamp = 2000
 for(x in x.rng){
   # x1 marginal
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
   # x1 marginal
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
 }
 
@@ -1061,17 +1078,17 @@ x2.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method =
 for(x in x.rng){
   # x1 marginal
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.pol.rng), max = max(x2.pol.rng)))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
   temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.rad.rng), max = max(x2.rad.rng)))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
   # x1 marginal
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.pol.rng), max = max(x1.pol.rng)))
-  res = as.numeric(predict(object = fit.pol, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
   temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.rad.rng), max = max(x1.rad.rng)))
-  res = as.numeric(predict(object = fit.rad, newdata = temp.frame))-1
+  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
   svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
 }
 
@@ -1348,20 +1365,38 @@ The estimated probability of being optimal (Pareto front group or the near-Paret
 
 # Comaprison of method accuracies
 
-```{r}
-error.rate
-ggplot(error.rate) +
-  geom_col(mapping = aes(x = method, y = error, fill = method)) +
-  facet_grid(~criteria) +
-  labs(x = '', y = 'Error Rate', fill = 'Model Method') +
-  scale_x_discrete(labels = c(), breaks = c()) + scale_y_continuous(expand = c(0, 0))
+The error rate can only be compared between the the GP and SVM methods because the accuracy is dependent on the selection criteria that were set.
 
-p = aov(error~method*criteria, error.rate)
-summary(p)
+```{r Error comparison}
+dat = rbind(error.rate, err.svm.dist, err.svm.radan, err.svm.threshold)
+dat$criteria[dat$criteria == 'Utopia Distance + Priority'] = 'Distance + Priority'
+
+ggplot(dat) +
+  geom_col(mapping = aes(x = source, fill = source, y = rate)) +
+  geom_errorbar(mapping = aes(x = source, y = rate, ymax = rate+err, ymin = rate-err), width = 0.5) +
+  facet_grid(criteria~method, switch = 'x') +
+  scale_x_discrete(breaks = c()) + scale_y_continuous(expand = c(0.01, 0)) +
+  scale_fill_discrete(labels = c('0pre' = 'Before', '1post' = 'After'), breaks = c('0pre', '1post')) +
+  labs(x = '', y = 'Error Probability', fill = 'Refined')
+ggplot(filter(dat, method != 'SVM-sig')) +
+  geom_col(mapping = aes(x = source, fill = source, y = rate)) +
+  geom_errorbar(mapping = aes(x = source, y = rate, ymax = rate+err, ymin = rate-err), width = 0.5) +
+  facet_grid(criteria~method, switch = 'x') +
+  scale_x_discrete(breaks = c()) + scale_y_continuous(expand = c(0.01, 0)) +
+  scale_fill_discrete(labels = c('0pre' = 'Before', '1post' = 'After'), breaks = c('0pre', '1post')) +
+  labs(x = '', y = 'Error Probability', fill = 'Refined')
+
+rm(dat)
 
 ```
 
+The iterative refinement process does not help the accuracy of the SVM models; in many cases, the additional training data leads to worse fitting. In general, the GP method for determining whether the point meets the selection criteria is more accurate, particularly after refinement with additional training data. The models could become more comparable with further tuning of free variables of the kernel functions (eg. changing the power of the polynomial kernel), but for systems where calculating the exact value is time-consuming, obtaining training-testing data to tune that variable may be difficult.
 
+A qualitative comparison can be made among the methods' probability outputs, as well as the true marginal estimate.
+
+```{r}
+
+```
 
 
 # Overall:
