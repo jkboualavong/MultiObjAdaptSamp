@@ -507,7 +507,6 @@ GPar.all = rbind(GPar.all, GPar.new)
 # Save the data for later
 write.csv(GPar.all, 'GPar_Accept_Delta1.csv')
 
-# rm(budget, n.samples)
 ```
 
 
