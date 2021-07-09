@@ -251,34 +251,92 @@ con.fine$f1 = res[,1]; con.fine$f2 = res[,2]
 ggplot() +
   geom_point(data = con.fine, 
                       mapping = aes(x = x1, y = x2, color = f2)) +
-  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[2])) +
   theme_classic() + facet_wrap(~x3) + 
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
 
 ggplot() +
   geom_point(data = con.fine, 
                       mapping = aes(x = x1, y = x2, color = f1)) +
-  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[1])) +
   theme_classic() + facet_wrap(~x3) + 
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
 
 rm(res, con.fine, x1.rng, x2.rng, x3.rng)
 ```
-Plot the full dataset in the objective space
-```{r Visualize GPareto and Normalization, fig.width=6, fig.height=8}
-gplt.start = ggplot() +
-  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
-  geom_point(data = filter(GPar.all, order == 0), mapping = aes(x = f1, y = f2, color = (order > 0), 
-                                                                shape = (dist == 0)), size = 2) +
-  labs(x = "Function 1", y = "Function 2", color = "") +  
-  scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
-  scale_shape_discrete(labels = c('Pareto frontier'), breaks = c(TRUE)) +
-  guides(color = FALSE, shape = FALSE) +
-  theme_classic() + theme(legend.position = c(0.85, 0.85), legend.background = element_rect(fill = 'white'), 
-                          legend.title = element_blank())
 
+Three different selection criteria are to be tested: (1) normalized distance to the Pareto frontier, (2) independent threshold values of the two objective functions, (3) distance to the utopia point and relative prioritization. The hypervolume of the accepted region in the input space should be at least 5% of the total hypervolume. This requires some tuning to decide on what the selection criteria should be so a sufficiently large region is accepted.
+
+This 5% cutoff will be assessed by Monte Carlo sampling, combined with a coarse 3x3 resolution grid to ensure all regions are sampled.
+
+```{r Identifying cutoff criteria}
+# Set up the grid
+bounds = seq(from = 0, to = 1, length.out = 4)
+# Collect an equal number of points from each grid section
+nsamp = 5e2
+test.samp = data.frame()
+for(i in 1:3){
+  for(j in 1:3){
+    for(k in 1:3){
+      next.grid = data.frame(x1 = runif(n = nsamp, min = bounds[i], max = bounds[i+1]),
+                             x2 = runif(n = nsamp, min = bounds[j], max = bounds[j+1]),
+                             x3 = runif(n = nsamp, min = bounds[k], max = bounds[k+1]))
+      test.samp = rbind(test.samp, next.grid)
+    }
+  }
+}
+
+# Calculate the function evaluations
+res = ZDT4.mod(x = as.matrix(test.samp[,c('x1', 'x2', 'x3')]))
+test.samp$f1 = res[,1]; test.samp$f2 = res[,2]
+# Normalized variables
+test.samp = n.obj(GPar.data = test.samp, GPar.front = GPar.front)
+
+# Calculate theta according to the angle. Remap from [0, pi/2] to [0, 100] for simplicity
+test.samp$theta = atan(test.samp$f2.norm/test.samp$f1.norm)*180/pi*10/9
+
+# Distance to the Pareto front
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(test.samp)) %dopar%
+  n.dist(f1.norm = test.samp$f1.norm[row], f2.norm = test.samp$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+test.samp$dist = unlist(dist)
+rm(dist, cl)
+
+# Fraction meeting dist < specific value
+dist.check = data.frame(x = seq(from = 0, to = 5, length.out = 20),
+                        delta = 0, cutof = 0, radan = 0)
+for(i in 1:nrow(dist.check)){
+  bound = dist.check$x[i]
+  dist.check$delta[i] = nrow(filter(test.samp, dist <= bound))/nrow(test.samp)
+  dist.check$cutof[i] = nrow(filter(test.samp, f1.norm <= bound, f2.norm <= bound))/nrow(test.samp)
+  dist.check$radan[i] = nrow(filter(test.samp, sqrt(f1.norm^2 + f2.norm^2) <= bound & theta > 20))/nrow(test.samp)
+  
+}
+sz = 2.5
+dist.check
+ggplot(dist.check) +
+  geom_point(mapping = aes(x = x, y = delta, color = 'delta', shape = 'delta'), size = sz) +
+  geom_point(mapping = aes(x = x, y = cutof, color = 'cutof', shape = 'cutof'), size = sz) +
+  geom_point(mapping = aes(x = x, y = radan, color = 'radan', shape = 'radan'), size = sz) +
+  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green3'),
+                     labels = c('delta' = 'P.Dist', 'cutof' = 'Cutoff', 'radan' = 'U.Dist'), 
+                     name = '') +
+  scale_shape_manual(values = c('delta' = 1, 'cutof' = 2, 'radan' = 3),
+                     labels = c('delta' = 'P.Dist', 'cutof' = 'Cutoff', 'radan' = 'U.Dist'),
+                     name = '') +
+  labs(x = 'Cutoff Value', y = 'Accepted Fraction')
+
+rm(bounds, nsamp, test.samp, sz, dist.check, next.grid, res)
+
+```
+Based on this Monte Carlo estimate, the cutoff value should be approximately 2 for all 3 criteria to guarantee at least 5% of the total hypervolume space is accepted.
+
+Plot the full dataset in the objective space
+```{r Visualize GPareto and Normalization, fig.width=6, fig.height=6}
 gplt.GPar = ggplot() +
-  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +s
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
   geom_line(data = GPar.front, mapping = aes(x = f1, y = f2), color = "black") +
   geom_point(data = GPar.all, mapping = aes(x = f1, y = f2, color = (order > 0), 
                                             shape = (dist == 0)), size = 2) +
@@ -300,16 +358,16 @@ gplt.Norm = ggplot() +
   theme_classic() + theme(legend.position = c(0.85, 0.85), legend.background = element_rect(fill = 'white'),
                           legend.title = element_blank())
 
-gplt.start / gplt.GPar / gplt.Norm
-rm(gplt.start, gplt.GPar, gplt.Norm)
+gplt.GPar / gplt.Norm
+rm(gplt.GPar, gplt.Norm)
 ```
 
 ## II. Acceptable suboptimal performance (the "near-Pareto set")
 4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
 
-For this example, defines $\delta$ as the distance between the point and the point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 1$.
+For this example, defines $\delta$ as the distance between the point and the point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 2$.
 
-```{r Load data: Accept Distance less than 1}
+```{r Load data: Accept Distance less than 2}
 # Load data
 GPar.all = read.csv(file = 'GPar_all_start.csv')
 GPar.front = read.csv(file = 'GPar_fnt_start.csv')
@@ -378,7 +436,7 @@ fill.sample.obj = function(x, model){
   res = predict(object = model, newdata = data.frame(x1 = x[1], x2 = x[2], x3 = x[3]), type = 'UK')
   
   # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  prob = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
 
   # Objective result
   return(res$sd*(prob*(1-prob) + 0.25/9))
@@ -455,12 +513,12 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -469,7 +527,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = dist.sd, z = dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -478,7 +536,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert*dist.sd, z = uncert*dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -500,12 +558,12 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -514,7 +572,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = dist.sd, z = dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -523,7 +581,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert*dist.sd, z = uncert*dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -608,12 +666,12 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -623,7 +681,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = dist.sd, z = dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -633,7 +691,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert*dist.sd, z = uncert*dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -656,12 +714,12 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x3, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -671,7 +729,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = dist.sd, z = dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x3, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -681,7 +739,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$dist.sd*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert*dist.sd, z = uncert*dist.sd), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x3, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -813,6 +871,7 @@ ggplot(GPar.cor.plt) +
 rm(g1, g2, g3, gx1, gx2, gx3, Pfront.x1, Pfront.x2, Pfront.x3, plt, GPar.cor.plt)
 ```
 
+Based on this regression-based interpretation of the ranking, it appears that x3 is more important than x2, which is more important that x1. While one would expect x2 and x3 to be of equivalent importance, it is likely that the exact points that were sampled biased more towards showing a trend with x3 over x2.
 
 9. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
 
@@ -843,172 +902,201 @@ for(i in 1:resolution){
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 'none'))
   
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'none'))
   
   # x3
   fill.frame = data.frame(x3 = x3.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 'none'))
 }
 
 ggplot() +
   geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = var)) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'black'), 
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 2')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'purple'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
   theme_bw()
 ```
 
-Consistent with the correlation coefficients, the probability of acceptance when only $x_1$ has a higher and sharper peak than $x_2$.
+Consistent with the correlation coefficients, the probability of acceptance when only $x_2$ or $x_3$ is known has a higher and sharper peak than $x_1$. The reason for $x_3$'s relative dominance is clear here: the sampling for $x_3$ apparently did not capture the local minima, whereas it did capture the local minima from $x_2$.
 
 10. Calculate the same conditional probability, but given the that the most important variable falls within its optimal range and the second most important variable is known.
 11. Repeat step 10 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
 
-In this case, with only 2 inputs, only one iteration needs to be performed, ie. accept | $x_2, x_1 = x_{1,opt}$
+For the 3-input set, there are 6 possible pairwise conditionals, where one variable is known precisely and the other falls within its single-variable optimal range, eg. accept | $x_2, x_1 = x_{1,opt}$
 
-To account for possible uncertainty, the conditional for $x_1$ will be within its optimal region, defined by the values of $x_1$ with at least half of the max probability.
+For the purposes of comparison, the 'best' permutation (optimize x3, then x2, then x1) will be compared to the worst permutation (optimize x1, then x2, then x3). These orders are based on the importance rankings.
 
-For illustrative purposes, the inverse will also be shown (accept | $x_1, x_2 = x_{2,opt}$). This may be useful is, for instance, $x_2$ is easier to measure.
 
 ```{r Partial Conditional Probabilities}
-# Detrmining the ranges
-p.target1 = 0.5*max(Infer.x1$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x1.lims[1] > min(Infer.x1$x)){
-  pos = which.min(abs(Infer.x1$x - x1.lims[1]))
-  sub = Infer.x1[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target1))
-  x1.lims[1] = res
-  rm(mod)
+# Determining the ranges
+# Function to find the optimal range given the probability of acceptance
+p.lims = function(data.prob, p.target){
+  # data.prob is a dataframe with variables x and prob, which are the values and probability of acceptance
+  
+  # Limits are the range where the probability is at least half the maximim
+  # p.target = 0.5*max(data.prob$prob)
+  
+  # Initial limits
+  x.lims = range(filter(data.prob, prob >= p.target)$x)
+  
+  # Linear interpolate to find the proper point, assuming that the limit is not already the minimum possible value
+  if(x.lims[1] > min(data.prob$x)){
+    pos = which.min(abs(data.prob$x - x.lims[1]))
+    sub = data.prob[c(pos-1, pos), ]
+    mod = lm(x~prob, data = sub)
+    res = predict(object = mod, newdata = data.frame(prob = p.target))
+    x.lims[1] = res
+  }
+  if(x.lims[2] < max(data.prob$x)){
+    pos = which.min(abs(data.prob$x - x.lims[2]))
+    sub = data.prob[c(pos, pos+1), ]
+    mod = lm(x ~ prob, data = sub)
+    res = predict(object = mod, newdata = data.frame(prob = p.target))
+    x.lims[2] = res
+    rm(mod)
+  }
+  return(x.lims)
 }
-if(x1.lims[2] < max(Infer.x1$x)){
-  pos = which.min(abs(Infer.x1$x - x1.lims[2]))
-  sub = Infer.x1[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target1))
-  x1.lims[2] = res
-  rm(mod)
-}
+x1.lims = p.lims(data.prob = Infer.x1, p.target = 0.5*max(Infer.x1$prob))
+x3.lims = p.lims(data.prob = Infer.x3, p.target = 0.5*max(Infer.x3$prob))
 
-p.target2 = 0.5*max(Infer.x2$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x2.lims = range(filter(Infer.x2, prob > p.target2)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x2.lims[1] > min(Infer.x2$x)){
-  pos = which.min(abs(Infer.x2$x - x2.lims[1]))
-  sub = Infer.x2[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target2))
-  x2.lims[1] = res
-  rm(mod)
-}
-if(x2.lims[2] < max(Infer.x2$x)){
-  pos = which.min(abs(Infer.x2$x - x2.lims[2]))
-  sub = Infer.x2[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target2))
-  x2.lims[2] = res
-  rm(mod)
-}
-
-p.target3 = 0.5*max(Infer.x3$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x3.lims = range(filter(Infer.x3, prob > p.target2)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x3.lims[1] > min(Infer.x3$x)){
-  pos = which.min(abs(Infer.x3$x - x3.lims[1]))
-  sub = Infer.x3[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target3))
-  x3.lims[1] = res
-  rm(mod)
-}
-if(x3.lims[2] < max(Infer.x3$x)){
-  pos = which.min(abs(Infer.x3$x - x3.lims[2]))
-  sub = Infer.x3[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target3))
-  x3.lims[2] = res
-  rm(mod)
-}
-
-# Marginalize over the specific region of x1 and x2. Due to similarities in x2 and x3, leaving that alone.
+## Given that x1 or x3 is optimal, find the next variable in the series: x2
 resolution = 50; MCsamp = 1500
-x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
 x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
-# x3.seq = seq(from = min(x3.rng), to = max(x3.rng), length.out = resolution)
 
-# Single conditional: x1|x2, x2|x1, x3 is unknown
-Infer.x2.x1 = data.frame(); Infer.x1.x2 = data.frame(); 
-# Full conditional: x1|x2,x3 and x2|x1,x3
-Infer.x1.x2.x3 = data.frame(); Infer.x2.x1.x3 = data.frame()
+# Single conditional: x2|x1 or x2|x3
+Infer.x2.x1 = data.frame(); Infer.x2.x3 = data.frame()
 
 for(i in 1:resolution){
   # x2 | x1
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 1))
-  # x2 | x1, x3
-  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'x1'))
+  # x2 | x3
+  fill.frame = data.frame(x2 = x2.seq[i], x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)),
+                          x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x2.x1.x3 = rbind(Infer.x2.x1.x3, data.frame(x = x2.seq[i], 
-                                                    prob = mean(fill.frame$p.del1), var = 'x2', cond = 2))
-  # x1 | x2
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
-  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 1))
-  # x1 | x2, x3
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)))
-  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x1.x2.x3 = rbind(Infer.x1.x2.x3, data.frame(x = x1.seq[i], 
-                                                    prob = mean(fill.frame$p.del1), var = 'x1', cond = 2))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x2.x3 = rbind(Infer.x2.x3, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'x3'))
+}
 
+ggplot(rbind(Infer.x2.x3, Infer.x2.x1)) +
+  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+  labs(x = expression('x'[2]), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'),
+       color = 'Given optimal') +
+  theme_bw()
+
+# Instead of a simple range, the multimodal peaks of these probability curves mean a simple min/max bound can be used. While a nearest-neighbor approximation would work, a faster solution is to find 3 separate ranges.
+x2.lims.x3.rng1 = p.lims(data.prob = filter(Infer.x2.x3, x < 0.25), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x3.rng2 = p.lims(data.prob = filter(Infer.x2.x3, x > 0.25, x < 0.75), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x3.rng3 = p.lims(data.prob = filter(Infer.x2.x3, x > 0.75), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x1.rng1 = p.lims(data.prob = filter(Infer.x2.x1, x < 0.25), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+x2.lims.x1.rng2 = p.lims(data.prob = filter(Infer.x2.x1, x > 0.25, x < 0.75), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+x2.lims.x1.rng3 = p.lims(data.prob = filter(Infer.x2.x1, x > 0.75), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+# The number of points to collect from each range is proportional to their relative widths
+
+## Given that x1 or x3 is optimal, find the next variable in the series: x2
+# resolution = 50; MCsamp = 1500
+MCsamp.x2.x3.rng1 = round(1500*diff(x2.lims.x3.rng1)/
+                            (diff(x2.lims.x3.rng1) + diff(x2.lims.x3.rng2) + diff(x2.lims.x3.rng3)))
+MCsamp.x2.x3.rng2 = round(1500*diff(x2.lims.x3.rng2)/
+                            (diff(x2.lims.x3.rng1) + diff(x2.lims.x3.rng2) + diff(x2.lims.x3.rng3)))
+MCsamp.x2.x3.rng3 = 1500 - MCsamp.x2.x3.rng1 - MCsamp.x2.x3.rng2
+MCsamp.x2.x1.rng1 = round(1500*diff(x2.lims.x1.rng1)/
+                            (diff(x2.lims.x1.rng1) + diff(x2.lims.x1.rng2) + diff(x2.lims.x1.rng3)))
+MCsamp.x2.x1.rng2 = round(1500*diff(x2.lims.x1.rng2)/
+                            (diff(x2.lims.x1.rng1) + diff(x2.lims.x1.rng2) + diff(x2.lims.x1.rng3)))
+MCsamp.x2.x1.rng3 = 1500 - MCsamp.x2.x1.rng1 - MCsamp.x2.x1.rng2
+
+x1.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+x3.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+# Single conditional: x2|x1 or x2|x3
+Infer.x3.x2.x1 = data.frame(); Infer.x1.x2.x3 = data.frame()
+for(i in 1:resolution){
+  # x3 | x2, x1
+  x2.fill = c(runif(n = MCsamp.x2.x1.rng1, min = min(x2.lims.x1.rng1), max = max(x2.lims.x1.rng1)),
+              runif(n = MCsamp.x2.x1.rng2, min = min(x2.lims.x1.rng2), max = max(x2.lims.x1.rng2)),
+              runif(n = MCsamp.x2.x1.rng3, min = min(x2.lims.x1.rng3), max = max(x2.lims.x1.rng3)))
+  fill.frame = data.frame(x2 = x2.fill, x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)),
+                          x3 = x3.seq[i])
+  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x3.x2.x1 = rbind(Infer.x3.x2.x1, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), 
+                                                    var = 'x3', cond = 'x2, x1'))
+  # x1 | x2, x3
+  x2.fill = c(runif(n = MCsamp.x2.x3.rng1, min = min(x2.lims.x3.rng1), max = max(x2.lims.x3.rng1)),
+              runif(n = MCsamp.x2.x3.rng2, min = min(x2.lims.x3.rng2), max = max(x2.lims.x3.rng2)),
+              runif(n = MCsamp.x2.x3.rng3, min = min(x2.lims.x3.rng3), max = max(x2.lims.x3.rng3)))
+  fill.frame = data.frame(x2 = x2.fill, x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)),
+                          x1 = x1.seq[i])
+  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x1.x2.x3 = rbind(Infer.x1.x2.x3, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
+                                                    var = 'x1', cond = 'x2, x3'))
 }
 
 # Combine results for visualization
-Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x1.x2.x3, Infer.x2.x1, Infer.x2.x1.x3);
+Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x3, Infer.x2.x1, Infer.x2.x3, 
+                  Infer.x1.x2.x3, Infer.x3.x2.x1);
 write.csv(Infer.plt, 'Marginals_Accept_Delta1.csv')
-rm(list = ls(pattern = "^Infer\\."))
+rm(res, x2.fill, fill.frame)
 ```
+
 
 ```{r}
 Infer.plt = read.csv(file = 'Marginals_Accept_Delta1.csv')
 
-ggplot(Infer.plt) +
+ggplot(filter(Infer.plt, cond == 'none')) +
+  geom_path(mapping = aes(x = x, y = prob, color = as.factor(var))) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
+       color = 'Variable') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+ggplot(filter(Infer.plt, var == 'x2')) +
   geom_path(mapping = aes(x = x, y = prob, color = as.factor(cond))) +
-  facet_wrap(var~., nrow = 2) + 
-  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
+  labs(x = expression('x'[2]), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
        color = 'Partial Conditions') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
+ggplot(filter(Infer.plt, cond == 'x2, x3' | cond == 'x2, x1' | cond == 'none', var != 'x2')) +
+  geom_path(mapping = aes(x = x, y = prob, color = as.factor(cond))) +
+  facet_wrap(~var, nrow = 2) +
+  labs(x = 'x', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
+       color = 'Partial Conditions') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+
+```
+```{r}
+rm(list = ls(pattern = "^Infer\\."))
 ```
 
-In this case, due to symmetry, there is similarity between x1 and x2's behavior as single variables and when conditioned on the other. However, it is evident that the probability of acceptance for $x_2$ increases more when $x_1$ is known, suggesting the relative importance of $x_1$ compared to $x_2$.
-
+While the peak probabilities after 2 conditionals are similar (around 80% probability at the best input value) regardless of order, it becomes more obvious the rationale for picking variables from most to least important when looking at $x_2 | x_1$ compared to $x_2 | x_3$. When the more important $x_3$ is known, the probability of acceptance is very high (> 75% at the peak), but when $x_1$ is known, the probability of acceptance for a specific $x_2$ value does not change from not knowing any additional information.
 
 ## Alternative Acceptance Criteria
 For the purpose of illustration, the above method will be repeated with two other acceptance criteria:
@@ -1083,8 +1171,8 @@ fill.sample.obj2 = function(x, model.f1, model.f2){
   res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2], x3 = x[3]), type = 'UK')
   
   # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * 
-    pnorm(q = 0, mean = res.f2$mean - 1, sd = res.f2$sd)
+  prob = pnorm(q = 0, mean = res.f1$mean - 2, sd = res.f1$sd) * 
+    pnorm(q = 0, mean = res.f2$mean - 2, sd = res.f2$sd)
   
   # Variance based on propagation of errors, assuming independent measures
   # sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2)
@@ -1153,8 +1241,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1163,7 +1251,7 @@ fine.grid$info = (fine.grid$f1.sd/max(fine.grid$f1.sd))^2 + (fine.grid$f2.sd/max
 ncolor = 7
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -1172,7 +1260,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$info)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = info, z = info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -1181,7 +1269,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$info*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert*info, z = uncert*info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -1208,8 +1296,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1217,7 +1305,7 @@ fine.grid$info = (fine.grid$f1.sd/max(fine.grid$f1.sd))^2 + (fine.grid$f2.sd/max
 
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -1226,7 +1314,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$info)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = info, z = info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -1235,7 +1323,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$info*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert*info, z = uncert*info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
@@ -1320,8 +1408,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1330,7 +1418,7 @@ fine.grid$info = (fine.grid$f1.sd/max(fine.grid$f1.sd))^2 + (fine.grid$f2.sd/max
 ncolor = 7
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -1340,7 +1428,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$info)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = info, z = info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -1350,7 +1438,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$info*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x2, color = uncert*info, z = uncert*info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x2), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -1378,8 +1466,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1387,7 +1475,7 @@ fine.grid$info = (fine.grid$f1.sd/max(fine.grid$f1.sd))^2 + (fine.grid$f2.sd/max
 
 g1 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert, z = uncert), 
-                      breaks = seq(from = 0, to = 0.25, length.out = ncolor)) +
+                      breaks = seq(from = 0, to = 0.25, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x3, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -1397,7 +1485,7 @@ g1 = ggplot(fine.grid) +
 rng = range(fine.grid$info)
 g2 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = info, z = info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x3, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -1407,7 +1495,7 @@ g2 = ggplot(fine.grid) +
 rng = range(fine.grid$info*fine.grid$uncert)
 g3 = ggplot(fine.grid) +
   geom_contour_filled(mapping = aes(x = x1, y = x3, color = uncert*info, z = uncert*info), 
-                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor)) +
+                      breaks = seq(from = rng[1]*0.99, to = rng[2]*1.01, length.out = ncolor), alpha = 0.5) +
   geom_point(data = GPar.all, mapping = aes(x = x1, y = x3, color = order), size = 1.5, alpha = 0.5) +
   geom_point(data = GPar.new, mapping = aes(x = x1, y = x3), color = 'red', size = 3) +
   guides(color = FALSE) +
@@ -1539,7 +1627,7 @@ ggplot(GPar.cor.plt) +
 rm(g1, g2, g3, gx1, gx2, gx3, Pfront.x1, Pfront.x2, Pfront.x3, plt, GPar.cor.plt)
 ```
 
-The importance of individual variables is largely the same, which makes sense given that most of the data used in this analysis is from the initial design and Pareto search, not the post-processing.
+As with the Pareto distance, $x_2$ and $x_3$ should have equal importance, but $x_3$ appears to be more important given the dataset bias.
 
 ```{r Threshold: Marginalization}
 # Use the final GP model with the full dataset
@@ -1561,24 +1649,24 @@ for(i in 1:resolution){
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 'none'))
   
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'none'))
   
   # x3
   fill.frame = data.frame(x3 = x3.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 'none'))
 }
 
 ggplot() +
@@ -1586,89 +1674,53 @@ ggplot() +
   geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = var)) +
   labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if f'[1]*' < 1 & f'[2]*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'black'), 
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'maroon'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
   theme_bw()
 
 ```
 
-The peak in the single-variable marginalization indicates that $x_1$ is, in fact, more important, as even without knowledge of $x_2$, the probability of acceptance can be as high as 0.6.
+Results for the importance rankings based on probability with this criteria is similar to the profiles for Pareto distance, although the peaks appear sharper.
 
 ```{r Threshold: Partial Conditional Probabilities}
-# Detrmining the ranges
-p.target1 = 0.5*max(Infer.x1$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x1.lims[1] > min(Infer.x1$x)){
-  pos = which.min(abs(Infer.x1$x - x1.lims[1]))
-  sub = Infer.x1[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target1))
-  x1.lims[1] = res
-  rm(mod)
+# Determining the ranges
+# Function to find the optimal range given the probability of acceptance
+p.lims = function(data.prob, p.target){
+  # data.prob is a dataframe with variables x and prob, which are the values and probability of acceptance
+  
+  # Limits are the range where the probability is at least half the maximim
+  # p.target = 0.5*max(data.prob$prob)
+  
+  # Initial limits
+  x.lims = range(filter(data.prob, prob >= p.target)$x)
+  
+  # Linear interpolate to find the proper point, assuming that the limit is not already the minimum possible value
+  if(x.lims[1] > min(data.prob$x)){
+    pos = which.min(abs(data.prob$x - x.lims[1]))
+    sub = data.prob[c(pos-1, pos), ]
+    mod = lm(x~prob, data = sub)
+    res = predict(object = mod, newdata = data.frame(prob = p.target))
+    x.lims[1] = res
+  }
+  if(x.lims[2] < max(data.prob$x)){
+    pos = which.min(abs(data.prob$x - x.lims[2]))
+    sub = data.prob[c(pos, pos+1), ]
+    mod = lm(x ~ prob, data = sub)
+    res = predict(object = mod, newdata = data.frame(prob = p.target))
+    x.lims[2] = res
+    rm(mod)
+  }
+  return(x.lims)
 }
-if(x1.lims[2] < max(Infer.x1$x)){
-  pos = which.min(abs(Infer.x1$x - x1.lims[2]))
-  sub = Infer.x1[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target1))
-  x1.lims[2] = res
-  rm(mod)
-}
+x1.lims = p.lims(data.prob = Infer.x1, p.target = 0.5*max(Infer.x1$prob))
+x3.lims = p.lims(data.prob = Infer.x3, p.target = 0.5*max(Infer.x3$prob))
 
-p.target2 = 0.5*max(Infer.x2$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x2.lims = range(filter(Infer.x2, prob > p.target2)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x2.lims[1] > min(Infer.x2$x)){
-  pos = which.min(abs(Infer.x2$x - x2.lims[1]))
-  sub = Infer.x2[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target2))
-  x2.lims[1] = res
-  rm(mod)
-}
-if(x2.lims[2] < max(Infer.x2$x)){
-  pos = which.min(abs(Infer.x2$x - x2.lims[2]))
-  sub = Infer.x2[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target2))
-  x2.lims[2] = res
-  rm(mod)
-}
-
-p.target3 = 0.5*max(Infer.x3$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x3.lims = range(filter(Infer.x3, prob > p.target2)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x3.lims[1] > min(Infer.x3$x)){
-  pos = which.min(abs(Infer.x3$x - x3.lims[1]))
-  sub = Infer.x3[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target3))
-  x3.lims[1] = res
-  rm(mod)
-}
-if(x3.lims[2] < max(Infer.x3$x)){
-  pos = which.min(abs(Infer.x3$x - x3.lims[2]))
-  sub = Infer.x3[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target3))
-  x3.lims[2] = res
-  rm(mod)
-}
-
-# Marginalize over the specific region of x1 and x2. Due to similarities in x2 and x3, leaving that alone.
+## Given that x1 or x3 is optimal, find the next variable in the series: x2
 resolution = 50; MCsamp = 1500
-x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
 x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
-# x3.seq = seq(from = min(x3.rng), to = max(x3.rng), length.out = resolution)
 
-# Single conditional: x1|x2, x2|x1, x3 is unknown
-Infer.x2.x1 = data.frame(); Infer.x1.x2 = data.frame(); 
-# Full conditional: x1|x2,x3 and x2|x1,x3
-Infer.x1.x2.x3 = data.frame(); Infer.x2.x1.x3 = data.frame()
+# Single conditional: x2|x1 or x2|x3
+Infer.x2.x1 = data.frame(); Infer.x2.x3 = data.frame()
 
 for(i in 1:resolution){
   # x2 | x1
@@ -1676,50 +1728,117 @@ for(i in 1:resolution){
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 1))
-  # x2 | x1, x3
-  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'x1'))
+  # x2 | x3
+  fill.frame = data.frame(x2 = x2.seq[i], x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)),
+                          x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x2.x1.x3 = rbind(Infer.x2.x1.x3, data.frame(x = x2.seq[i], 
-                                                    prob = mean(fill.frame$p.del1), var = 'x2', cond = 2))
-  # x1 | x2
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
-  res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 1))
-  # x1 | x2, x3
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)))
-  res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x1.x2.x3 = rbind(Infer.x1.x2.x3, data.frame(x = x1.seq[i], 
-                                                    prob = mean(fill.frame$p.del1), var = 'x1', cond = 2))
-
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x2.x3 = rbind(Infer.x2.x3, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'x3'))
 }
-rm(res1, res2, fill.frame)
-# Combine results for visualization
-Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x1.x2.x3, Infer.x2.x1, Infer.x2.x1.x3);
-write.csv(Infer.plt, 'Marginals_Accept_Threshold.csv')
-rm(list = ls(pattern = "^Infer\\."))
 
+ggplot(rbind(Infer.x2.x3, Infer.x2.x1)) +
+  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+  labs(x = expression('x'[2]), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'),
+       color = 'Given optimal') +
+  theme_bw()
+
+# Instead of a simple range, the multimodal peaks of these probability curves mean a simple min/max bound can be used. While a nearest-neighbor approximation would work, a faster solution is to find 3 separate ranges.
+x2.lims.x3.rng1 = p.lims(data.prob = filter(Infer.x2.x3, x < 0.25), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x3.rng2 = p.lims(data.prob = filter(Infer.x2.x3, x > 0.25, x < 0.75), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x3.rng3 = p.lims(data.prob = filter(Infer.x2.x3, x > 0.75), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x1.rng1 = p.lims(data.prob = filter(Infer.x2.x1, x < 0.25), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+x2.lims.x1.rng2 = p.lims(data.prob = filter(Infer.x2.x1, x > 0.25, x < 0.75), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+x2.lims.x1.rng3 = p.lims(data.prob = filter(Infer.x2.x1, x > 0.75), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+# The number of points to collect from each range is proportional to their relative widths
+
+## Given that x1 or x3 is optimal, find the next variable in the series: x2
+# resolution = 50; MCsamp = 1500
+MCsamp.x2.x3.rng1 = round(1500*diff(x2.lims.x3.rng1)/
+                            (diff(x2.lims.x3.rng1) + diff(x2.lims.x3.rng2) + diff(x2.lims.x3.rng3)))
+MCsamp.x2.x3.rng2 = round(1500*diff(x2.lims.x3.rng2)/
+                            (diff(x2.lims.x3.rng1) + diff(x2.lims.x3.rng2) + diff(x2.lims.x3.rng3)))
+MCsamp.x2.x3.rng3 = 1500 - MCsamp.x2.x3.rng1 - MCsamp.x2.x3.rng2
+MCsamp.x2.x1.rng1 = round(1500*diff(x2.lims.x1.rng1)/
+                            (diff(x2.lims.x1.rng1) + diff(x2.lims.x1.rng2) + diff(x2.lims.x1.rng3)))
+MCsamp.x2.x1.rng2 = round(1500*diff(x2.lims.x1.rng2)/
+                            (diff(x2.lims.x1.rng1) + diff(x2.lims.x1.rng2) + diff(x2.lims.x1.rng3)))
+MCsamp.x2.x1.rng3 = 1500 - MCsamp.x2.x1.rng1 - MCsamp.x2.x1.rng2
+
+x1.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+x3.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+# Single conditional: x2|x1 or x2|x3
+Infer.x3.x2.x1 = data.frame(); Infer.x1.x2.x3 = data.frame()
+for(i in 1:resolution){
+  # x3 | x2, x1
+  x2.fill = c(runif(n = MCsamp.x2.x1.rng1, min = min(x2.lims.x1.rng1), max = max(x2.lims.x1.rng1)),
+              runif(n = MCsamp.x2.x1.rng2, min = min(x2.lims.x1.rng2), max = max(x2.lims.x1.rng2)),
+              runif(n = MCsamp.x2.x1.rng3, min = min(x2.lims.x1.rng3), max = max(x2.lims.x1.rng3)))
+  fill.frame = data.frame(x2 = x2.fill, x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)),
+                          x3 = x3.seq[i])
+  res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x3.x2.x1 = rbind(Infer.x3.x2.x1, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), 
+                                                    var = 'x3', cond = 'x2, x1'))
+  # x1 | x2, x3
+  x2.fill = c(runif(n = MCsamp.x2.x3.rng1, min = min(x2.lims.x3.rng1), max = max(x2.lims.x3.rng1)),
+              runif(n = MCsamp.x2.x3.rng2, min = min(x2.lims.x3.rng2), max = max(x2.lims.x3.rng2)),
+              runif(n = MCsamp.x2.x3.rng3, min = min(x2.lims.x3.rng3), max = max(x2.lims.x3.rng3)))
+  fill.frame = data.frame(x2 = x2.fill, x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)),
+                          x1 = x1.seq[i])
+  res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x1.x2.x3 = rbind(Infer.x1.x2.x3, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
+                                                    var = 'x1', cond = 'x2, x3'))
+}
+
+# Combine results for visualization
+Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x3, Infer.x2.x1, Infer.x2.x3, 
+                  Infer.x1.x2.x3, Infer.x3.x2.x1);
+write.csv(Infer.plt, 'Marginals_Accept_Threshold.csv')
+rm(res1, res2, x2.fill, fill.frame)
 ```
 
 ```{r}
 Infer.plt = read.csv(file = 'Marginals_Accept_Threshold.csv')
-ggplot(Infer.plt) +
+
+ggplot(filter(Infer.plt, cond == 'none')) +
+  geom_path(mapping = aes(x = x, y = prob, color = as.factor(var))) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
+       color = 'Variable') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+ggplot(filter(Infer.plt, cond == 'x2, x3' | cond == 'x2, x1' | cond == 'none', var != 'x2')) +
   geom_path(mapping = aes(x = x, y = prob, color = as.factor(cond))) +
-  facet_wrap(var~., nrow = 2) + 
-  labs(x = '', y = 'Probability of Acceptance', expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1'), 
+  facet_wrap(~var, nrow = 2) +
+  labs(x = 'x', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
        color = 'Partial Conditions') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
+
+ggplot(filter(Infer.plt, var == 'x2')) +
+  geom_path(mapping = aes(x = x, y = prob, color = as.factor(cond))) +
+  labs(x = expression('x'[2]), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
+       color = 'Partial Conditions') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+```
+
+```{r}
+rm(list = ls(pattern = "^Infer\\."))
 
 ```
 
@@ -1790,7 +1909,7 @@ fill.sample.obj3 = function(x, model.f1, model.f2){
   res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2], x3 = x[3]), type = 'UK')
   
   # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * 
+  prob = pnorm(q = 0, mean = res.f1$mean - 2, sd = res.f1$sd) * 
     (1 - pnorm(q = 0, mean = res.f2$mean - 20, sd = res.f2$sd))
   
   # Variance based on propagation of errors
@@ -1859,7 +1978,7 @@ fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 
 # Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -2068,7 +2187,7 @@ fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 
 # Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -2220,7 +2339,7 @@ res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1,
 fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 # Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
 
 ggplot() +
@@ -2247,7 +2366,7 @@ res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1,
 fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 # Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
 
 ggplot() +
@@ -2258,7 +2377,6 @@ ggplot() +
 
 rm(g1, g2, g3, fine.grid, res)
 ```
-
 
 
 ```{r Utopia distance Feature Importance: Correlation Coefficient and Slope}
@@ -2379,7 +2497,6 @@ rm(g1, g2, g3, gx1, gx2, gx3, Pfront.x1, Pfront.x2, Pfront.x3, plt, GPar.cor.plt
 
 ```
 
-The regressions and slopes are largely the same for all datasets due to the dominance of points from the original starting design and not the boundary refinement search.
 
 ```{r Utopia distance: Marginalization}
 # Use the final GP model with the full dataset
@@ -2401,24 +2518,24 @@ for(i in 1:resolution){
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 'none'))
   
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'none'))
   
   # x3
   fill.frame = data.frame(x3 = x3.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 0))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 'none'))
 }
 
 ggplot() +
@@ -2427,87 +2544,53 @@ ggplot() +
   geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = var)) +
   labs(x = expression('x'), y = 'Probability of Acceptance', 
        subtitle = expression('Accept if r < 1 & > 80% f'[1]*' priority')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'black'), 
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'maroon'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
   theme_bw()
 
 ```
 
+Interestingly, while there are multiple peaks for $x_2$, it is only the peak on the right. This is due to the prioritization of $F_1$ compared to $F_2$ and not an issue with the model. The fact that $x_2$ and $x_3$ are treated differently is still an issue.
+
 ```{r Utopia distance: Partial Conditional Probabilities}
-# Detrmining the ranges
-p.target1 = 0.5*max(Infer.x1$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x1.lims[1] > min(Infer.x1$x)){
-  pos = which.min(abs(Infer.x1$x - x1.lims[1]))
-  sub = Infer.x1[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target1))
-  x1.lims[1] = res
-  rm(mod)
+# Determining the ranges
+# Function to find the optimal range given the probability of acceptance
+p.lims = function(data.prob, p.target){
+  # data.prob is a dataframe with variables x and prob, which are the values and probability of acceptance
+  
+  # Limits are the range where the probability is at least half the maximim
+  # p.target = 0.5*max(data.prob$prob)
+  
+  # Initial limits
+  x.lims = range(filter(data.prob, prob >= p.target)$x)
+  
+  # Linear interpolate to find the proper point, assuming that the limit is not already the minimum possible value
+  if(x.lims[1] > min(data.prob$x)){
+    pos = which.min(abs(data.prob$x - x.lims[1]))
+    sub = data.prob[c(pos-1, pos), ]
+    mod = lm(x~prob, data = sub)
+    res = predict(object = mod, newdata = data.frame(prob = p.target))
+    x.lims[1] = res
+  }
+  if(x.lims[2] < max(data.prob$x)){
+    pos = which.min(abs(data.prob$x - x.lims[2]))
+    sub = data.prob[c(pos, pos+1), ]
+    mod = lm(x ~ prob, data = sub)
+    res = predict(object = mod, newdata = data.frame(prob = p.target))
+    x.lims[2] = res
+    rm(mod)
+  }
+  return(x.lims)
 }
-if(x1.lims[2] < max(Infer.x1$x)){
-  pos = which.min(abs(Infer.x1$x - x1.lims[2]))
-  sub = Infer.x1[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target1))
-  x1.lims[2] = res
-  rm(mod)
-}
+x1.lims = p.lims(data.prob = Infer.x1, p.target = 0.5*max(Infer.x1$prob))
+x3.lims = p.lims(data.prob = Infer.x3, p.target = 0.5*max(Infer.x3$prob))
 
-p.target2 = 0.5*max(Infer.x2$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x2.lims = range(filter(Infer.x2, prob > p.target2)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x2.lims[1] > min(Infer.x2$x)){
-  pos = which.min(abs(Infer.x2$x - x2.lims[1]))
-  sub = Infer.x2[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target2))
-  x2.lims[1] = res
-  rm(mod)
-}
-if(x2.lims[2] < max(Infer.x2$x)){
-  pos = which.min(abs(Infer.x2$x - x2.lims[2]))
-  sub = Infer.x2[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target2))
-  x2.lims[2] = res
-  rm(mod)
-}
-
-p.target3 = 0.5*max(Infer.x3$prob)
-# Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x3.lims = range(filter(Infer.x3, prob > p.target2)$x)
-# Adjust the extremes if they are not already at the extreme
-if(x3.lims[1] > min(Infer.x3$x)){
-  pos = which.min(abs(Infer.x3$x - x3.lims[1]))
-  sub = Infer.x3[c(pos-1, pos), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target3))
-  x3.lims[1] = res
-  rm(mod)
-}
-if(x3.lims[2] < max(Infer.x3$x)){
-  pos = which.min(abs(Infer.x3$x - x3.lims[2]))
-  sub = Infer.x3[c(pos, pos+1), ]
-  mod = lm(x ~ prob, data = sub)
-  res = predict(object = mod, newdata = data.frame(prob = p.target3))
-  x3.lims[2] = res
-  rm(mod)
-}
-
-# Marginalize over the specific region of x1 and x2. Due to similarities in x2 and x3, leaving that alone.
+## Given that x1 or x3 is optimal, find the next variable in the series: x2
 resolution = 50; MCsamp = 1500
-x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
 x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
-# x3.seq = seq(from = min(x3.rng), to = max(x3.rng), length.out = resolution)
 
-# Single conditional: x1|x2, x2|x1, x3 is unknown
-Infer.x2.x1 = data.frame(); Infer.x1.x2 = data.frame(); 
-# Full conditional: x1|x2,x3 and x2|x1,x3
-Infer.x1.x2.x3 = data.frame(); Infer.x2.x1.x3 = data.frame()
+# Single conditional: x2|x1 or x2|x3
+Infer.x2.x1 = data.frame(); Infer.x2.x3 = data.frame()
 
 for(i in 1:resolution){
   # x2 | x1
@@ -2515,48 +2598,101 @@ for(i in 1:resolution){
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 1))
-  # x2 | x1, x3
-  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'x1'))
+  # x2 | x3
+  fill.frame = data.frame(x2 = x2.seq[i], x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)),
+                          x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2.x1.x3 = rbind(Infer.x2.x1.x3, data.frame(x = x2.seq[i], 
-                                                    prob = mean(fill.frame$p.del1), var = 'x2', cond = 2))
-  # x1 | x2
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
-  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 1))
-  # x1 | x2, x3
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)),
-                          x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)))
-  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1.x2.x3 = rbind(Infer.x1.x2.x3, data.frame(x = x1.seq[i], 
-                                                    prob = mean(fill.frame$p.del1), var = 'x1', cond = 2))
-
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x2.x3 = rbind(Infer.x2.x3, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'x3'))
 }
-rm(res1, res2, fill.frame)
-# Combine results for visualization
-Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x1.x2.x3, Infer.x2.x1, Infer.x2.x1.x3);
-write.csv(Infer.plt, 'Marginals_Accept_Radius.csv')
-rm(list = ls(pattern = "^Infer\\."))
 
+ggplot(rbind(Infer.x2.x3, Infer.x2.x1)) +
+  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+  labs(x = expression('x'[2]), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'),
+       color = 'Given optimal') +
+  theme_bw()
+
+# Instead of a simple range, the multimodal peaks of these probability curves mean a simple min/max bound can be used. While a nearest-neighbor approximation would work, a faster solution is to find 3 separate ranges.
+x2.lims.x3.rng2 = p.lims(data.prob = filter(Infer.x2.x3, x > 0.25, x < 0.75), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x3.rng3 = p.lims(data.prob = filter(Infer.x2.x3, x > 0.75), 
+                         p.target = max(Infer.x2.x3$prob)*0.5)
+x2.lims.x1.rng2 = p.lims(data.prob = filter(Infer.x2.x1, x > 0.25, x < 0.75), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+x2.lims.x1.rng3 = p.lims(data.prob = filter(Infer.x2.x1, x > 0.75), 
+                         p.target = max(Infer.x2.x1$prob)*0.5)
+# The number of points to collect from each range is proportional to their relative widths
+
+## Given that x1 or x3 is optimal, find the next variable in the series: x2
+# resolution = 50; MCsamp = 1500
+MCsamp.x2.x3.rng2 = round(1500*diff(x2.lims.x3.rng2)/
+                            (diff(x2.lims.x3.rng1) + diff(x2.lims.x3.rng2) + diff(x2.lims.x3.rng3)))
+MCsamp.x2.x3.rng3 = 1500 - MCsamp.x2.x3.rng2
+MCsamp.x2.x1.rng2 = round(1500*diff(x2.lims.x1.rng2)/
+                            (diff(x2.lims.x1.rng1) + diff(x2.lims.x1.rng2) + diff(x2.lims.x1.rng3)))
+MCsamp.x2.x1.rng3 = 1500 - MCsamp.x2.x1.rng2
+
+x1.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+x3.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+
+# Single conditional: x2|x1 or x2|x3
+Infer.x3.x2.x1 = data.frame(); Infer.x1.x2.x3 = data.frame()
+for(i in 1:resolution){
+  # x3 | x2, x1
+  x2.fill = c(runif(n = MCsamp.x2.x1.rng2, min = min(x2.lims.x1.rng2), max = max(x2.lims.x1.rng2)),
+              runif(n = MCsamp.x2.x1.rng3, min = min(x2.lims.x1.rng3), max = max(x2.lims.x1.rng3)))
+  fill.frame = data.frame(x2 = x2.fill, x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)),
+                          x3 = x3.seq[i])
+  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x3.x2.x1 = rbind(Infer.x3.x2.x1, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), 
+                                                    var = 'x3', cond = 'x2, x1'))
+  # x1 | x2, x3
+  x2.fill = c(runif(n = MCsamp.x2.x3.rng2, min = min(x2.lims.x3.rng2), max = max(x2.lims.x3.rng2)),
+              runif(n = MCsamp.x2.x3.rng3, min = min(x2.lims.x3.rng3), max = max(x2.lims.x3.rng3)))
+  fill.frame = data.frame(x2 = x2.fill, x3 = runif(n = MCsamp, min = min(x3.lims), max = max(x3.lims)),
+                          x1 = x1.seq[i])
+  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x1.x2.x3 = rbind(Infer.x1.x2.x3, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
+                                                    var = 'x1', cond = 'x2, x3'))
+}
+
+# Combine results for visualization
+Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x3, Infer.x2.x1, Infer.x2.x3, 
+                  Infer.x1.x2.x3, Infer.x3.x2.x1);
+write.csv(Infer.plt, 'Marginals_Accept_Radius.csv')
+rm(res1, res2, x2.fill, fill.frame)
 ```
+
+
 
 ```{r}
 Infer.plt = read.csv(file = 'Marginals_Accept_Radius.csv')
 
-ggplot(Infer.plt) +
+ggplot(filter(Infer.plt, cond == 'none')) +
+  geom_path(mapping = aes(x = x, y = prob, color = as.factor(var))) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
+       color = 'Variable') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+ggplot(filter(Infer.plt, cond == 'x2, x3' | cond == 'x2, x1' | cond == 'none', var != 'x2')) +
   geom_path(mapping = aes(x = x, y = prob, color = as.factor(cond))) +
-  facet_wrap(var~., nrow = 2) + 
-  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if r < 1, f'[1]*' priority < 80%'), 
+  facet_wrap(~var, nrow = 2) +
+  labs(x = 'x', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
+       color = 'Partial Conditions') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+ggplot(filter(Infer.plt, var == 'x2')) +
+  geom_path(mapping = aes(x = x, y = prob, color = as.factor(cond))) +
+  labs(x = expression('x'[2]), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), 
        color = 'Partial Conditions') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()

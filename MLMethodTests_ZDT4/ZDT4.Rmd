@@ -215,20 +215,20 @@ fine.grid$rad = sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2)
 ##
 # Normalized distance
 fine.grid$delta = 0
-fine.grid$delta[fine.grid$dist <= 1] = 1
+fine.grid$delta[fine.grid$dist <= 2] = 1
 
 mod.dist.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'dist')
 res = predict(object = mod.dist.pre, newdata = fine.grid[,c('x1', 'x2', 'x3')], type = "UK")
-fine.grid$prob.delta.pre = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+fine.grid$prob.delta.pre = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
 
 mod.dist.post = fill.sample.mod(GPar.data = data.delta, input.name = c('x1', 'x2', 'x3'), output.name = 'dist')
 res = predict(object = mod.dist.post, newdata = fine.grid[,c('x1', 'x2', 'x3')], type = "UK")
-fine.grid$prob.delta.post = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+fine.grid$prob.delta.post = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
 
 ##
 # Threshold cutoff
 fine.grid$cutof = 0
-fine.grid$cutof[fine.grid$f1.norm <= 1 & fine.grid$f2.norm <= 1] = 1
+fine.grid$cutof[fine.grid$f1.norm <= 2 & fine.grid$f2.norm <= 2] = 1
 
 mod.f1.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'f1.norm')
 mod.f2.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'f2.norm')
@@ -236,7 +236,7 @@ res1 = predict(object = mod.f1.pre, newdata = data.frame(x1 = fine.grid$x1,
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
 res2 = predict(object = mod.f2.pre, newdata = data.frame(x1 = fine.grid$x1, 
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.cutof.pre = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+fine.grid$prob.cutof.pre = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
   pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
 
 mod.f1.post = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2', 'x3'), output.name = 'f1.norm')
@@ -245,13 +245,13 @@ res1 = predict(object = mod.f1.post, newdata = data.frame(x1 = fine.grid$x1,
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
 res2 = predict(object = mod.f2.post, newdata = data.frame(x1 = fine.grid$x1, 
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.cutof.post = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+fine.grid$prob.cutof.post = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
   pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
 
 ##
 # Radius-angle
 fine.grid$radan = 0
-fine.grid$radan[fine.grid$rad <= 1 & fine.grid$ang > 20] = 1
+fine.grid$radan[fine.grid$rad <= 2 & fine.grid$ang > 20] = 1
 
 mod.rad.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'rad')
 mod.ang.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'theta')
@@ -259,7 +259,7 @@ res1 = predict(object = mod.rad.pre, newdata = data.frame(x1 = fine.grid$x1,
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
 res2 = predict(object = mod.ang.pre, newdata = data.frame(x1 = fine.grid$x1, 
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.radan.pre = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+fine.grid$prob.radan.pre = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
   (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
 
 mod.rad.post = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2', 'x3'), output.name = 'rad')
@@ -268,7 +268,7 @@ res1 = predict(object = mod.rad.post, newdata = data.frame(x1 = fine.grid$x1,
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
 res2 = predict(object = mod.ang.post, newdata = data.frame(x1 = fine.grid$x1, 
                         x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.radan.post = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+fine.grid$prob.radan.post = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
   (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
 
 ```
@@ -327,16 +327,16 @@ error.test.screen = function(mod.dist, mod.f1, mod.f2, mod.rad, mod.ang, nsamp, 
   # Obtain sample
   err.samp = error.test.eval(nlevel = nlevel, nsamp = nsamp)
   # Accepted points
-  err.samp$delta = 0; err.samp$delta[err.samp$dist < 1] = 1
+  err.samp$delta = 0; err.samp$delta[err.samp$dist <= 2] = 1
   err.samp$cutof = 0; 
-  err.samp$cutof[err.samp$f1.norm < 1 & err.samp$f2.norm < 1] = 1
+  err.samp$cutof[err.samp$f1.norm <= 2 & err.samp$f2.norm <= 2] = 1
   err.samp$radan = 0; 
-  err.samp$radan[err.samp$rad < 1 & err.samp$ang > 20] = 1
+  err.samp$radan[err.samp$rad <= 2 & err.samp$ang > 20] = 1
   
   ## Model estimate: Delta from the pareto front
   res = predict(object = mod.dist, newdata = err.samp[,c('x1', 'x2', 'x3')], type = 'UK')
   # Probability of acceptance
-  p.acc = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  p.acc = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
   # Probability of correct result
   p.err = p.acc
   p.err[err.samp$delta == 1] = 1 - p.err[err.samp$delta == 1]
@@ -353,8 +353,8 @@ error.test.screen = function(mod.dist, mod.f1, mod.f2, mod.rad, mod.ang, nsamp, 
   res1 = predict(object = mod.f1, newdata = err.samp[,c('x1', 'x2', 'x3')], type = 'UK')
   res2 = predict(object = mod.f2, newdata = err.samp[,c('x1', 'x2', 'x3')], type = 'UK')
   # Probability of acceptance
-  p.acc = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*
-    pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+  p.acc = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd)*
+    pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
   # Probability of correct result
   p.err = p.acc
   p.err[err.samp$cutof == 1] = 1 - p.err[err.samp$cutof == 1]
@@ -370,7 +370,7 @@ error.test.screen = function(mod.dist, mod.f1, mod.f2, mod.rad, mod.ang, nsamp, 
   res1 = predict(object = mod.rad, newdata = err.samp[,c('x1', 'x2', 'x3')], type = 'UK')
   res2 = predict(object = mod.ang, newdata = err.samp[,c('x1', 'x2', 'x3')], type = 'UK')
   # Probability of acceptance
-  p.acc = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*
+  p.acc = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd)*
     (1-pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
   # Probability of correct result
   p.err = p.acc
@@ -444,11 +444,11 @@ SVM.err = function(nsamp, mod.list, nlevel = 5){
   # Obtain sample of actual results
   err.samp = error.test.eval(nlevel = nlevel, nsamp = nsamp)
   # Accepted points
-  err.samp$delta = 0; err.samp$delta[err.samp$dist < 1] = 1
+  err.samp$delta = 0; err.samp$delta[err.samp$dist <= 2] = 1
   err.samp$cutof = 0; 
-  err.samp$cutof[err.samp$f1.norm < 1 & err.samp$f2.norm < 1] = 1
+  err.samp$cutof[err.samp$f1.norm <= 2 & err.samp$f2.norm <= 2] = 1
   err.samp$radan = 0; 
-  err.samp$radan[err.samp$rad < 1 & err.samp$ang > 20] = 1
+  err.samp$radan[err.samp$rad <= 2 & err.samp$ang > 20] = 1
   
   ## Model estimates: delta from Pareto front
   err.samp$rad = predict(object = mod.list$rad.delta, newdata = err.samp[,c('x1', 'x2', 'x3')])
@@ -499,29 +499,29 @@ SVM.err = function(nsamp, mod.list, nlevel = 5){
 ```
 
 ```{r SVM: Errors}
-data.start = read.csv(file = 'GPar_all_start.csv')
-data.delta = read.csv('GPar_Accept_Delta1.csv')
-data.cutof = read.csv('GPar_Accept_Threshold.csv')
-data.radan = read.csv('GPar_Accept_Radius.csv')
+data.start = read.csv(file = '../Ex_ZDT4/GPar_all_start.csv')
+data.delta = read.csv('../Ex_ZDT4/GPar_Accept_Delta1.csv')
+data.cutof = read.csv('../Ex_ZDT4/GPar_Accept_Threshold.csv')
+data.radan = read.csv('../Ex_ZDT4/GPar_Accept_Radius.csv')
 
 # Define acceptance: distance
 data.start$cat = 0; data.delta$cat = 0
-data.start$cat[data.start$dist <= 1] = 1
-data.delta$cat[data.delta$dist <= 1] = 1
+data.start$cat[data.start$dist <= 2] = 1
+data.delta$cat[data.delta$dist <= 2] = 1
 mod.delta.pre = SVM.mod.all(input.data = data.start)
 mod.delta.post = SVM.mod.all(input.data = data.delta)
 
 # Define acceptance: Cutoff
 data.start$cat = 0; data.cutof$cat = 0
-data.start$cat[data.start$f1.norm <= 1 & data.start$f2.norm <= 1] = 1
-data.cutof$cat[data.cutof$f1.norm <= 1 & data.cutof$f2.norm <= 1] = 1
+data.start$cat[data.start$f1.norm <= 2 & data.start$f2.norm <= 2] = 1
+data.cutof$cat[data.cutof$f1.norm <= 2 & data.cutof$f2.norm <= 2] = 1
 mod.cutof.pre = SVM.mod.all(input.data = data.start)
 mod.cutof.post = SVM.mod.all(input.data = data.cutof)
 
 # Define acceptance: utopia distance and priority
 data.start$cat = 0; data.radan$cat = 0
-data.start$cat[sqrt(data.start$f1.norm^2 + data.start$f2.norm^2) <= 1 & data.start$theta > 20] = 1
-data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 1 & data.radan$theta > 20] = 1
+data.start$cat[sqrt(data.start$f1.norm^2 + data.start$f2.norm^2) <= 2 & data.start$theta > 20] = 1
+data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 2 & data.radan$theta > 20] = 1
 mod.radan.pre = SVM.mod.all(input.data = data.start)
 mod.radan.post = SVM.mod.all(input.data = data.radan)
 
@@ -577,10 +577,17 @@ fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = gr
 fine.grid = fine.grid[,1:3]
 names(fine.grid) = c('x1', 'x2', 'x3')
 
+# Calculate with models
 fine.grid$rad = predict(object = mod.cutof.post$rad.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$pol = predict(object = mod.cutof.post$pol.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$lin = predict(object = mod.cutof.post$lin.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$sig = predict(object = mod.cutof.post$sig.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
+# True result map
+res = ZDT4.mod(x = as.matrix(fine.grid[,c('x1', 'x2', 'x3')]))
+fine.grid$f1 = res[,1]; fine.grid$f2 = res[,2]
+# Normalize
+fine.grid = n.obj(GPar.data = fine.grid, GPar.front = GPar.front)
+fine.grid$tru = 0; fine.grid$tru[fine.grid$f1.norm <= 2 & fine.grid$f2.norm <= 2] = 1
 
 g1 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = rad)) +
@@ -594,20 +601,36 @@ g3 = ggplot() +
 g4 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = sig)) +
   labs(subtitle = 'SVM: Sigmoidal', x = '', y = '') + guides(color = FALSE)
-((g1 + g2) / (g3 + g4))
-ggplot() +
+# ((g1 + g2) / (g3 + g4))
+g5 = ggplot() +
+  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(tru))) +
+  labs(subtitle = 'Target Result', x = '', y = '') + guides(color = FALSE)
+g6 = ggplot() +
   geom_point(data.cutof, mapping = aes(x = x1, y = x2, alpha = 1-abs(x3 - 0.5), fill = as.factor(cat)), 
              color = 'black', size = 3, shape = 21) +
-  labs(title = 'True Data: Threshold Cutoff', x = '', y = '', fille = 'Designation') + guides(alpha = FALSE)
+  labs(subtitle = 'Training Data', x = '', y = '', fill = 'Designation') + 
+  guides(alpha = FALSE) + scale_fill_discrete(labels = c('Reject', 'Accept'))
 
+((g1 + g2 + g5) / (g3 + g4 + g6))
+```
+```{r}
+# Pareto distance: Cutoff
 fine.grid$rad = predict(object = mod.delta.post$rad.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$pol = predict(object = mod.delta.post$pol.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$lin = predict(object = mod.delta.post$lin.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$sig = predict(object = mod.delta.post$sig.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
+# True result
+fine.grid$dist = NaN
+for(row in 1:nrow(fine.grid)){
+  fine.grid$dist[row] = n.dist(f1.norm = fine.grid$f1.norm[row], 
+                               f2.norm = fine.grid$f2.norm[row], 
+                               GPar.front = GPar.front)
+}
+fine.grid$tru = 0; fine.grid$tru[fine.grid$dist <= 2] = 1
 
 g1 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = rad)) +
-  labs(subtitle = 'SVM: Radius', title = 'Pareto Distance Cutoff', x = '', y = '') + guides(color = FALSE)
+  labs(subtitle = 'SVM: Radius', title = 'Pareto Distance', x = '', y = '') + guides(color = FALSE)
 g2 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = pol)) +
   labs(subtitle = 'SVM: Cubic', x = '', y = '') + guides(color = FALSE)
@@ -617,12 +640,26 @@ g3 = ggplot() +
 g4 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = sig)) +
   labs(subtitle = 'SVM: Sigmoidal', x = '', y = '') + guides(color = FALSE)
-((g1 + g2) / (g3 + g4))
-ggplot() +
+g5 = ggplot() +
+  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(tru))) +
+  labs(subtitle = 'Target Result', x = '', y = '') + guides(color = FALSE)
+# ((g1 + g2) / (g3 + g4))
+g6 = ggplot() +
   geom_point(data.delta, mapping = aes(x = x1, y = x2, alpha = 1-abs(x3 - 0.5), fill = as.factor(cat)), 
              color = 'black', size = 3, shape = 21) +
-  labs(title = 'True Data: Pareto Distance Cutoff', x = '', y = '', fille = 'Designation') + guides(alpha = FALSE)
+  labs(subtitle = 'Training Data', x = '', y = '', fill = 'Designation') + 
+  guides(alpha = FALSE) + scale_fill_discrete(labels = c('Reject', 'Accept'))
+((g1 + g2 + g5) / (g3 + g4 + g6))
 
+```
+
+```{r}
+# Radius and angle
+# True result
+fine.grid$ang = atan(fine.grid$f2.norm/fine.grid$f1.norm)*180/pi*10/9
+fine.grid$rad = sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2)
+fine.grid$tru = 0; fine.grid$tru[fine.grid$rad <= 2 & fine.grid$ang > 20] = 1
+# Models
 fine.grid$rad = predict(object = mod.radan.post$rad.radan, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$pol = predict(object = mod.radan.post$pol.radan, newdata = fine.grid[,c('x1', 'x2', 'x3')])
 fine.grid$lin = predict(object = mod.radan.post$lin.radan, newdata = fine.grid[,c('x1', 'x2', 'x3')])
@@ -630,7 +667,7 @@ fine.grid$sig = predict(object = mod.radan.post$sig.radan, newdata = fine.grid[,
 
 g1 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = rad)) +
-  labs(subtitle = 'SVM: Radius', title = 'Utopia Distance Cutoff', x = '', y = '') + guides(color = FALSE)
+  labs(subtitle = 'SVM: Radius', title = 'Utopia Distance', x = '', y = '') + guides(color = FALSE)
 g2 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = pol)) +
   labs(subtitle = 'SVM: Cubic', x = '', y = '') + guides(color = FALSE)
@@ -640,351 +677,22 @@ g3 = ggplot() +
 g4 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = sig)) +
   labs(subtitle = 'SVM: Sigmoidal', x = '', y = '') + guides(color = FALSE)
-((g1 + g2) / (g3 + g4))
-ggplot() +
+g5 = ggplot() +
+  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(tru))) +
+  labs(subtitle = 'Target Result', x = '', y = '') + guides(color = FALSE)
+# ((g1 + g2) / (g3 + g4))
+g6 = ggplot() +
   geom_point(data.radan, mapping = aes(x = x1, y = x2, alpha = 1-abs(x3 - 0.5), fill = as.factor(cat)), 
              color = 'black', size = 3, shape = 21) +
-  labs(title = 'True Data: Utopia Distance Cutoff', x = '', y = '', fille = 'Designation') + guides(alpha = FALSE)
+  labs(subtitle = 'Training Data', x = '', y = '', fill = 'Designation') + 
+  guides(alpha = FALSE) + scale_fill_discrete(labels = c('Reject', 'Accept'))
+((g1 + g2 + g5) / (g3 + g4 + g6))
 
 ```
 
-The SVM all predict effectively no points will satisfy the criteria. The sole reason the error is so low is because the region of interest is incredibly small compared. This also explains why all SVM model types have the same error rate: they all make effectively the same prediction.
+The SVM all predict effectively no points will satisfy the criteria. The sole reason the error is so low is because the region of interest is incredibly small compared to the total hypervolume space. This also explains why all SVM model types have the same error rate: they all make effectively the same prediction. Further tuning of the SVM models could provide better fits (eg. changing the degree of the polynomials or the gamma parameters). While this could improve the results, this finding highlights a key feature that the GP method has over SVM: accounting for uncertainty in the ML algorithm itself provides more accurate results with less tuning.
 
 ----------
-
-
-
-```{r SVM: Distance}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
-data.delta = read.csv('GPar_Accept_Delta1.csv')
-
-# Define acceptance
-GPar.all$cat = 0; data.delta$cat = 0; fine.grid$cat = 0
-GPar.all$cat[GPar.all$dist <= 1] = 1
-data.delta$cat[data.delta$dist <= 1] = 1
-fine.grid$cat[fine.grid$dist <= 1] = 1
-
-mod.pre = SVM.mod.all(input.data = GPar.all)
-
-SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
-          mod.rad = mod.pre$rad, mod.lin = mod.pre$lin, 
-          mod.pol = mod.pre$pol, mod.sig = mod.pre$sig,
-          tit = 'Pareto Distance, Pre-Refinement')
-
-mod.post = SVM.mod.all(input.data = data.delta)
-
-SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
-          mod.rad = mod.post$rad, mod.lin = mod.post$lin, 
-          mod.pol = mod.post$pol, mod.sig = mod.post$sig,
-          tit = 'Pareto Distance, Post-Refinement')
-
-err.pre = SVM.err(fine.input = fine.grid, mod.list = mod.pre)
-err.pre$source = '0pre'; err.pre$criteria = 'Pareto Distance'
-err.post = SVM.err(fine.input = fine.grid, mod.list = mod.post)
-err.post$source = '1post'; err.post$criteria = 'Pareto Distance'
-
-err.svm.dist = rbind(err.pre, err.post)
-err.svm.dist
-
-ggplot(err.svm.dist) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  facet_wrap(~method, nrow = 1)
-rm(err.pre, err.post)
-
-```
-Graphically, the selection of the kernel form has a large impact on the quality of the result. 
-The polynomial and radial kernels appear to roughly match the shape of the noramlized distance = 1 criterion; 
-the linear and sigmoidal kernels do not appear to match anything. 
-Further tuning of the polynomial degree or coefficient could improve the results, but without a training-testing set delineation, there is no way to validate the results.
-
-Closer inspection of the SVM model with a fine-resolution grid shows the radial function produces an irregularly shaped result that is difficult to describe with means and standard deviations. 
-The polynomial kernel model does not have this issue at the cost of accuracy.
-The black-box function is not clearly invertible, making describing the boundary of what is accepted/rejected difficult.
-Using a Monte Carlo method to marginalize to find the probability given only a single input variable first.
-
-```{r SVM: Distance marginals}
-
-```
-
-
-```{r}
-x.rng = seq(from = 0, to = 5, length.out = 50)
-svm.margin = data.frame()
-nsamp = 2000
-for(x in x.rng){
-  # x1 marginal
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
-  # x1 marginal
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
-}
-
-ggplot(svm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = method)) +
-  facet_wrap(~var, nrow = 2) + theme_classic() + theme(legend.position = c(0.9, 0.85)) +
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'SVM Kernel') +
-  scale_color_discrete(labels = c('pol' = 'Polynomial', 'rad' = 'Radial')) +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(limits = c(0, 1))
-
-p.cut.x1.pol = 0.5*max(filter(svm.margin, var == 'x1', method == 'pol')$prob)
-p.cut.x2.pol = 0.5*max(filter(svm.margin, var == 'x2', method == 'pol')$prob)
-x1.pol.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x1', method == 'pol')$x)
-x2.pol.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method == 'pol')$x)
-p.cut.x1.rad = 0.5*max(filter(svm.margin, var == 'x1', method == 'rad')$prob)
-p.cut.x2.rad = 0.5*max(filter(svm.margin, var == 'x2', method == 'rad')$prob)
-x1.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x1', method == 'rad')$x)
-x2.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method == 'rad')$x)
-
-for(x in x.rng){
-  # x1 marginal
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.pol.rng), max = max(x2.pol.rng)))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.rad.rng), max = max(x2.rad.rng)))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
-  # x1 marginal
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.pol.rng), max = max(x1.pol.rng)))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.rad.rng), max = max(x1.rad.rng)))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
-}
-
-ggplot(svm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = method, linetype = as.factor(ncond))) +
-  facet_wrap(~var, nrow = 2) + theme_classic() + 
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'SVM Kernel', linetype = '# Conditions') +
-  scale_color_discrete(labels = c('pol' = 'Polynomial', 'rad' = 'Radial')) +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(limits = c(0, 1))
-
-write.csv(svm.margin, 'Margin_SVM_dist.csv')
-
-```
-
-The single-variable marginals roughly match expectation for x1, although the probabilities estimated by SVM are higher than those estimated by the GP. This is expected since the GP automatically accounts for model uncertainty, but the SVM Monte Carlo does not account for the inaccuracy of the model.
-For x2, the marginal for the polynomial kernel does not capture the multimodal nature of the curve, consistent with the shape of the fine-resolution depiction of the model. The radial kernel captures this feature, but smooths it out compared to the GP estimate.
-The partial conditional, where the secondary variable is bounded to its "optimal" region shows obvious improvement in the probability, but not in the the shape of the curves.
-
-Repeating for the f1 and f2 cutoffs.
-
-```{r SVM: Threshold}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
-data.cutof = read.csv('GPar_Accept_Threshold.csv')
-
-# Define acceptance
-GPar.all$cat = 0; data.cutof$cat = 0; fine.grid$cat = 0
-GPar.all$cat[GPar.all$f1.norm <= 1 & GPar.all$f2.norm <= 1] = 1
-data.cutof$cat[data.cutof$f1.norm <= 1 & data.cutof$f2.norm <= 1] = 1
-fine.grid$cat[fine.grid$f1.norm <= 1 & fine.grid$f2.norm <= 1] = 1
-
-mod.pre = SVM.mod.all(input.data = GPar.all)
-
-SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
-          mod.rad = mod.pre$rad, mod.lin = mod.pre$lin, 
-          mod.pol = mod.pre$pol, mod.sig = mod.pre$sig,
-          tit = 'Pareto Distance, Pre-Refinement')
-
-mod.post = SVM.mod.all(input.data = data.delta)
-
-SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
-          mod.rad = mod.post$rad, mod.lin = mod.post$lin, 
-          mod.pol = mod.post$pol, mod.sig = mod.post$sig,
-          tit = 'Pareto Distance, Post-Refinement')
-
-err.pre = SVM.err(fine.input = fine.grid, mod.list = mod.pre)
-err.pre$source = '0pre'; err.pre$criteria = 'Objective Cutoff'
-err.post = SVM.err(fine.input = fine.grid, mod.list = mod.post)
-err.post$source = '1post'; err.post$criteria = 'Objective Cutoff'
-
-err.svm.threshold = rbind(err.pre, err.post)
-err.svm.threshold
-
-ggplot(err.svm.threshold) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  facet_wrap(~method, nrow = 1)
-rm(err.pre, err.post)
-
-```
-
-```{r}
-x.rng = seq(from = 0, to = 5, length.out = 50)
-svm.margin = data.frame()
-nsamp = 2000
-for(x in x.rng){
-  # x1 marginal
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
-  # x1 marginal
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
-}
-
-ggplot(svm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = method)) +
-  facet_wrap(~var, nrow = 2) + theme_classic() + theme(legend.position = c(0.9, 0.85)) +
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'SVM Kernel') +
-  scale_color_discrete(labels = c('pol' = 'Polynomial', 'rad' = 'Radial')) +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(limits = c(0, 1))
-
-p.cut.x1.pol = 0.5*max(filter(svm.margin, var == 'x1', method == 'pol')$prob)
-p.cut.x2.pol = 0.5*max(filter(svm.margin, var == 'x2', method == 'pol')$prob)
-x1.pol.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x1', method == 'pol')$x)
-x2.pol.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method == 'pol')$x)
-p.cut.x1.rad = 0.5*max(filter(svm.margin, var == 'x1', method == 'rad')$prob)
-p.cut.x2.rad = 0.5*max(filter(svm.margin, var == 'x2', method == 'rad')$prob)
-x1.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x1', method == 'rad')$x)
-x2.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method == 'rad')$x)
-
-for(x in x.rng){
-  # x1 marginal
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.pol.rng), max = max(x2.pol.rng)))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.rad.rng), max = max(x2.rad.rng)))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
-  # x1 marginal
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.pol.rng), max = max(x1.pol.rng)))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.rad.rng), max = max(x1.rad.rng)))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
-}
-
-ggplot(svm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = method, linetype = as.factor(ncond))) +
-  facet_wrap(~var, nrow = 2) + theme_classic() + 
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'SVM Kernel', linetype = '# Conditions') +
-  scale_color_discrete(labels = c('pol' = 'Polynomial', 'rad' = 'Radial')) +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(limits = c(0, 1))
-
-write.csv(svm.margin, 'Margin_SVM_threshold.csv')
-
-```
-
-Graphically, the results are the same as the distance cutoff: the polynomial and radial kernels perform best, with the radial kernel over-complicated and the polynomial kernel oversimplified compared to the true boundary.
-
-Repeat for radius-angle cutoff
-```{r SVM: Radius and Priority}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
-data.radan = read.csv('GPar_Accept_Radius.csv')
-
-# Define acceptance
-GPar.all$cat = 0; data.radan$cat = 0; fine.grid$cat = 0
-GPar.all$cat[sqrt(GPar.all$f1.norm^2 + GPar.all$f2.norm^2) <= 1 & GPar.all$theta > 20] = 1
-data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 1 & data.radan$theta > 20] = 1
-fine.grid$cat[sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2) <= 1 & fine.grid$ang > 20] = 1
-
-mod.pre = SVM.mod.all(input.data = GPar.all)
-
-SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
-          mod.rad = mod.pre$rad, mod.lin = mod.pre$lin, 
-          mod.pol = mod.pre$pol, mod.sig = mod.pre$sig,
-          tit = 'Utopia Distance and Priority, Pre-Refinement')
-
-mod.post = SVM.mod.all(input.data = data.delta)
-
-SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')], 
-          mod.rad = mod.post$rad, mod.lin = mod.post$lin, 
-          mod.pol = mod.post$pol, mod.sig = mod.post$sig,
-          tit = 'Utopia Distance and Priority, Post-Refinement')
-
-err.pre = SVM.err(fine.input = fine.grid, mod.list = mod.pre)
-err.pre$source = '0pre'; err.pre$criteria = 'Utopia Distance + Priority'
-err.post = SVM.err(fine.input = fine.grid, mod.list = mod.post)
-err.post$source = '1post'; err.post$criteria = 'Utopia Distance + Priority'
-
-err.svm.radan = rbind(err.pre, err.post)
-err.svm.radan
-
-ggplot(err.svm.radan) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  facet_wrap(~method, nrow = 1)
-rm(err.pre, err.post)
-
-```
-
-```{r}
-x.rng = seq(from = 0, to = 5, length.out = 50)
-svm.margin = data.frame()
-nsamp = 2000
-for(x in x.rng){
-  # x1 marginal
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
-  # x1 marginal
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = 0, max = 5))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'pol'))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 0, prob = sum(res)/length(res), method = 'rad'))
-}
-
-ggplot(svm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = method)) +
-  facet_wrap(~var, nrow = 2) + theme_classic() + theme(legend.position = c(0.9, 0.85)) +
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'SVM Kernel') +
-  scale_color_discrete(labels = c('pol' = 'Polynomial', 'rad' = 'Radial')) +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(limits = c(0, 1))
-
-p.cut.x1.pol = 0.5*max(filter(svm.margin, var == 'x1', method == 'pol')$prob)
-p.cut.x2.pol = 0.5*max(filter(svm.margin, var == 'x2', method == 'pol')$prob)
-x1.pol.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x1', method == 'pol')$x)
-x2.pol.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method == 'pol')$x)
-p.cut.x1.rad = 0.5*max(filter(svm.margin, var == 'x1', method == 'rad')$prob)
-p.cut.x2.rad = 0.5*max(filter(svm.margin, var == 'x2', method == 'rad')$prob)
-x1.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x1', method == 'rad')$x)
-x2.rad.rng = range(filter(svm.margin, prob > p.cut.x1.pol, var == 'x2', method == 'rad')$x)
-
-for(x in x.rng){
-  # x1 marginal
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.pol.rng), max = max(x2.pol.rng)))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
-  temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = min(x2.rad.rng), max = max(x2.rad.rng)))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x1', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
-  # x1 marginal
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.pol.rng), max = max(x1.pol.rng)))
-  res = as.numeric(predict(object = mod.post$pol, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'pol'))
-  temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = min(x1.rad.rng), max = max(x1.rad.rng)))
-  res = as.numeric(predict(object = mod.post$rad, newdata = temp.frame))-1
-  svm.margin = rbind(svm.margin, data.frame(x = x, var = 'x2', ncond = 1, prob = sum(res)/length(res), method = 'rad'))
-}
-
-ggplot(svm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = method, linetype = as.factor(ncond))) +
-  facet_wrap(~var, nrow = 2) + theme_classic() + 
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'SVM Kernel', linetype = '# Conditions') +
-  scale_color_discrete(labels = c('pol' = 'Polynomial', 'rad' = 'Radial')) +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(limits = c(0, 1))
-
-write.csv(svm.margin, 'Margin_SVM_radius.csv')
-
-
-```
-
-Compared to the training data, the results work very well for the radial kernel only. However, when compared to the full system evaluation with a fine resolution grid, it is evident that there is some overfitting. This leads to unusual curves for the conditional probabilities. This generally indicates that more complicated selection criteria, particularly those that lead to discontinuous regions of acceptance, are not likely to behave well with the SVM.
 
 # Existing Method: Gaussian Mixtures
 
@@ -998,12 +706,12 @@ For the purposes of analysis, three models will be tested based on the input to 
 Up to 12 categories will be allowed, and any type of Gaussian models will be accepted. This will lead to longer fitting time, but should help with accuracy.
 
 ```{r}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
+GPar.all = read.csv(file = '../Ex_ZDT4/GPar_all_start.csv')
 
 # names(GPar.all)
 max.cat = 12
-cluster.all = Mclust(data = GPar.all[,c('x1', 'x2', 'f1', 'f2')], G = 2:max.cat)
-cluster.in = Mclust(data = GPar.all[,c('x1', 'x2')], G = 2:max.cat)
+cluster.all = Mclust(data = GPar.all[,c('x1', 'x2', 'x3', 'f1', 'f2')], G = 2:max.cat)
+cluster.in = Mclust(data = GPar.all[,c('x1', 'x2', 'x3')], G = 2:max.cat)
 cluster.out = Mclust(data = GPar.all[,c('f1', 'f2')], G = 2:max.cat)
 
 ```
@@ -1014,275 +722,29 @@ cluster.out = Mclust(data = GPar.all[,c('f1', 'f2')], G = 2:max.cat)
 GPar.all$typ.all = cluster.all$classification
 GPar.all$typ.in = cluster.in$classification
 GPar.all$typ.out = cluster.out$classification
+sz = 2.5
+ggplot(GPar.all) +
+  geom_point(mapping = aes(x = x1, y = x2, color = as.factor(typ.all), 
+                           alpha = 1-abs(x3 - 0.5)), size = sz) +
+  guides(alpha = FALSE)
 
-ggplot() +
-  # Boundaries: +/- some separation from 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist, color = 'delta'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1, color = 'cutof'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = rad, color = 'rad'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ang, color = 'ang'), breaks = c(50)) +
-  # Pareto frontier
-  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), 
-              level = 0.95, formula = (y~x), method = 'loess') + 
-  # Clustering
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, fill = as.factor(typ.all)), size = 2.5, shape = 21) +
+ggplot(GPar.all) +
+  geom_point(mapping = aes(x = x1, y = x2, color = as.factor(typ.in), 
+                           alpha = 1-abs(x3 - 0.5)), size = sz) +
+  guides(alpha = FALSE)
 
-  labs(x = expression('x'[1]), y = expression('x'[2]), 
-       color = 'Acceptance Criteria', fill = 'Group', 
-       subtitle = '(x1, x2, f1, f2)') +
-  scale_color_manual(values = c('delta' = '#1b9e77', 'cutof' = '#d95f02', 
-                                'rad' = '#7570b3', 'ang' = '#e7298a', 
-                                'Pareto' = 'black'),
-                     labels = c('delta' = expression(delta*' < 1'), 
-                                'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
-                                'rad' = expression('r < 1'),
-                                'ang' = expression('F'[1]*'and F'[2]*' Balance'),
-                                'Pareto' = expression('Pareto Front')),
-                     breaks = c('delta', 'cutof', 'rad', 'ang', 'Pareto')) +
-  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
-  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
-
-ggplot() +
-  # Boundaries: +/- some separation from 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist, color = 'delta'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1, color = 'cutof'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = rad, color = 'rad'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ang, color = 'ang'), breaks = c(50)) +
-  # Pareto frontier
-  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), 
-              level = 0.95, formula = (y~x), method = 'loess') + 
-  # Clustering
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, fill = as.factor(typ.in)), size = 2.5, shape = 21) +
-
-  labs(x = expression('x'[1]), y = expression('x'[2]), 
-       color = 'Acceptance Criteria', fill = 'Group', 
-       subtitle = '(x1, x2)') +
-  scale_color_manual(values = c('delta' = '#1b9e77', 'cutof' = '#d95f02', 
-                                'rad' = '#7570b3', 'ang' = '#e7298a', 
-                                'Pareto' = 'black'),
-                     labels = c('delta' = expression(delta*' < 1'), 
-                                'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
-                                'rad' = expression('r < 1'),
-                                'ang' = expression('F'[1]*'and F'[2]*' Balance'),
-                                'Pareto' = expression('Pareto Front')),
-                     breaks = c('delta', 'cutof', 'rad', 'ang', 'Pareto')) +
-  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
-  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
-
-ggplot() +
-  # Boundaries: +/- some separation from 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist, color = 'delta'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1, color = 'cutof'), breaks = c(0.5)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = rad, color = 'rad'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ang, color = 'ang'), breaks = c(50)) +
-  # Pareto frontier
-  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), 
-              level = 0.95, formula = (y~x), method = 'loess') + 
-  # Clustering
-  geom_point(data = GPar.all, mapping = aes(x = x1, y = x2, fill = as.factor(typ.out)), size = 2.5, shape = 21) +
-
-  labs(x = expression('x'[1]), y = expression('x'[2]), 
-       color = 'Acceptance Criteria', fill = 'Group', 
-       subtitle = '(f1, f2)') +
-  scale_color_manual(values = c('delta' = '#1b9e77', 'cutof' = '#d95f02', 
-                                'rad' = '#7570b3', 'ang' = '#e7298a', 
-                                'Pareto' = 'black'),
-                     labels = c('delta' = expression(delta*' < 1'), 
-                                'cutof' = expression('F'[1]^'*'*'< 1, F'[2]^'*'*'< 1'), 
-                                'rad' = expression('r < 1'),
-                                'ang' = expression('F'[1]*'and F'[2]*' Balance'),
-                                'Pareto' = expression('Pareto Front')),
-                     breaks = c('delta', 'cutof', 'rad', 'ang', 'Pareto')) +
-  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
-  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
+ggplot(GPar.all) +
+  geom_point(mapping = aes(x = x1, y = x2, color = as.factor(typ.out), 
+                           alpha = 1-abs(x3 - 0.5)), size = sz) +
+  guides(alpha = FALSE)
 
 ```
 
-The complete input (x1, x2, f1, f2) overcomplicates the system, providing 8 groups. One of these groups is clearly the Pareto frontier, but it does not include any points that are of similar performance. There are points to either side of it suggesting similar performance, but how far they extend is difficult to interpret.
+The complete set of inputs and outputs (x1, x2, x3, f1, f2) produces groups that are defined almost exclusively by f1 and x1, ignoring the Pareto frontier. The negative control of only the inputs based on sample density. The output-only test appears to separate out the Pareto front, but does not include any regions close to it. Overall, this unsupervised method does not work with such a sparse dataset.
 
-The negative control (x1, x2) gives the expected result of largely grouping based on sampling density. This means the highly sampled Pareto frontier and local minimum are their own groups, and the rest of the space is divided based around the boundary between the highly sampled regions.
-
-The output-only model gives the most useful results, as it groups the Pareto frontier inside of another high-performing group, which also includes the local optimum and the space spanning to it. It roughly lines up with the Pareto distance or threshold criteria; it does not appear to prioritize the angle or utopia distance. Showing only this model at finer resolution as it is the only relevant performing model
-
-```{r}
-res = predict(object = cluster.out, newdata = fine.grid[c('f1', 'f2')])
-fine.grid$cluster.out = res$classification
-ggplot() +
-  # Cluster results
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(cluster.out))) +
-  # Boundaries: +/- some separation from 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), color = 'black', breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), color = 'red', breaks = c(0.5)) +
-
-  labs(x = expression('x'[1]), y = expression('x'[2]), 
-       color = 'Group', fill = 'Group', 
-       subtitle = '(f1, f2)') +
-  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
-  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
-
-res = predict(object = cluster.all, newdata = fine.grid[c('x1', 'x2', 'f1', 'f2')])
-fine.grid$cluster.all = res$classification
-ggplot() +
-  # Cluster results
-  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(cluster.all)), size = 4) +
-  # Boundaries: +/- some separation from 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), color = 'black', breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), color = 'red', breaks = c(0.5)) +
-
-  labs(x = expression('x'[1]), y = expression('x'[2]), 
-       color = 'Group', fill = 'Group', 
-       subtitle = '(x1, x2, f1, f2)') +
-  theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
-  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
-
-ggplot() +
-  # Cluster results
-  geom_point(data = filter(fine.grid, f2 < 50, f1 < 200), mapping = aes(x = f1, y = f2, color = as.factor(cluster.all)), size = 2) +
-  labs(x = expression('f'[1]), y = expression('f'[2]), 
-       color = 'Group', fill = 'Group', 
-       subtitle = '(x1, x2, f1, f2)') +
-  theme_classic() +
-  guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
-
-```
-
-The (f1, f2) model appears to give a cluster that is somewhere between a threshold cutoff and the Pareto distance cutoff. 
-In contrast, the behavior of the (x1, x2, f1, f2) model provides many more groups, including splitting the Pareto front into about three different categories with no obvious analog to why the boundaries are where they are. 
-It appears to roughly fit the same boundaries of Pareto distance or threshold cutoffs, but not very well. 
-A rough approximation is that groups (5, 6) are the Pareto front, groups (2, 3, 7) make up the region close to the Pareto front, and (1, 4, 8) are the region far from the front.
-
-The model for (f1, f2) is going to give the same conditional probabilities as the Pareto distance or threshold acceptance criteria based on this similarity in the shape of the boundary. 
-The interesting result to interpret is the (x1, x2, f1, f2), particularly when marginalizing to (x1, x2). 
-Assuming that calculating (f1, f2) is expensive, the best approximation is that found from the GP models used to find the Pareto front itself. 
-These will give (f1, f2) as a bivariate Gaussian distribution, which can be sampled from to estimate the likelihood that it falls into the Pareto front, the region close to it, or the region far from it.
-This is achievable with a sequential Monte Carlo: given x1, sample x2 from the range, find the distribution of (f1, f2), sample (f1, f2), and solve the classification into the three groups.
-
-```{r}
-f1.mod = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f1')
-f2.mod = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f2')
-
-x.rng = seq(from = 0, to = 5, length.out = 50)
-nsamp.x = 100; nsamp.f = 100
-gm.margin = data.frame()
-for(x in x.rng){
-  # x1
-  # Sample x2
-  inframe = data.frame(x1 = x, x2 = runif(n = nsamp.x, min = 0, max = 5))
-  classes = c()
-  for(n in 1:nrow(inframe)){
-    # Estimate distribution for f1, f2
-    f1.est = predict(object = f1.mod, newdata = inframe, type = 'UK')
-    f2.est = predict(object = f2.mod, newdata = inframe, type = 'UK')
-    test.frame = data.frame(x1 = inframe$x1, x2 = inframe$x2,
-                            f1 = rnorm(n = nsamp.f, mean = f1.est$mean, sd = f1.est$sd),
-                            f2 = rnorm(n = nsamp.f, mean = f2.est$mean, sd = f2.est$sd))
-    res = predict(object = cluster.all, newdata = test.frame)
-    classes = c(classes, res$classification)
-  }
-  classes = data.frame(group = classes)
-  gm.margin = rbind(gm.margin, data.frame(x = x, var = 'x1', 
-                         p.pare = nrow(filter(classes, group == 5 | group == 6))/(nsamp.f*nsamp.x), 
-                         p.near = nrow(filter(classes, group == 2 | group == 3 | group == 7))/(nsamp.f*nsamp.x), 
-                         p.dist = nrow(filter(classes, group == 1 | group == 4 | group == 8))/(nsamp.f*nsamp.x)))
-  # x2
-  # Sample x2
-  inframe = data.frame(x2 = x, x1 = runif(n = nsamp.x, min = 0, max = 5))
-  classes = c()
-  for(n in 1:nrow(inframe)){
-    # Estimate distribution for f1, f2
-    f1.est = predict(object = f1.mod, newdata = inframe, type = 'UK')
-    f2.est = predict(object = f2.mod, newdata = inframe, type = 'UK')
-    test.frame = data.frame(x1 = inframe$x1, x2 = inframe$x2,
-                            f1 = rnorm(n = nsamp.f, mean = f1.est$mean, sd = f1.est$sd),
-                            f2 = rnorm(n = nsamp.f, mean = f2.est$mean, sd = f2.est$sd))
-    res = predict(object = cluster.all, newdata = test.frame)
-    classes = c(classes, res$classification)
-  }
-  classes = data.frame(group = classes)
-  gm.margin = rbind(gm.margin, data.frame(x = x, var = 'x2', 
-                         p.pare = nrow(filter(classes, group == 5 | group == 6))/(nsamp.f*nsamp.x), 
-                         p.near = nrow(filter(classes, group == 2 | group == 3 | group == 7))/(nsamp.f*nsamp.x), 
-                         p.dist = nrow(filter(classes, group == 1 | group == 4 | group == 8))/(nsamp.f*nsamp.x)))
-}
-
-write.csv(gm.margin, 'Margin_GM.csv')
-```
-
-```{r}
-gm.margin = read.csv('Margin_GM.csv')
-gm.margin = data.frame(x = rep(gm.margin$x, 3),
-                       var = rep(gm.margin$var, 3),
-                       prob = c(gm.margin$p.pare, gm.margin$p.near, gm.margin$p.dist),
-                       typ = c(rep('Pareto', nrow(gm.margin)), 
-                               rep('Near-Pareto', nrow(gm.margin)), 
-                               rep('Suboptimal', nrow(gm.margin))))
-ggplot(gm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = typ)) +
-  facet_wrap(~var, nrow = 2) +
-  scale_color_brewer(palette = 'Dark2') + 
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'Region')
-
-gm.margin = read.csv('Margin_GM.csv')
-gm.margin = data.frame(x = rep(gm.margin$x),
-                       var = rep(gm.margin$var),
-                       prob = gm.margin$p.pare + gm.margin$p.near,
-                       typ = 'Optimal')
-ggplot(gm.margin) +
-  geom_path(mapping = aes(x = x, y = prob, color = typ)) +
-  facet_wrap(~var, nrow = 2) +
-  scale_color_brewer(palette = 'Dark2') + 
-  labs(x = 'Input Value', y = 'Conditional Probability', color = 'Region')
-
-```
-
-The estimated probability of being optimal (Pareto front group or the near-Pareto group) is similar to that calculated through the other methods for the Pareto distance or threshold criteria. However, because of the numerous variables required to generate the model, a larger and more complicated sampling procedure is necessary for accurate estimates.
-
-
-# Comaprison of method accuracies
-
-The error rate can only be compared between the the GP and SVM methods because the accuracy is dependent on the selection criteria that were set.
-
-```{r Error comparison}
-dat = rbind(error.rate, err.svm.dist, err.svm.radan, err.svm.threshold)
-dat$criteria[dat$criteria == 'Utopia Distance + Priority'] = 'Distance + Priority'
-
-ggplot(dat) +
-  geom_col(mapping = aes(x = source, fill = source, y = rate)) +
-  geom_errorbar(mapping = aes(x = source, y = rate, ymax = rate+err, ymin = rate-err), width = 0.5) +
-  facet_grid(criteria~method, switch = 'x') +
-  scale_x_discrete(breaks = c()) + scale_y_continuous(expand = c(0.01, 0)) +
-  scale_fill_discrete(labels = c('0pre' = 'Before', '1post' = 'After'), breaks = c('0pre', '1post')) +
-  labs(x = '', y = 'Error Probability', fill = 'Refined')
-ggplot(filter(dat, method != 'SVM-sig')) +
-  geom_col(mapping = aes(x = source, fill = source, y = rate)) +
-  geom_errorbar(mapping = aes(x = source, y = rate, ymax = rate+err, ymin = rate-err), width = 0.5) +
-  facet_grid(criteria~method, switch = 'x') +
-  scale_x_discrete(breaks = c()) + scale_y_continuous(expand = c(0.01, 0)) +
-  scale_fill_discrete(labels = c('0pre' = 'Before', '1post' = 'After'), breaks = c('0pre', '1post')) +
-  labs(x = '', y = 'Error Probability', fill = 'Refined')
-
-rm(dat)
-
-```
-
-The iterative refinement process does not help the accuracy of the SVM models; in many cases, the additional training data leads to worse fitting. In general, the GP method for determining whether the point meets the selection criteria is more accurate, particularly after refinement with additional training data. The models could become more comparable with further tuning of free variables of the kernel functions (eg. changing the power of the polynomial kernel), but for systems where calculating the exact value is time-consuming, obtaining training-testing data to tune that variable may be difficult.
-
-A qualitative comparison can be made among the methods' probability outputs, as well as the true marginal estimate.
-
-```{r}
-
-```
-
-
-# Overall:
+# Conclusions:
 * The unsupervised ML model (Gaussian mixture) can only tend towards the criteria of having output values similar to that of the Pareto front. However, in order to obtain the model, all of the inputs and outputs are used, meaning to solve the single-variable probabilities, one must perform a time-consuming nested sampling procedure.
-* The supervised ML model (Support Vector Machines) are flexible to selection criteria because those are part of the user input into generating the model. It is very sensitive to the kernel function that was selected, with the radial and polynomial forms working best for this specific case. When compared to the actual function, these good-fitting kernels appeared to be over-fit to the data and cannot capture the full dynamics of the space. In practice, separate training and testing sets should be used, which may be difficult for more complex objective functions due to more function evaluations. 
+* The established supervised ML model (Support Vector Machines) are flexible to selection criteria because those are part of the user input into generating the model. It is very sensitive to the kernel function that was selected, with the radial and polynomial forms working best for this specific case. When compared to the actual function, these good-fitting kernels appeared to be over-fit to the data and cannot capture the full dynamics of the space. In practice, separate training and testing sets should be used, which may be difficult for more complex objective functions due to more function evaluations. 
 * The GP method requires iterative sampling, and therefore requires more time to compute initially. However, it accounts for the uncertainty in the model explicitly, whereas the SVM methods rely purely on frequentist sampling. This means the single-variable probabilities from the GP model estimate are generally lower than those estimated from the SVM.
 * More complicated conditions, such as only accepting points that prioritize one objective over the other by a certain margin, are difficult for both supervised learning methods to estimate, but the results from the SVM appear to be worse compared to the actual boundaries.
-* The SVM methods give single-variable probabilities that are 
 
