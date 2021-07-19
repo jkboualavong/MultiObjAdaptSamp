@@ -9,32 +9,14 @@ output: html_notebook
 <!--     variant: markdown_github -->
 
 # Description
-This notebook showcases the method below for finding acceptable suboptimal performance in the fourth rest function form Zitzler, Deb, and Thiele, 2000. 
-The function is changed slightly to have a lower frequency in its cosine term to make it more reflective of physical systems.
-The notebook will first test the algorithm using 3 inputs.
-
-The intention is for this procedure to be applied to optimization problems where the input variables are discrete but unknown, such as selecting appropriate chemical compounds from a large set of options, and guide decisionmaking by indicating which variables are most important and what values it should have to yield optimal performance.
-
-# Algorithm concept:
-* I. Setup: find the Pareto frontier of the 2D optimization problem
-1. Solve objective functions with a space filling method to obtain an initial set of data.
-2. Use GPareto to find the Pareto front.
-3. Calculatate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics will be used to establish the acceptable suboptimal performance and the relative importance of each input variable.
-
-* II. Acceptable suboptimal performance (the "near-Pareto set")
-4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
-5. Using Gaussian processes, create a new objective called the "sample utility" function that describes the probability of meeting the desired distance and objective function criteria, multiplied by the variance.
-6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or the sample utility function maximum drops below a specified threshold, often relative to first maximum.
-
-* III. Feature importance of each input variable
-7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
-8. Calculate the variance of the 1-variable conditional probability expectation value at each input value. The area under the variance curve indicates the relative importance of the other variables.
-9. Determine the normalized areas between these quantiles for all 1-variable conditionals. The most important variable is the one that has the smallest area, i.e. the other variables have small impact on whether or not the result meets the selection criteria.
-10. Calculate the same conditional probability, but given the that the most important variable falls within its optimal range and the second most important variable is known.
-11. Repeat step 10 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
+This notebook uses a newly developed Gaussian Process-based method to solve for the near-optimal set of solutions for CO2 capture using proton coupled electron transfers (PCET) to drive pH swings. 
+The work assumes that the redox molecule is a quinone, and restricts the search to only combinations of properties that a quinone is likely to have.
+After determining the restricted search space, the performance of CO2 capture, defined by minimum energy demand and the CO2 capture flux, will be determined using established thermodynamic and kinetics equations.
+The resulting Pareto frontier of this bi-objective problem is solved using the GPareto package, then characterized to define acceptable sub-optimal performance in the likely event that a compound with the exact specifications of any of the Pareto frontier estimates not exist.
+The near-optimal set will be solved using the established method (see other mathematical examples for details and description of the algorithm) to describe what criteria the optimal quinone and solution composition should have.
 
 # Code
-## 0. Initialization
+## Initialization
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -60,27 +42,864 @@ library(DiceOptim)
 library(GA)
 ```
 
-The modified function ZDT4 takes N inputs, each on the domain of (0,1). The function is built into the GPareto package and does not need to be constructed explicitly.
+## Parameter space
+Data for restricting the quinone features is based on results from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
 
-## I. Setup: 
-Find the Pareto frontier of the 2D optimization problem
+Remove points that are not likely to be stable within the electrochemcial window of water. For the process:
+Q + 2e- + 2H+ <-> QH2
+We can roughly assume that the reduction reaction is competing with hydrogen evolution
+2H+ + 2e- <-> H2
+and the oxidation reaction is competing with oxygen evolution
+2H2O + 4OH- <-> O2 + 4e-
 
-The ZDT4 function has been modified slightly (changing the frequency of the cosine term) to have fewer local optima. This helps speed up calculations, as well as makes it more representative of the physical systems to test, which are not going to have very many rapid changes.
+Both of these reactions are pH dependent, so the cutoff values are not obvious. 
+At the extreme, the reduction potential of hydrogen evolution will be at its highest (most likely to compete with the quinone reduction) at the lowest pH, which would typically be at the pH where carbonic acid makes up > 90% of the CO2 speciation (pH = 5.33).
+Similarly, the reduction potential of oxygen evolution will be at its lowest at the highest pH, which would be just above the hydroquinone's buffer region (the higher of its pKas + 1).
+
+Practically, the quinone electrochemistry has much faster kinetics than either gas evolution reaction in the absence of a specific water-splitting catalyst, so a tolerance of about 200 mV will be added to accommodate.
 
 ```{r}
-ZDT4.mod = function (x) 
-{
-  if (is.null(dim(x))) {
-    x <- matrix(x, nrow = 1)
+# Load data and correlation plot package
+quinone.data = read.csv(file = 'HuynhData.csv', skip = 1)
+
+# Filter the data to only those whose reaction would be stable in water
+## Hydrogen evolution
+h2.evo = -59.2*1e-3 * 5.33
+quinone.data = filter(quinone.data, E0.2 > h2.evo)
+
+## Cutoff value for oxygen evolution
+o2.evo = 1.229 + -59.2*1e-3*quinone.data$Pka.2+1
+quinone.data = filter(quinone.data, E0.1 < o2.evo)
+
+quinone.data
+
+# Correlation plot between the E0 and pka values
+cor.mat = matrix(data = rep(0, 16), nrow = 4)
+for(i in seq(from = 6, to = 9, by = 1)){
+  for(j in seq(from = i, to = 9, by = 1)){
+    cor.mat[i-5,j-5] = cor(x = quinone.data[,i], y = quinone.data[,j])
   }
-  n <- ncol(x)
-  g <- 1 + 10 * (n - 1) + rowSums((x[, 2:n, drop = FALSE] * 
-    0.5 - 0.25)^2 - 10 * cos(0.5 * pi * (x[, 2:n, drop = FALSE] * 
-    10 - 5)))
-  return(cbind(x[, 1], g * (1 - sqrt(x[, 1]/g))))
+}
+cor.mat
+
+g1 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.1, x = E0.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[1,2], 3))) 
+g2 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.1, x = Pka.1)) +
+  labs(subtitle = paste('r = ', round(cor.mat[1,3], 3)))
+g3 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.1, x = Pka.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[1,4], 3)))
+g4 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.2, x = Pka.1)) +
+  labs(subtitle = paste('r = ', round(cor.mat[2,3], 3)))
+g5 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.2, x = Pka.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[2,4], 3)))
+g6 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = Pka.1, x = Pka.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[3,4], 3)))
+
+(g1 + g2 + g3) / (plot_spacer() + g4 + g5) / (plot_spacer() + plot_spacer() + g6)
+rm(g1, g2, g3, g4, g5, g6)
+rm(h2.evo, i, j, o2.evo, cor.mat)
+```
+
+While all four variables are strongly co-correlated, this is largely irrelevant because the thermodynamic and kinetic analyses do not rely on the reduction potential besides assuming that gas evolution does not occur.
+There is a Bronsted-like relationship between the reduction potential and the reaction rate of the deprotonated hydroquinone nucleophilically attacking the CO2 [Simpson & Durand 1990, doi: 10.1016/0013-4686(90)85012-C], but this is not likely to be the dominant mechanism because the reaction with OH- is approximately 10 to 100 times faster in water.
+To determine which pKa will be the free variable and which will be represented by an error term of the linear regression, the relative normalized standard deviations of the errors were compared. 
+
+```{r}
+print('pka2 as free variable, pKa1 as the solved variable')
+mod1 = lm(Pka.1 ~ Pka.2, data = quinone.data)
+sd(mod1$residuals[abs(mod1$residuals) < 10]) / diff(range(quinone.data$Pka.1))
+  
+print('pka1 as free variable, pKa2 as the solved variable')
+mod2 = lm(Pka.2 ~ Pka.1, data = quinone.data)
+sd(mod2$residuals[abs(mod2$residuals) < 10]) / diff(range(quinone.data$Pka.2))
+
+x = c(unname(mod1$residuals), unname(mod2$residuals))
+var = c(rep('pka1', length(mod1$residuals)), rep('pka2', length(mod1$residuals)))
+ggplot(data.frame(x, var)) +
+  geom_density(mapping = aes(x = x, color = var)) +
+  scale_color_manual(labels = c('pka1' = 'pka1 = f(pka2)', 'pka2' = 'pka2 = f(pka1)'),
+                     values = c('pka1' = 'red', 'pka2' = 'blue'), name = '') +
+  labs(x = 'Residual', y = 'Probability Density')
+
+# Determine the value for the standard deviation that should be used to encompass 98% of the search space
+q1 = quantile(mod2$residuals, probs = c(0.01))
+q2 = quantile(mod2$residuals, probs = c(0.99))
+# Plot the data and the search space
+fit.ln = data.frame(Pka.1 = seq(from = -8.33, to = 13.41, length.out = 3))
+fit.ln$Pka.2 = predict(object = mod2, newdata = fit.ln)
+ggplot() +
+  geom_point(quinone.data, mapping = aes(x = Pka.1, y = Pka.2), color = 'blue', alpha = 0.5) +
+  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.2), color = 'black', linetype = 1) +
+  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.2+q2), color = 'black', linetype = 2) +
+  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.2+q1), color = 'black', linetype = 2) +
+  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.1), color = 'red', linetype = 2) +
+  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.1+q2), color = 'red', linetype = 2) +
+  labs(title = expression('Known Quinone p'*italic(K)*''[a]*'s'),
+       y = expression('p'*italic(K)*''['a,2']),
+       x = expression('p'*italic(K)*''['a,1']))
+q1
+q2
+rm(fit.ln, x, var)
+
+```
+
+The variance alone show very little difference between the choice, which pKa1 being the free variable having a slightly better response.
+This is confirmed by the distribution of the residuals (omitting the single outlier), which shows that having pKa1 as the free variable gives a distribution closer to a normal distribution.
+Therefore, the range of pKas is:
+
+pKa1: -8.33 to 13.41
+pKa2 = f(pKa1) + error
+
+While the error for pKa2 is nearly Gaussian in shape, the mathematical description works better if it is sampled from a uniform distribution. From the data, 98% of the data is captured within an error of -3.9 to +5.5.
+
+This range of pKas has 2 problems:
+* An issue seems to arise when the second pKa is lower than the first, however, despite some actual measurements violating that criteria (red dotted line). 
+All points that do violate that restriction are within measurement error with one exception, so that could be the cause.
+* The pH of the process is not likely to extend below 3 because the primary acid in question is carbonic acid. This means that pKa values below 2 are effectively the same and do not need to be sampled further. Therefore, the lower bound for pKa1 can be increased to reduce the search space.
+
+The refined search space is:
+
+pKa1: 0 to 13.41
+pKa2 = pKa1 + error
+error ~ unif(0, 5.5)
+
+## Objective Functions
+
+The objective function for energy demand solves the set of equilibrium equations across the range of charge and gas transfers based on four state variables: 
+total dissolved inorganic carbon (DIC), state of charge (xA), partial pressure of CO2 (pCO2), and solution pH.
+
+The minimum energy demand assumes all charge is passed at the Nernst potential, which is updated as charge passes through the system.
+The energy demand assumes anti-symmetric operation, ie. quinone reduction at the cathode and hydroquinone oxidation at the anode.
+Charge balance of the anolyte and catholyte are assumed to be the result of the background electrolyte travelling across an ion selective membrane.
+The gas transfers are assumed to be separate stages from the electrochemical stages, purely for the sake of simplicity. 
+This estimate for the minimum energy is a slight overestimate because of over-pressurization of the CO2; coupling the gas transfer steps with the appropriate electrochemical steps decreases the minimum energy by approximately a factor of 2.
+The function can accommodate feed CO2 gases of any partial pressure, but this study is interested in 3 applications: coal flue gas (15v% feed to 1.5v% lean), air revitalization (2000 ppm to 1000 ppm), and direct air capture (400 ppm to 250 ppm).
+
+This code is broken down into explicit functions and derived functions.
+Explicit functions are a series of sub-functions which solve for one of the four state variables using knowledge of the other three state variables and the solution conditions. 
+These functions solve the set of chemical equilibrium, mass, and charge balance equations for the bulk solution.
+Derived functions use the information from the explicit functions to determine relevant information for determining the energy demand and CO2 flux.
+
+For the purpose of generalization, these equations are written with the variables 'beta1' and 'beta2' which describe the deprotonated hydroquinone's affinity for CO2, forming an organic carbonate. 
+This species is ignored in this particular notebook for the above-stated reason (slow kinetics), and therefore both variables are set to 0.
+These variables are included because other compounds have been proposed to capture CO2 primarily through that mechanism, and thus they could also be studied with this script.
+
+```{r PCET Explicit functions}
+# Direct explicit functions
+# Functions are named with the output variable first, then all relevant inputs
+DIC.xA.pCO2.pH.A.k.beta = function(xA, pCO2, pH, A.tot, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Proton concentration
+  H = 10^-pH
+  
+  # Inorganic carbonate
+  CO3.free = kH * pCO2 * (H^2 + kc1 * H + kc1 * kc2) / H^2
+  
+  # Bound carbon
+  CO2.bound = A.tot*xA *k1*k2*(beta1*pCO2 + 2*beta2*pCO2^2)/((1 + beta1*pCO2 + beta2*pCO2^2)*k1*k2 + k1*H + H^2)
+  
+  return(CO3.free + CO2.bound)
+}
+
+pH.xA.pCO2.A.k.beta.Na = function(xA, P, At, k1, k2, beta1, beta2, Na){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x5 = 1
+  x4 = k1 + Na + 2*At*xA 
+  x3 = k1*k2 - kw + k1*Na + beta1*k1*k2*P - kc1*kH*P +
+      beta2*k1*k2*P^2 + 2*At*k1*xA - 2*At*k2*xA
+  x2 = (-k1)*kw + k1*k2*Na - k1*kc1*kH*P - 2*kc1*kc2*kH*P + beta1*k1*k2*Na*P + beta2*k1*k2*Na*P^2 -
+      2*At*k1*k2*xA + 2*At*beta1*k1*k2*P*xA + 2*At*beta2*k1*k2*P^2*xA
+  x1 = (-k1)*k2*kw - k1*k2*kc1*kH*P - 2*k1*kc1*kc2*kH*P - beta1*k1*k2*kw*P -
+      beta1*k1*k2*kc1*kH*P^2 - beta2*k1*k2*kw*P^2 - beta2*k1*k2*kc1*kH*P^3
+  x0 = - 2*k1*k2*kc1*kc2*kH*P - 2*beta1*k1*k2*kc1*kc2*kH*P^2 -
+     2*beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4, x5))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  
+  # It is possible for multiple roots to satisfy the solution. Typical pH is going to be the one closest to 7-8
+  # H = H[which.min(abs(-log10(H) - 7))]
+
+  return(-log10(H[1]))
+}
+
+pCO2.xA.pH.A.k.beta.Na = function(xA, pH, At, k1, k2, beta1, beta2, Na, pCO2.prev){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  # Proton concentration
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = (-beta2)*H*k1*k2*kc1*kH - 2*beta2*k1*k2*kc1*kc2*kH
+  x2 = beta2*H^3*k1*k2 - beta1*H*k1*k2*kc1*kH - 2*beta1*k1*k2*kc1*kc2*kH -
+      beta2*H*k1*k2*kw + beta2*H^2*k1*k2*Na + 2*At*beta2*H^2*k1*k2*xA
+  x1 = beta1*H^3*k1*k2 - H^3*kc1*kH - H^2*k1*kc1*kH - H*k1*k2*kc1*kH - 2*H^2*kc1*kc2*kH - 2*H*k1*kc1*kc2*kH -
+      2*k1*k2*kc1*kc2*kH - beta1*H*k1*k2*kw + beta1*H^2*k1*k2*Na +
+      2*At*beta1*H^2*k1*k2*xA
+  x0 = H^5 + H^4*k1 + H^3*k1*k2 - H^3*kw - H^2*k1*kw - H*k1*k2*kw +
+      H^4*Na + H^3*k1*Na + H^2*k1*k2*Na + 2*At*H^4*xA + 2*At*H^3*k1*xA -
+      2*At*H^3*k2*xA - 2*At*H^2*k1*k2*xA
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  # There are cases of multiepl roots. Find the one that is closest to the previous known value
+  pCO2 = pCO2[which.min(abs(log10(pCO2) - log10(pCO2.prev)))]
+  
+  return(pCO2)
+}
+
+pH.DIC.xA.pCO2.A.k.beta = function(DIC, xA, P, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x4 = (DIC - kH*P)
+  x3 = (DIC*k1 - k1*kH*P - kc1*kH*P)
+  x2 = (DIC*k1*k2 + beta1*DIC*k1*k2*P - k1*k2*kH*P - k1*kc1*kH*P - kc1*kc2*kH*P + beta2*DIC*k1*k2*P^2 - 
+    beta1*k1*k2*kH*P^2 - beta2*k1*k2*kH*P^3 - At*beta1*k1*k2*P*xA - 2*At*beta2*k1*k2*P^2*xA)
+  x1 = ((-k1)*k2*kc1*kH*P - k1*kc1*kc2*kH*P - beta1*k1*k2*kc1*kH*P^2 - 
+        beta2*k1*k2*kc1*kH*P^3)
+  x0 = (-k1)*k2*kc1*kc2*kH*P - beta1*k1*k2*kc1*kc2*kH*P^2 - beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  return(-log10(H))
+}
+
+pCO2.DIC.xA.pH.A.k.beta = function(DIC, xA, pH, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = ((-beta2)*H^2*k1*k2*kH - beta2*H*k1*k2*kc1*kH - beta2*k1*k2*kc1*kc2*kH)
+  x2 = (beta2*DIC*H^2*k1*k2 - beta1*H^2*k1*k2*kH - beta1*H*k1*k2*kc1*kH - 
+        beta1*k1*k2*kc1*kc2*kH - 2*At*beta2*H^2*k1*k2*xA)
+  x1 = (beta1*DIC*H^2*k1*k2 - H^4*kH - H^3*k1*kH - H^2*k1*k2*kH - H^3*kc1*kH - 
+        H^2*k1*kc1*kH - H*k1*k2*kc1*kH - H^2*kc1*kc2*kH - H*k1*kc1*kc2*kH - 
+        k1*k2*kc1*kc2*kH - At*beta1*H^2*k1*k2*xA)
+  x0 = DIC*H^4 + DIC*H^3*k1 + DIC*H^2*k1*k2
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  return(pCO2)
+}
+
+# There are cases in the process where both pH and pCO2 are unknown. 
+# For those cases, both variables can be solved togther, but it leads to coupled nonlinear root finding problems. 
+# Initial testing of the equations has found that using an initial guess of pH (such as the pH at the immediately previous state of charge) leads to a good enough estimate of the pH to solve pCO2.
+pH.it.guess.DIC.At.k.beta = function(pH.guess, xA.next, DIC, A.tot, k1, k2, beta1, beta2, Na){
+  # Iterates to solve the pH and pCO2 at the next electrochemical time step, 
+  # given xA and DIC and an initial guess (the pH at the previous time step)
+  pCO2.it = c(); pH.it = c(pH.guess)
+  pCO2.it = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it, At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  for(n in 2:74){
+    pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    pCO2.it[n] = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it[n], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  } 
+  n = 7:5
+  pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  # Due to some oscillatory instabilities under specific conditions, take the last 25 and use the value that is closest to the guess
+  pH.res = pH.it[50:75]
+  pH.res = pH.res[which.min(abs(pH.res) - pH.guess)]
+  return(pH.res)
+}
+```
+
+```{r PCET Derived Functions: Process Conditions}
+# Derived functions
+# DIC difference: CO2/L*cycle - this is a good first check for the condition to ensure that CO2 is, in fact, captured, represented by a positive value.
+DIC.diff = function(Na, A, beta1, beta2, k1, k2, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  # pCO2.in = 0.1; pCO2.out = 1
+  
+  # Absorption: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the difference
+  DIC.diff = start.soln$DIC - stop.soln$DIC
+  return(DIC.diff)
+}
+
+# Minimum partial pressure of the lean gas
+pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  
+  # Calculate the DIC of the outlet after complete desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the pCO2 when fully reduced, holding DIC constant. Due to the need for a previous case, run in ~5 steps
+  out.soln = data.frame(DIC = stop.soln$DIC, xA = seq(from = min(xA.lim), to = max(xA.lim), length.out = 5))
+  # Loop the pH and pCO2 simultaneously
+  loop.pH = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = out.soln$xA[1], DIC = out.soln$DIC[1],
+                                      A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  loop.pCO2 = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[1], pH = loop.pH[1],
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, 
+                                     pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:5){
+    loop.pH[i] = pH.it.guess.DIC.At.k.beta(pH.guess = loop.pH[i-1], xA.next = out.soln$xA[i], DIC = out.soln$DIC[i],
+                                        A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    loop.pCO2[i] = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[i], pH = loop.pH[i],
+                                       At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, 
+                                       pCO2.prev = loop.pCO2[i-1])
+    
+  }
+  return(loop.pCO2[i])
 }
 
 ```
+
+
+Penalty function: logistic weighting function such that for values where 90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
+The hyperparameters L, k, and x0 of the weighting function were tuned by fitting to a variety of minimum lean gas pressures on the range of 0.016 to 2.5 atm and then selected as the modal value.
+The logistic function was tuned such that the growth rate steepness captured the range of 0 to 90% capture; when no CO2 could be captured, the weight is applied fully.
+
+A penalty function is not necessary for the flux because insufficient capture would manifest as negative fluxes. It may still show up in the Pareto frontier, but it can easily be filtered out, unlike the cases with the energy demand.
+
+```{r PCET Derived Functions: Energy Deman}
+weight.fun = function(pCO2.lean){
+  # Maximum weight
+  weight.max = log(1/10) / log(pCO2.lean/0.15)
+  # Logistic function
+  L = weight.max - 0.98
+  k = 267; x0 = 0.071
+  # data.frame(weight.max)
+  return(L/(1 + exp(-k * (pCO2.lean - x0))) + 1)
+}
+
+# # Demo of the weight effects: insufficient capture
+# pCO2.test = 10^seq(from = -4, to = log(0.15, base = 10), by = 0.1)
+# plot(pCO2.test, weight.fun(pCO2.lean = pCO2.test))
+# # When the minimum lean gas pressure exceeds the inlet pressure, then a negative energy is obtained, so the weight should be negative
+# pCO2.test = 10^seq(from = log(0.16, base = 10), to = 1, by = 0.1)
+# plot(pCO2.test, weight.fun(pCO2.lean = pCO2.test))
+
+# Total energy demand - 4-stage process for simplicity
+Energy.tot = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  z = 2; R = 8.314; T = 298; F = 96485; resolution = 151;
+  # pCO2.in = 0.1; pCO2.out = 1
+  xA.lim = c(0.025, 0.975)
+  
+  # 1 -> 2: Electrochemical oxidation (xA decrease to endpoint), constant DIC
+  # Starting solution for initial guess: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Anode progress
+  E.anode = data.frame(DIC = start.soln$DIC, xA = seq(from = start.soln$xA[1], to = min(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = start.soln$pH[1], xA.next = E.anode$xA[1], DIC = E.anode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.anode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.anode$xA[i], DIC = E.anode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.anode$pH = loop; 
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[1], pH = E.anode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = start.soln$p.CO2)
+  for(i in 2:length(E.anode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[i], pH = E.anode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.anode$p.CO2 = loop
+  E.anode$q = abs(E.anode$xA - E.anode$xA[1])*A.tot*z*F # Coulombs
+  
+  # 3 -> 4: Electrochemical reduction (xA increase to endpoint), constant DIC
+  # Starting solution for initial guess: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Cathode progress
+  E.cathode = data.frame(DIC = stop.soln$DIC[1], xA = seq(from = stop.soln$xA[1], to = max(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = E.cathode$xA[1], DIC = E.cathode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.cathode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.cathode$xA[i], DIC = E.cathode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.cathode$pH = loop;
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[1], pH = E.cathode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:length(E.cathode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[i], pH = E.cathode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.cathode$p.CO2 = loop
+  E.cathode$q = abs(E.cathode$xA - E.cathode$xA[1])*A.tot*z*F # Coulombs
+  
+  # Equilibrium potential: Deviation from standard reduction potential
+  E.anode$H = 10^-E.anode$pH
+  E.anode$E = R*T/(z*F) * log( (1 - E.anode$xA)/E.anode$xA * 
+                                   ((1 + beta1*E.anode$p.CO2 + beta2*E.anode$p.CO2^2)*k1*k2 + k1*E.anode$H + E.anode$H^2)/(k1*k2))
+  E.cathode$H = 10^-E.cathode$pH
+  E.cathode$E = R*T/(z*F) * log( (1 - E.cathode$xA)/E.cathode$xA * 
+                                   ((1 + beta1*E.cathode$p.CO2 + beta2*E.cathode$p.CO2^2)*k1*k2 + k1*E.cathode$H + E.cathode$H^2)/(k1*k2))
+  
+  # Total energy
+  E.cell = data.frame(q = E.anode$q, V = E.anode$E - E.cathode$E)
+  # Only the positive energy demand
+  E.cell = filter(E.cell, V > 0)
+  len = length(E.cell$q)
+  if(len == 0){
+    E.cell = data.frame(q = rep(x = 0, times = 10), V = rep(x = 0, times = 10))
+    len = 10
+  }
+  # E.anode$typ = "anode"; E.cathode$typ = "cathode"
+  Energy.tot.sep = sum(0.5*(E.cell$V[2:len] + E.cell$V[1:(len-1)])*(E.cell$q[2:len] - E.cell$q[1:(len-1)]))
+  
+  ## Adjust the total energy by multiplying by the penalty function
+  # Calculate the lean gas pressure
+  # k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out
+  p.lean = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  penalty = weight.fun(pCO2.lean = p.lean)
+  
+  # Normalize by the total amount of carbon moved, i.e. units of kJ/mol
+  DIC.capture = DIC.diff(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.in = pCO2.in, pCO2.out = pCO2.out)
+  
+  return(Energy.tot.sep*penalty/DIC.capture*1e-3)
+}
+
+```
+
+
+```{r PCET Derived Functions: CO2 Flux}
+# These equations are based on the framework for determining the CO2 flux as presented in Wilcox 2012.
+Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
+  # Constants: general
+  kw = 1e-14 # M^2
+  kH = 3.4e-2; # M/atm
+  z = 1 # OH- + CO2 = HCO3-
+  # Constants: from Wilcox 2012
+  Dco2 = 0.5e-5 # cm2/s, assume slowest due to high ionic strength
+  kL = 0.1 # Assume fast mass transfer of typical range
+  # Constants: average of Pocker 1997, Zeman 2007, Stolaroff 2008, Wilcox 2012
+  k.rate = (6.03e3 + 6.745e3 + 8.5e3 + 12.1e3)/4
+  # Constants: Lvov2012
+  Doh = 5.2e-5 # cm2/s
+
+  # Base concentration = OH + HQ- + 2Q--
+  H = 10^-pH
+  OH = kw/H
+  base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
+  
+  # Interface CO2 concentration - assume 90% capture from the inlet
+  CO2.int = 0.1*pCO2.in*kH
+  
+  # Hatta number: reaction rate / mass transfer rate
+  Ha = sqrt(Dco2*base*k.rate)/kL
+  # Instantaneous enhancement factor
+  Ei = 1 + Doh*base / (z*Dco2*CO2.int)
+  
+  # return(c(Ei, Ha / tanh(Ha), Ha))
+  # Check the extreme cases for E to simplify the equations
+  if(Ha > 10*Ei){ # Instantaneous
+    E = Ei
+  } else if(Ha < Ei/2){ # Pseudo-1st order
+    E = Ha / tanh(Ha)
+  } else if(Ha > 3){ # 1st order
+    E = Ha
+  } else{ # No simplification - Solve the root that is less than Ei, as Ei is the upper bound
+    x.guess = c(0.9, 0.95)*Ei
+    for(i in 1:5){ # Newton's method
+      y.guess = (Ha*(Ei - x.guess) / (Ei - 1)) / tanh(Ha*(Ei - x.guess) / (Ei - 1)) - x.guess
+      slp.fit = (y.guess[1] - y.guess[2]) / (x.guess[1] - x.guess[2])
+      E.guess = -y.guess[1]/slp.fit + x.guess[1]
+      x.guess = c(0.975, 1.025)*E.guess
+    }
+    E = E.guess
+  }
+  #### Need to include order of magnitude for reaction rate with sorbent - use acid anhydride formation rate constants as estimates?
+  return(E)
+}
+
+# Calculate the average kinetic driving force over the course of absorption (stage 4 -> 1)
+kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  kH = 3.4e-2; # M/atm
+  # Calculate the pCO2 of the fully reduced species prior to equilibration with the gas
+  out.pCO2 = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  # If the minimum outlet pCO2 is greater than the target capture:
+  # if(out.pCO2 > 0.1*pCO2.in | is.na(out.pCO2)){
+  if(is.na(out.pCO2)){
+    return(0)
+  } else{
+    # Calculate the pH at the start of desorption
+    soln41 = data.frame(xA = max(xA.lim), p.CO2 = out.pCO2)
+    # Solve pH with multiple cores
+    soln41$pH = pH.xA.pCO2.A.k.beta.Na(xA = soln41$xA, P = soln41$p.CO2, 
+                         At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
+
+    # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
+    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    # Flux: delC * kL * E, assume kL = 0.01 cm/s
+    # Unit conversion: L to cm3, cm2 to m2
+    flux = soln41$delC*soln41$E*0.01 * (1/1e3) * (100^2)
+    # return(soln41)
+    return(signif(flux, 5)) # Highest driving force at outlet
+    # return(soln41)
+  }
+}
+
+```
+
+To work with GPareto, the two objective functions need to combined, and the input should be a matrix, not a dataframe. I account for this with a wrapper function to simplify the process.
+
+```{r}
+PCET.obj.flu = function(inputs){
+  # Inputs is a matrix where each row is an instance and each column is a specific variable:
+  # From left to right, the columns are:
+  # pka1, err.pka2, log10(A.tot), Na/A.tot
+  # For the functions, the variables should be:
+  # k1, k2, A.tot, Na
+  # The use of log units and ratios helps alleviate resolution issues associated with spanning multiple orders of magnitude
+  # The use of the error of pKa2 removes the correlation between the two variables
+  
+  # Storing the proper information.
+  if(is.matrix(inputs)){
+    dat = data.frame(k1 = 10^-inputs[,1],
+                     k2 = 10^-(inputs[,1] + inputs[,2]),
+                     A.tot = 10^inputs[,3],
+                     Na = inputs[,4]*10^inputs[,3])
+  } else{
+    # The optimization function sometimes stores as a vector instead of as a matrix if it is just a single point
+    dat = data.frame(k1 = 10^-inputs[1],
+                     k2 = 10^-(inputs[1] + inputs[2]),
+                     A.tot = 10^inputs[3],
+                     Na = inputs[4]*10^inputs[3])
+  }
+  # The following conditions are assumed for PCET from flue gas
+  beta1 = 0; beta2 = 0;
+  pCO2.in = 0.15; pCO2.out = 1;
+  
+  # The functions require substantial computation, so each row has to be processed independently
+  energy = c(); flux = c()
+  for(i in 1:nrow(dat)){
+    energy[i] = Energy.tot(k1 = dat$k1[i], k2 = dat$k2[i], 
+                           beta1 = 0, beta2 = 0, 
+                           A.tot = dat$A.tot[i], Na = dat$Na[i], 
+                           pCO2.in = 0.15, pCO2.out = 1)
+    flux[i] = kinetic.force(k1 = dat$k1[i], k2 = dat$k2[i], 
+                            beta1 = 0, beta2 = 0, 
+                            A.tot = dat$A.tot[i], Na = dat$Na[i], 
+                            pCO2.in = 0.15, pCO2.out = 1)
+  }
+  # Obtain the negative of the flux so it is a minimization function for the optimization search
+  return(c(energy, -flux)) 
+}
+
+```
+
+# Pareto frontier search
+
+Using the GPareto package, using Gaussian Processes to find the Pareto frontier. The initial sampling design is based on the following constraints:
+
+pKa1: 2 to 13.5
+pKa2: linearly related to pKa1 with error term on (0, +5.5)
+A.tot: 10 mM to 3.1 M (-2 to 0.5 in log10 units)
+Na: -1 to 5 times the concentration of A.tot
+
+While pKa1 can feasibly extend down to -8.3, the pH of the system is not going to extend below approximately 3 as a lowest estimate due to the strength of carbonic acid. As a result, pKa values below 2 are effectively identical.
+A.tot represents the total concentration of quinone. 
+Na represents the concentration of NaOH that was added to the system; a negative value instead represents HCl.
+Since the capture process requires basic conditions, negative Na conditions (HCl addition) should be less extreme if they are present at all.
+It is assumed that the background electrolyte (NaCl) is at extreme excess and accounts for all transport across the membrane.
+
+The initial design finds all 'corners' of the 4-dimensional hypercube, the center of each face (extreme of 1, midpoints of the rest), and 7*4=28 random points.
+
+```{r Pareto Search Initial Design}
+# Initial ranges
+pka1.rng = c(2, 13.5)
+pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0.5)
+Na.A.rng = c(-1, 5)
+
+# Corners = extreme points
+corners = expand.grid(pka1.rng, pka2.rng, logA.rng, Na.A.rng)
+corners = corners[,c(1:4)]
+names(corners) = c('pka1', 'pka2', 'logA', 'Na.A')
+# Faces = extreme of 1 variable; midpoint of the rest
+faces = data.frame(pka1 = c(pka1.rng, rep(mean(pka1.rng), 6)),
+                   pka2 = c(rep(mean(pka2.rng), 2), pka2.rng, rep(mean(pka2.rng), 4)),
+                   logA = c(rep(mean(logA.rng), 4), logA.rng, rep(mean(logA.rng), 2)),
+                   Na.A = c(rep(mean(Na.A.rng), 6), Na.A.rng) )
+# Random samples: number of variables times 7
+nsamp = length(names(corners))*7
+samples = data.frame(pka1 = runif(n = nsamp, min = min(pka1.rng), max = max(pka1.rng)),
+                     pka2 = runif(n = nsamp, min = min(pka2.rng), max = max(pka2.rng)),
+                     logA = runif(n = nsamp, min = min(logA.rng), max = max(logA.rng)),
+                     Na.A = runif(n = nsamp, min = min(Na.A.rng), max = max(Na.A.rng)) )
+
+design.start = rbind(faces, corners, samples)
+# for(i in 1:nrow(design.start)){
+#   PCET.obj.flu(inputs = as.matrix(design.start[i,]))
+# }
+# Output as a list
+result.start = PCET.obj.flu(inputs = as.matrix(design.start))
+result.start = matrix(result.start, ncol = 2)
+Pareto.budget = 100
+rm(corners, samples, faces)
+
+# Store the initial design
+design.start$Energy.kJ.mol = result.start[,1]
+design.start$Flux.mol.m2s = result.start[,2]
+write.csv(design.start, file = 'PCET_StartDesign.csv')
+
+```
+
+```{r}
+# design.start$x = 1:nrow(design.start)
+# result.start$x = 1:nrow(result.start)
+# des = merge(design.start, result.start, by = 'x')
+des = design.start
+des$DIC.cyc = NaN; des$pCO2.lean = NaN
+for(i in 1:nrow(des)){
+  des$DIC.cyc[i] = DIC.diff(Na = des$Na.A[i]*10^des$logA[i], 
+                                 A = 10^des$logA[i], 
+                                 beta1 = 0, beta2 = 0, 
+                                 k1 = 10^-des$pka1[i], 
+                                 k2 = 10^-(des$pka2[i] + des$pka1[i]), 
+                                 pCO2.in = 0.15, pCO2.out = 1)
+  # if(des$DIC.cyc[i] > 0){
+    des$pCO2.lean[i] = pCO2.lean(Na = des$Na.A[i]*10^des$logA[i], 
+                                      A = 10^des$logA[i], 
+                                      beta1 = 0, beta2 = 0, 
+                                      k1 = 10^-des$pka1[i], 
+                                      k2 = 10^-(des$pka2[i] + des$pka1[i]), 
+                                      pCO2.out = 1)
+  # }
+}
+
+
+ggplot(filter(des, Energy.kJ.mol < 100)) +
+  geom_point(mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol))
+
+des
+ggplot(filter(des)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = Flux.mol.m2s)) +
+  facet_grid((pCO2.lean >= 0.015)~(Flux.mol.m2s > 0), scales = 'free') +
+  scale_x_log10()
+
+```
+
+```{r Pareto Search: GPareto}
+# Load design
+design.start = read.csv(file = 'PCET_StartDesign.csv')
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+Pareto.budget = 200
+
+res = easyGParetoptim(fn = PCET.obj.flu, budget = Pareto.budget, 
+                      lower = c(2, 0, -2, -1), upper = c(13.5, 5.5, 0.5, 5), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = -res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3], 
+                       Na.A = res$history$X[,4], 
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = -res$history$y[,2])
+GPar.all$order = c(rep(0, nrow(design.start)), seq(from = 1, to = Pareto.budget, by = 1))
+# rm(res)
+write.csv(GPar.all, file = 'GPar_all_data.csv')
+write.csv(GPar.front, file = 'GPar_fnt_data.csv')
+```
+
+```{r}
+# Calculate total CO2 per cycle; minimum lean gas
+GPar.all$pCO2.lean = NaN; GPar.all$DIC.cyc = NaN;
+for(i in 1:nrow(GPar.all)){
+  GPar.all$DIC.cyc[i] = DIC.diff(Na = GPar.all$Na.A[i]*10^GPar.all$logA[i], 
+                                 A = 10^GPar.all$logA[i], 
+                                 beta1 = 0, beta2 = 0, 
+                                 k1 = 10^-GPar.all$pka1[i], 
+                                 k2 = 10^-(GPar.all$pka2[i] + GPar.all$pka1[i]), 
+                                 pCO2.in = 0.15, pCO2.out = 1)
+  # if(GPar.all$DIC.cyc[i] > 0){
+    GPar.all$pCO2.lean[i] = pCO2.lean(Na = GPar.all$Na.A[i]*10^GPar.all$logA[i], 
+                                      A = 10^GPar.all$logA[i], 
+                                      beta1 = 0, beta2 = 0, 
+                                      k1 = 10^-GPar.all$pka1[i], 
+                                      k2 = 10^-(GPar.all$pka2[i] + GPar.all$pka1[i]), 
+                                      pCO2.out = 1)
+  # }
+}
+
+```
+
+```{r}
+ggplot() +
+  geom_point(data = filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
+  geom_point(data = filter(GPar.front, Flux.mol.m2s > 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
+  geom_line(data = filter(GPar.front, Flux.mol.m2s > 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red')
+
+ggplot() +
+  geom_point(data = filter(GPar.all, Flux.mol.m2s < 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
+  geom_point(data = filter(GPar.front, Flux.mol.m2s < 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
+  geom_line(data = filter(GPar.front, Flux.mol.m2s < 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red')
+
+ggplot() +
+  geom_point(data = filter(GPar.all, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
+  geom_point(data = filter(GPar.front, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
+  geom_line(data = filter(GPar.front, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red')
+
+```
+
+```{r}
+filter(GPar.front, Flux.mol.m2s >= 0)
+```
+
+
+Lean pressures above 0.015 should be showing the flux going the wrong direction, but they are not exclusively doing so. Why? Is the enhancement factor calculated as negative?
+
+```{r}
+kinetic.force2 = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  kH = 3.4e-2; # M/atm
+  # Calculate the pCO2 of the fully reduced species prior to equilibration with the gas
+  out.pCO2 = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  # If the minimum outlet pCO2 is greater than the target capture:
+  # if(out.pCO2 > 0.1*pCO2.in | is.na(out.pCO2)){
+  if(is.na(out.pCO2)){
+    return(0)
+  } else{
+    # Calculate the pH at the start of desorption
+    soln41 = data.frame(xA = max(xA.lim), p.CO2 = out.pCO2)
+    # Solve pH with multiple cores
+    soln41$pH = pH.xA.pCO2.A.k.beta.Na(xA = soln41$xA, P = soln41$p.CO2, 
+                         At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
+
+    # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
+    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    # Flux: delC * kL * E, assume kL = 0.01 cm/s
+    # Unit conversion: L to cm3, cm2 to m2
+    flux = soln41$delC*soln41$E*0.01 * (1/1e3) * (100^2)
+    # return(soln41)
+    # return(signif(flux, 5)) # Highest driving force at outlet
+    return(soln41)
+    
+  }
+}
+
+
+```
+
+```{r}
+test = filter(des, (Flux.mol.m2s > 0), (pCO2.lean >= 0.015))[1:2,]
+test
+kinetic.force(k1 = 10^-test$pka1[1], k2 = 10^-(test$pka1[1] + test$pka2[1]),
+               beta1 = 0, beta2 = 0, 
+               A.tot = 10^test$logA[1], Na = 10^test$logA[1]*test$Na.A[1], 
+               pCO2.in = 0.15, pCO2.out = 1)
+kinetic.force(k1 = 10^-test$pka1[2], k2 = 10^-(test$pka1[2] + test$pka2[2]),
+               beta1 = 0, beta2 = 0, 
+               A.tot = 10^test$logA[2], Na = 10^test$logA[2]*test$Na.A[2], 
+               pCO2.in = 0.15, pCO2.out = 1)
+
+as.matrix(test)[,2:5]
+PCET.obj.flu(inputs = as.matrix(test)[,2:5])
+
+```
+
+
+```{r}
+ggplot(GPar.all) +
+  geom_density(mapping = aes(x = logA))
+ggplot(GPar.all) +
+  geom_density(mapping = aes(x = pka1)) +
+  geom_density(mapping = aes(x = pka1+pka2), color = 'red')
+ggplot(GPar.all) +
+  geom_density(mapping = aes(x = pka2))
+ggplot(GPar.all) +
+  geom_density(mapping = aes(x = Na.A))
+
+
+```
+
+
+### ----------------------
+
+<!-- The modified function ZDT4 takes N inputs, each on the domain of (0,1). The function is built into the GPareto package and does not need to be constructed explicitly. -->
 
 1. Solve objective functions with a space filling method to obtain an initial set of data.
 The 2D function takes two inputs, defined $x_1$ and $x_2$, to produce two outputs $f_1$ and $f_2$. 
@@ -163,6 +982,8 @@ n.dist = function(f1.norm, f2.norm, GPar.front){
   
   # Determine the two points on the Pareto front that define the relevant segment
   GPar.front$theta = atan(GPar.front$f2.norm / GPar.front$f1.norm)
+  if(f1.norm < 0){f1.norm = 0}
+  if(f2.norm < 0){f2.norm = 0}
   ratio = atan(f2.norm/f1.norm)
   
   # Check if the angle is the same as a point on the Pareto front
@@ -753,7 +1574,8 @@ rm(g1, g2, g3, fine.grid)
 
 ```
 ## III. Feature importance of each input variable
-Compare: regression and slope as the typical easy method for determining relative importance of variables.
+7. Calculate the distance between each point and the Pareto front in both the input and objective space.
+8. Compare the distance in the objective space to the Pareto front and the distance in only a single variable. The most important variable is that which has the largest correlation coefficient.
 
 ```{r Feature Importance: Correlation Coefficient and Slope}
 # Load data
@@ -870,18 +1692,18 @@ ggplot(GPar.cor.plt) +
 rm(g1, g2, g3, gx1, gx2, gx3, Pfront.x1, Pfront.x2, Pfront.x3, plt, GPar.cor.plt)
 ```
 
-Despite the fact that $x_2$ and $x_3$ have the exact same effect on the objective functions, they give different values for the slope and correlation coefficient.
-This highlights the way that the dataset can affect the perceived relationship between the inputs and outputs due to differences in the sampling.
-This is likely to propagate into observing differences in the surrogate model, but that is not guaranteed; 
-ideally, the description of relative importance should reflect the model, not the data because the model is the tool that is being used to assess whether the selection criteria are met.
+Based on this regression-based interpretation of the ranking, it appears that x3 is more important than x2, which is more important that x1. While one would expect x2 and x3 to be of equivalent importance, it is likely that the exact points that were sampled biased more towards showing a trend with x3 over x2.
 
-7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
-8. Calculate the standard deviation of the 1-variable conditional probability expectation value at each input value. The area under the variance curve indicates the relative importance of the other variables.
+9. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
 
-As demonstrated in the ZDT1 function test, percentiles do not work well at higher dimensional inputs because even the wide percentile range does not capture the variance due to an overabundance of 0 or 1 probabilities, thereby overinflating the importance of variables.
+From the above calculations, the most important variable is x1, as it has a stronger relationship between distance in the objective space and distance in the input space (i.e. a larger perturbation in the input will lead to a less optimal result).
 
-9. Determine the normalized areas between these percentiles for all 1-variable conditionals. The most important variable is the one that has the smallest area, i.e. the other variables have small impact on whether or not the result meets the selection criteria.
+For the purposes of illustration, both P[accept | $x_1$] and P[accept | $x_2$] will be shown to show how the regression is consistent with the probabilities.
+The conditional probability is calculated by marginalization of the GP probabilities. From the GP, the value of P[accept | $x_1, x_2$] can be calculated, and the relationship between P[accept | $x_1, x_2$] and  P[accept | $x_1$] is the integral:
 
+P[accept | $x_1$] = integral( P[accept | $x_1, x_2$]  P[$x_2$] $dx_2$ )
+
+In the absence of data to inform the distribution of $x_2$, this distribution is set as a uniform distribution on the range used in the optimization.
 
 ```{r Marginalization}
 # Use the final GP model with the full dataset
@@ -901,92 +1723,35 @@ for(i in 1:resolution){
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
-                                        prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        var = 'x1', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 'none'))
   
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
-                                        prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        var = 'x2', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'none'))
   
   # x3
   fill.frame = data.frame(x3 = x3.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], 
-                                        prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        var = 'x3', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 'none'))
 }
 
-# Plot: Marginals
 ggplot() +
   geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = var)) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if '*delta*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 2')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'purple'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
   theme_bw()
-
-# Plot with percentiles
-ggplot() +
-  # Percentiles as an area
-  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
-                              y = c(Infer.x1$prob, rev(Infer.x1$prob)),
-                              sd = c(Infer.x1$psd, -rev(Infer.x1$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x1'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
-                              y = c(Infer.x2$prob, rev(Infer.x2$prob)),
-                              sd = c(Infer.x2$psd, -rev(Infer.x2$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x2'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x3$x, rev(Infer.x3$x)),
-                              y = c(Infer.x3$prob, rev(Infer.x3$prob)),
-                              sd = c(Infer.x3$psd, -rev(Infer.x3$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x3'), alpha = 0.25) +
-
-  # Mean values as a line
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = 'x3')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
-  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
-  theme_bw() + guides(fill = FALSE)
-
-# Relative importance: inverse of the area under the curve, normalized units
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$psd*2), 
-                             resolution/sum(Infer.x2$psd*2),
-                             resolution/sum(Infer.x3$psd*2)),
-           var = c('x1', 'x2', 'x3'))) +
-  geom_col(mapping = aes(x = var, y = import, fill = var)) +
-  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if '*delta*' < 1; Variance')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '', '')) + 
-  scale_fill_manual(values = c('red', 'blue', 'green'))
-
-# Remove the percentiles for later
-Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('psd')]
-Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('psd')]
-Infer.x3 = Infer.x3[,!names(Infer.x3) %in% c('psd')]
 ```
 
-Consistent with the correlation coefficients, the importance ranking is $x_3 > x_2 > x_1$.
-This indicates that the sample biasing that caused the correlation coefficients and slopes of $x_2$ and $x_3$ to differ propagated to the GP model.
-This is likely because $x_3$ only shows 1 peak in the marginal distribution as compared to $x_2$, which was able to capture the local minima.
-As a result, the area of $x_3$ is much smaller since its optimal value narrows the range from its full capacity of [0, 1] to about [0.4, 0.6].
+Consistent with the correlation coefficients, the probability of acceptance when only $x_2$ or $x_3$ is known has a higher and sharper peak than $x_1$. The reason for $x_3$'s relative dominance is clear here: the sampling for $x_3$ apparently did not capture the local minima, whereas it did capture the local minima from $x_2$.
 
 10. Calculate the same conditional probability, but given the that the most important variable falls within its optimal range and the second most important variable is known.
 11. Repeat step 10 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
@@ -1684,7 +2449,6 @@ rm(g1, g2, g3, gx1, gx2, gx3, Pfront.x1, Pfront.x2, Pfront.x3, plt, GPar.cor.plt
 ```
 
 As with the Pareto distance, $x_2$ and $x_3$ should have equal importance, but $x_3$ appears to be more important given the dataset bias.
-Additionally, the slopes and correlation coefficients differ substantially from the previous selection criterion, showing further evidence of the instability of this method to sampling bias.
 
 ```{r Threshold: Marginalization}
 # Use the final GP model with the full dataset
@@ -1706,109 +2470,38 @@ for(i in 1:resolution){
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x1', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 'none'))
   
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x2', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'none'))
   
   # x3
   fill.frame = data.frame(x3 = x3.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x3', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 'none'))
 }
 
-# Plot marginals
 ggplot() +
   geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = var)) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if f'[1]*' < 1 & f'[2]*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if f'[1]*' < 1 & f'[2]*' < 1')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'maroon'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
   theme_bw()
 
-# Plot with variance
-ggplot() +
-  # Percentiles as an area
-  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
-                              y = c(Infer.x1$prob, rev(Infer.x1$prob)),
-                              sd = c(Infer.x1$psd, -rev(Infer.x1$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x1'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
-                              y = c(Infer.x2$prob, rev(Infer.x2$prob)),
-                              sd = c(Infer.x2$psd, -rev(Infer.x2$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x2'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x3$x, rev(Infer.x3$x)),
-                              y = c(Infer.x3$prob, rev(Infer.x3$prob)),
-                              sd = c(Infer.x3$psd, -rev(Infer.x3$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x3'), alpha = 0.25) +
-
-  # Mean values as a line
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = 'x3')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if f'[1]*' < 1 & f'[2]*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
-  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
-  theme_bw() + guides(fill = FALSE)
-
-# Relative importance: inverse of the area under the curve, normalized units
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
-                             resolution/sum(Infer.x2$p75 - Infer.x2$p25),
-                             resolution/sum(Infer.x3$p75 - Infer.x3$p25)),
-           var = c('x1', 'x2', 'x3'))) +
-  geom_col(mapping = aes(x = var, y = import, fill = var)) +
-  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if f'[1]*' < 1 & f'[2]*' < 1; Percentiles')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '', '')) + 
-  scale_fill_manual(values = c('red', 'blue', 'green'))
-
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$psd*2), 
-                             resolution/sum(Infer.x2$psd*2),
-                             resolution/sum(Infer.x3$psd*2)),
-           var = c('x1', 'x2', 'x3'))) +
-  geom_col(mapping = aes(x = var, y = import, fill = var)) +
-  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if f'[1]*' < 1 & f'[2]*' < 1')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '', '')) + 
-  scale_fill_manual(values = c('red', 'blue', 'green'))
-
-# Remove the percentiles for later
-Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25', 'psd')]
-Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25', 'psd')]
-Infer.x3 = Infer.x3[,!names(Infer.x3) %in% c('p75', 'p25', 'psd')]
 ```
 
-The $x_3$ marginal shows weak effect of the local minima, unlike the estimate for the Pareto distance marginal.
-However, it still does not capture the fact that $x_2$ and $x_3$ should be identical in their marginals and importance.
-This method does highlight how using the percentiles and the variance can dramatically alter the ranking order:
-when using the percentiles, the importance ranking reverses from the correct $x_3 > x_2 > x_1$ to $x_1 > x_2 > x_3$.
-As with the ZDT1 function, this is because it does not capture the full variance within a 25-75 percentile window.
+Results for the importance rankings based on probability with this criteria is similar to the profiles for Pareto distance, although the peaks appear sharper.
 
 ```{r Threshold: Partial Conditional Probabilities}
 # Determining the ranges
@@ -2646,108 +3339,39 @@ for(i in 1:resolution){
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x1', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', cond = 'none'))
   
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x2', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', cond = 'none'))
   
   # x3
   fill.frame = data.frame(x3 = x3.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                           x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), 
-                                        psd = sd(fill.frame$p.del1),
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x3', cond = 'None'))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), var = 'x3', cond = 'none'))
 }
 
-# Plot marginals
 ggplot() +
   geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = var)) +
   geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = var)) +
   labs(x = expression('x'), y = 'Probability of Acceptance', 
        subtitle = expression('Accept if r < 1 & > 80% f'[1]*' priority')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'maroon'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
   theme_bw()
 
-# Plot with variance
-ggplot() +
-  # Percentiles as an area
-  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
-                              y = c(Infer.x1$prob, rev(Infer.x1$prob)),
-                              sd = c(Infer.x1$psd, -rev(Infer.x1$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x1'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
-                              y = c(Infer.x2$prob, rev(Infer.x2$prob)),
-                              sd = c(Infer.x2$psd, -rev(Infer.x2$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x2'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x3$x, rev(Infer.x3$x)),
-                              y = c(Infer.x3$prob, rev(Infer.x3$prob)),
-                              sd = c(Infer.x3$psd, -rev(Infer.x3$psd))),
-            mapping = aes(x = x, y = y+sd, fill = 'x3'), alpha = 0.25) +
-
-  # Mean values as a line
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  geom_path(data = Infer.x3, mapping = aes(x = x, y = prob, color = 'x3')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if r < 1 & > 80% f'[1]*' priority')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
-  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue', 'x3' = 'green'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]),'x3' = expression('x'[3]))) +
-  theme_bw() + guides(fill = FALSE)
-
-# Relative importance: inverse of the area under the curve, normalized units
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
-                             resolution/sum(Infer.x2$p75 - Infer.x2$p25),
-                             resolution/sum(Infer.x3$p75 - Infer.x3$p25)),
-           var = c('x1', 'x2', 'x3'))) +
-  geom_col(mapping = aes(x = var, y = import, fill = var)) +
-  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if r < 1 & > 80% f'[1]*' priority; Percentiles')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '')) + 
-  scale_fill_manual(values = c('red', 'blue', 'green'))
-
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$psd*2), 
-                             resolution/sum(Infer.x2$psd*2),
-                             resolution/sum(Infer.x3$psd*2)),
-           var = c('x1', 'x2', 'x3'))) +
-  geom_col(mapping = aes(x = var, y = import, fill = var)) +
-  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if r < 1 & > 80% f'[1]*' priority')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '', '')) + 
-  scale_fill_manual(values = c('red', 'blue', 'green'))
-
-# Remove the percentiles for later
-Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25', 'psd')]
-Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25', 'psd')]
-Infer.x3 = Infer.x3[,!names(Infer.x3) %in% c('p75', 'p25', 'psd')]
 ```
 
-As with the threshold cutoff, changing the method of estimating variance to percentiles reverses the rank order.
+Interestingly, while there are multiple peaks for $x_2$, it is only the peak on the right. This is due to the prioritization of $F_1$ compared to $F_2$ and not an issue with the model. The fact that $x_2$ and $x_3$ are treated differently is still an issue.
 
 ```{r Utopia distance: Partial Conditional Probabilities}
 # Determining the ranges

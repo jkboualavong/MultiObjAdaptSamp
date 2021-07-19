@@ -25,9 +25,9 @@ The intention is for this procedure to be applied to optimization problems where
 6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or the sample utility function maximum drops below a specified threshold, often relative to first maximum.
 
 * III. Feature importance of each input variable
-7. Calculate the distance between each point and the Pareto front in both the input and objective space.
-8. Compare the distance in the objective space to the Pareto front and the distance in only a single variable. The most important variable is that which has the largest correlation coefficient.
-9. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
+7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
+8. Calculate the 25th and 75th quantile of the 1-variable conditional probability estimate. The area between these two curves represents the variance due to all of the other variables in question.
+9. Determine the normalized areas between these quantiles for all 1-variable conditionals. The most important variable is the one that has the smallest area, i.e. the other variables have small impact on whether or not the result meets the selection criteria.
 10. Calculate the same conditional probability, but given the that the most important variable falls within its optimal range and the second most important variable is known.
 11. Repeat step 10 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
 
@@ -141,7 +141,10 @@ n.obj = function(GPar.data, GPar.front){
   f2.up = GPar.front$f2[which.min(GPar.front$f1)]
   GPar.data$f1.norm = (GPar.data$f1 - min(GPar.front$f1))/f1.up
   GPar.data$f2.norm = (GPar.data$f2 - min(GPar.front$f2))/f2.up
-
+  # In the event that the optimum is worse:
+  GPar.data$f1.norm[GPar.data$f1.norm < 0] = 0
+  GPar.data$f2.norm[GPar.data$f2.norm < 0] = 0
+  
   return(GPar.data)
 }
 # Run normalization
@@ -583,8 +586,10 @@ g4 + g5 + g6
 ```
 
 ## III. Feature importance of each input variable
-7. Calculate the distance between each point and the Pareto front in both the input and objective space.
-8. Compare the distance in the objective space to the Pareto front and the distance in only a single variable. The most important variable is that which has the largest correlation coefficient.
+
+The easiest and typical method of feature importance is to take the correlation coefficient between the input and the output.
+For a bi-objective problem, dimension reduction to a single output for the correlation coefficient is not straightforward.
+In this case, the approximation is to use to the relative distance from the Pareto front and compare it to the relative distance in the input space.
 
 ```{r Feature Importance: Correlation Coefficient and Slope}
 # Load data
@@ -678,8 +683,10 @@ ggplot(GPar.cor.plt) +
        color = 'Input Value')
 ```
 
+This method has the problem of being biased by the sample points, rather than describing the model's output, which is the more important metric.
+It is also a regression description, and therefore does not indicate any information related to whether it meets or fails the selection criteria.
 
-9. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
+7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
 
 From the above calculations, the most important variable is x1, as it has a stronger relationship between distance in the objective space and distance in the input space (i.e. a larger perturbation in the input will lead to a less optimal result).
 
@@ -690,12 +697,21 @@ P[accept | $x_1$] = integral( P[accept | $x_1, x_2$]  P[$x_2$] $dx_2$ )
 
 In the absence of data to inform the distribution of $x_2$, this distribution is set as a uniform distribution on the range used in the optimization.
 
+8. Calculate the 25th and 75th quantile of the 1-variable conditional probability estimate. The area between these two curves represents the variance due to all of the other variables in question.
+
+The 25th and 75th percentiles were selected because they provide a good approximation of the variance without picking up noise due to sampling or being saturated by the bounds of probability at 0 or 1.
+As a result, there is more likely to be a distinction between different variables, but it is also large enough to detect.
+These percentiles can be manipulated as needed to avoid saturation depending on the problem, so long as they are the same for all variables.
+
+9. Determine the normalized areas between these percentiles for all 1-variable conditionals. The most important variable is the one that has the smallest area, i.e. the other variables have small impact on whether or not the result meets the selection criteria.
+
+
 ```{r Marginalization}
 # Use the final GP model with the full dataset
 mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'dist')
 
 # Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
-resolution = 50; MCsamp = 1500
+resolution = 50; MCsamp = 2000
 x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
 x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
 x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
@@ -707,25 +723,67 @@ for(i in 1:resolution){
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
-  
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
+                                        prob = mean(fill.frame$p.del1), 
+                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                        var = 'x1', ncond = 'None'))  
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
+                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                        prob = mean(fill.frame$p.del1),
+                                        var = 'x2', ncond = 'None'))
 }
 
 ggplot() +
-  geom_path(data = Infer.x1, mapping = aes(x = x1, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x2, y = prob, color = 'x2')) +
+  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
   labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
   scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
   theme_bw()
+
+# Plot with percentiles
+ggplot() +
+  # Percentiles as an area
+  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
+                              y = c(Infer.x1$p25, rev(Infer.x1$p75))),
+            mapping = aes(x = x, y = y, fill = 'x1'), alpha = 0.25) +
+  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
+                              y = c(Infer.x2$p25, rev(Infer.x2$p75))),
+            mapping = aes(x = x, y = y, fill = 'x2'), alpha = 0.25) +
+
+  # Mean values as a line
+  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  theme_bw() + guides(fill = FALSE)
+
+# Relative importance: inverse of the area under the curve, normalized units
+ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
+                      resolution/sum(Infer.x2$p75 - Infer.x2$p25)),
+           var = c('x1', 'x2'))) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
+       subtitle = expression('Accept if '*delta*' < 1')) +
+  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '')) + 
+  scale_fill_manual(values = c('purple3', 'orange'))
+
+# Remove the percentiles for later
+Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25')]
+Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25')]
 ```
 
-Consistent with the correlation coefficients, the probability of acceptance when only $x_1$ has a higher and sharper peak than $x_2$.
+Consistent with the correlation coefficients, the probability of acceptance when only $x_1$ has a higher and sharper peak than $x_2$, but in this case, it shows the importance for a specific goal rather than the general trends.
+This becomes more important when considering other selection criteria (below).
 
 10. Calculate the same conditional probability, but given the that the most important variable falls within its optimal range and the second most important variable is known.
 11. Repeat step 10 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
@@ -740,20 +798,20 @@ For illustrative purposes, the inverse will also be shown (accept | $x_1, x_2 = 
 # Detrmining the ranges
 p.target1 = 0.5*max(Infer.x1$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x1.lims = range(filter(Infer.x1, prob > p.target1)$x1)
+x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
 # Adjust the extremes if they are not already at the extreme
-if(x1.lims[1] > min(Infer.x1$x1)){
-  pos = which.min(abs(Infer.x1$x1 - x1.lims[1]))
+if(x1.lims[1] > min(Infer.x1$x)){
+  pos = which.min(abs(Infer.x1$x - x1.lims[1]))
   sub = Infer.x1[c(pos-1, pos), ]
-  mod = lm(x1 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target1))
   x1.lims[1] = res
   rm(mod)
 }
-if(x1.lims[2] < max(Infer.x1$x1)){
-  pos = which.min(abs(Infer.x1$x1 - x1.lims[2]))
+if(x1.lims[2] < max(Infer.x1$x)){
+  pos = which.min(abs(Infer.x1$x - x1.lims[2]))
   sub = Infer.x1[c(pos, pos+1), ]
-  mod = lm(x1 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target1))
   x1.lims[2] = res
   rm(mod)
@@ -761,20 +819,20 @@ if(x1.lims[2] < max(Infer.x1$x1)){
 
 p.target2 = 0.5*max(Infer.x2$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x2.lims = range(filter(Infer.x2, prob > p.target2)$x2)
+x2.lims = range(filter(Infer.x2, prob > p.target2)$x)
 # Adjust the extremes if they are not already at the extreme
-if(x2.lims[1] > min(Infer.x2$x2)){
-  pos = which.min(abs(Infer.x2$x2 - x2.lims[1]))
+if(x2.lims[1] > min(Infer.x2$x)){
+  pos = which.min(abs(Infer.x2$x - x2.lims[1]))
   sub = Infer.x2[c(pos-1, pos), ]
-  mod = lm(x2 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target2))
   x2.lims[1] = res
   rm(mod)
 }
-if(x2.lims[2] < max(Infer.x2$x2)){
-  pos = which.min(abs(Infer.x2$x2 - x2.lims[2]))
+if(x2.lims[2] < max(Infer.x2$x)){
+  pos = which.min(abs(Infer.x2$x - x2.lims[2]))
   sub = Infer.x2[c(pos, pos+1), ]
-  mod = lm(x2 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target2))
   x2.lims[2] = res
   rm(mod)
@@ -792,12 +850,16 @@ for(i in 1:resolution){
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], 
+                                              prob = mean(fill.frame$p.del1),
+                                              var = 'x2', ncond = 'None'))
   # x1 | x2
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)))
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
+  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i],
+                                              prob = mean(fill.frame$p.del1),
+                                              var = 'x1', ncond = 'None'))
 }
 
 # Combine results for visualization
@@ -816,17 +878,18 @@ ggplot(Infer.plt) +
 
 # See the improvement due to conditioning
 Infer.diff = data.frame(x = rep(Infer.x1$x, 2),
-                        var = c(rep('x1', nrow(Infer.x1)), rep('x2', nrow(Infer.x1))),
+                        var = c(rep('x1 | x2', nrow(Infer.x1)), rep('x2 | x1', nrow(Infer.x1))),
                         prob = c(Infer.x1.x2$prob - Infer.x1$prob, Infer.x2.x1$prob - Infer.x2$prob))
 ggplot(Infer.diff) +
   geom_path(mapping = aes(x = x, y = prob, color = var)) +
-  labs(x = '', y = 'Increase in Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'), color = 'Variable') +
+  labs(x = '', y = 'Increase in Probability of Acceptance', 
+       subtitle = expression('Accept if '*delta*' < 1'), color = 'Variable') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
 ```
 
-In this case, due to symmetry, there is similarity between x1 and x2's behavior as single variables and when conditioned on the other. However, it is evident that the probability of acceptance for $x_2$ increases more when $x_1$ is known, suggesting the relative importance of $x_1$ compared to $x_2$.
+In this case, due to symmetry, there is similarity between x1 and x2's behavior as single variables and when conditioned on the other. However, it is evident that the probability of acceptance for $x_2$ increases more when $x_1$ is known than $x_1$ does when $x_2$ is known, suggesting the relative importance of $x_1$ compared to $x_2$.
 
 
 ## Alternative Acceptance Criteria
@@ -1253,6 +1316,9 @@ ggplot(GPar.cor.plt) +
        color = 'Input Value')
 ```
 
+Since the selection criteria are dependent on two different variables, it is possible that this regression and slope does not match the actual importance metrics.
+A probability-based metric is used instead.
+
 ```{r Threshold: Marginalization}
 # Use the final GP model with the full dataset
 mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f1.norm')
@@ -1272,45 +1338,90 @@ for(i in 1:resolution){
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
-  
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
+                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                        var = 'x1', ncond = 'None'))  
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), 
+                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                        var = 'x2', ncond = 'None'))
 }
 
 ggplot() +
-  geom_path(data = Infer.x1, mapping = aes(x = x1, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x2, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1')) +
+  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', 
+       subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1')) +
   scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
   theme_bw()
+
+# Plot with percentiles
+ggplot() +
+  # Percentiles as an area
+  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
+                              y = c(Infer.x1$p25, rev(Infer.x1$p75))),
+            mapping = aes(x = x, y = y, fill = 'x1'), alpha = 0.25) +
+  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
+                              y = c(Infer.x2$p25, rev(Infer.x2$p75))),
+            mapping = aes(x = x, y = y, fill = 'x2'), alpha = 0.25) +
+
+  # Mean values as a line
+  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', 
+       subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  theme_bw() + guides(fill = FALSE)
+
+# Relative importance: inverse of the area under the curve, normalized units
+ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
+                      resolution/sum(Infer.x2$p75 - Infer.x2$p25)),
+           var = c('x1', 'x2'))) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
+       subtitle = expression('Accept if '*delta*' < 1')) +
+  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '')) + 
+  scale_fill_manual(values = c('purple3', 'orange'))
+
+# Remove the percentiles for later
+Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25')]
+Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25')]
+
+
 ```
 
 The peak in the single-variable marginalization indicates that $x_1$ is, in fact, more important, as even without knowledge of $x_2$, the probability of acceptance can be as high as 0.6.
+Compared to the other criteria, though, it shows that $x_1$ is even more important, as highlighted by the smaller variance. 
+This is because $x_1$ has a narrower set of values that it can occupy and still have a probability of being accepted (roughly 0.8 to 2.6) compared to $x_2$ (roughly 0 to 3.2).
 
 ```{r Threshold: Partial Conditional Probabilities}
 # Detrmining the ranges
 p.target1 = 0.5*max(Infer.x1$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x1.lims = range(filter(Infer.x1, prob > p.target1)$x1)
+x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
 # Adjust the extremes if they are not already at the extreme
-if(x1.lims[1] > min(Infer.x1$x1)){
-  pos = which.min(abs(Infer.x1$x1 - x1.lims[1]))
+if(x1.lims[1] > min(Infer.x1$x)){
+  pos = which.min(abs(Infer.x1$x - x1.lims[1]))
   sub = Infer.x1[c(pos-1, pos), ]
-  mod = lm(x1 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target1))
   x1.lims[1] = res
   rm(mod)
 }
-if(x1.lims[2] < max(Infer.x1$x1)){
-  pos = which.min(abs(Infer.x1$x1 - x1.lims[2]))
+if(x1.lims[2] < max(Infer.x1$x)){
+  pos = which.min(abs(Infer.x1$x - x1.lims[2]))
   sub = Infer.x1[c(pos, pos+1), ]
-  mod = lm(x1 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target1))
   x1.lims[2] = res
   rm(mod)
@@ -1318,20 +1429,20 @@ if(x1.lims[2] < max(Infer.x1$x1)){
 
 p.target2 = 0.5*max(Infer.x2$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x2.lims = range(filter(Infer.x2, prob > p.target2)$x2)
+x2.lims = range(filter(Infer.x2, prob > p.target2)$x)
 # Adjust the extremes if they are not already at the extreme
-if(x2.lims[1] > min(Infer.x2$x2)){
-  pos = which.min(abs(Infer.x2$x2 - x2.lims[1]))
+if(x2.lims[1] > min(Infer.x2$x)){
+  pos = which.min(abs(Infer.x2$x - x2.lims[1]))
   sub = Infer.x2[c(pos-1, pos), ]
-  mod = lm(x2 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target2))
   x2.lims[1] = res
   rm(mod)
 }
-if(x2.lims[2] < max(Infer.x2$x2)){
-  pos = which.min(abs(Infer.x2$x2 - x2.lims[2]))
+if(x2.lims[2] < max(Infer.x2$x)){
+  pos = which.min(abs(Infer.x2$x - x2.lims[2]))
   sub = Infer.x2[c(pos, pos+1), ]
-  mod = lm(x2 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target2))
   x2.lims[2] = res
   rm(mod)
@@ -1350,41 +1461,37 @@ for(i in 1:resolution){
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1),
+                                              var = 'x2', ncond = '| x1'))
   # x1 | x2
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)))
   res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
+  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1),
+                                              var = 'x1', ncond = '| x2'))
 }
 
-# Combine results for visualization
-Infer.x1$var = 'x1';    Infer.x1$cond = 'Single Input';          names(Infer.x1)[1] = 'x'
-Infer.x1.x2$var = 'x1'; Infer.x1.x2$cond = 'Conditional Input';  names(Infer.x1.x2)[1] = 'x'
-Infer.x2$var = 'x2';    Infer.x2$cond = 'Single Input';          names(Infer.x2)[1] = 'x'
-Infer.x2.x1$var = 'x2'; Infer.x2.x1$cond = 'Conditional Input';  names(Infer.x2.x1)[1] = 'x'
-Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1);
-
-ggplot(Infer.plt) +
-  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+ggplot(rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1)) +
+  geom_path(mapping = aes(x = x, y = prob, color = ncond)) +
   facet_wrap(var~., nrow = 2) + 
   labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1'), color = '') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
-
-# See the improvement due to conditioning
 Infer.diff = data.frame(x = rep(Infer.x1$x, 2),
-                        var = c(rep('x1', nrow(Infer.x1)), rep('x2', nrow(Infer.x1))),
+                        var = c(rep('x1 | x2', nrow(Infer.x1)), rep('x2 | x1', nrow(Infer.x1))),
                         prob = c(Infer.x1.x2$prob - Infer.x1$prob, Infer.x2.x1$prob - Infer.x2$prob))
 ggplot(Infer.diff) +
   geom_path(mapping = aes(x = x, y = prob, color = var)) +
-  labs(x = '', y = 'Increase in Probability of Acceptance', subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1'), 
+  labs(x = '', y = 'Increase in Probability of Acceptance', 
+       subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1'), 
        color = 'Variable') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
 ```
+
+Consistent with the feature importance ranking, conditioning $x_1$ on $x_2$ has less improvement than conditioning $x_2$ on $x_1$.
 
 ### Utopia Distance and Prioritization
 Since the utopia point is set to (0,0), the distance to the utopia point is simple to calculate from the normalized coordinates. Acceptable points are those that prioritize the first objective by at least 80%, which can be determined by the angle theta.
@@ -1801,7 +1908,7 @@ ggplot(GPar.cor.plt) +
        color = 'Input Value')
 ```
 
-The regressions and slopes are largely the same for all datasets due to the dominance of points from the original starting design and not the boundary refinement search.
+The regressions and slopes are largely the same for all datasets due to the dominance of points from the original starting design and not the boundary refinement search, as well as being a reflection of the data and not the model.
 
 ```{r Utopia distance: Marginalization}
 # Use the final GP model with the full dataset
@@ -1809,56 +1916,107 @@ mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), outp
 mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'theta')
 
 # Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
-resolution = 50; MCsamp = 1500
+resolution = 50; MCsamp = 2500
 x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
 x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
 x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
 
 Infer.x1 = data.frame(); Infer.x2 = data.frame()
-
+#####
 for(i in 1:resolution){
   # x1
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1 = rbind(Infer.x1, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
-  
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
+                                        prob = mean(fill.frame$p.del1), 
+                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                        var = 'x1', ncond = 'None'))  
+
   # x2
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2 = rbind(Infer.x2, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
+                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                        prob = mean(fill.frame$p.del1),
+                                        var = 'x2', ncond = 'None'))
 }
 
 ggplot() +
-  geom_path(data = Infer.x1, mapping = aes(x = x1, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x2, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if r < 1, f'[1]*' priority < 80%')) +
+  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', 
+       subtitle = expression('Accept if r < 1, f'[1]*' priority > 80%')) +
   scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
   theme_bw()
+
+# Plot with percentiles
+ggplot() +
+  # Percentiles as an area
+  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
+                              y = c(Infer.x1$p25, rev(Infer.x1$p75))),
+            mapping = aes(x = x, y = y, fill = 'x1'), alpha = 0.25) +
+  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
+                              y = c(Infer.x2$p25, rev(Infer.x2$p75))),
+            mapping = aes(x = x, y = y, fill = 'x2'), alpha = 0.25) +
+
+  # Mean values as a line
+  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', 
+       subtitle = expression('Accept if r < 1, f'[1]*' priority > 80%')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  theme_bw() + guides(fill = FALSE)
+
+# Relative importance: inverse of the area under the curve, normalized units
+ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
+                      resolution/sum(Infer.x2$p75 - Infer.x2$p25)),
+           var = c('x1', 'x2'))) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  labs(x = '', y = 'Relative Importance', fill = 'Variable', 
+       subtitle = expression('Accept if r < 1, f'[1]*' priority > 80%')) +
+  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '')) + 
+  scale_fill_manual(values = c('purple3', 'orange'))
+
+# Remove the percentiles for later
+Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25')]
+Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25')]
+
 ```
+
+This highlights the rationale for using percentiles instead of the variance, as the mean value sometimes does not fall between the 25th and 75th percentiles.
+This indicates that the distribution is non-Gaussian, and therefore it is likely that the variance would reflect the skewness, potentially being higher than the mean.
+Using percentiles is guaranteed to be a better reflection of the distribution, and therefore a better estimate for how much variability there is due to the random sampling in the Monte Carlo.
 
 ```{r Utopia distance: Partial Conditional Probabilities}
 # Detrmining the ranges
 p.target1 = 0.5*max(Infer.x1$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x1.lims = range(filter(Infer.x1, prob > p.target1)$x1)
+x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
 # Adjust the extremes if they are not already at the extreme
-if(x1.lims[1] > min(Infer.x1$x1)){
-  pos = which.min(abs(Infer.x1$x1 - x1.lims[1]))
+if(x1.lims[1] > min(Infer.x1$x)){
+  pos = which.min(abs(Infer.x1$x - x1.lims[1]))
   sub = Infer.x1[c(pos-1, pos), ]
-  mod = lm(x1 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target1))
   x1.lims[1] = res
   rm(mod)
 }
-if(x1.lims[2] < max(Infer.x1$x1)){
-  pos = which.min(abs(Infer.x1$x1 - x1.lims[2]))
+if(x1.lims[2] < max(Infer.x1$x)){
+  pos = which.min(abs(Infer.x1$x - x1.lims[2]))
   sub = Infer.x1[c(pos, pos+1), ]
-  mod = lm(x1 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target1))
   x1.lims[2] = res
   rm(mod)
@@ -1866,27 +2024,27 @@ if(x1.lims[2] < max(Infer.x1$x1)){
 
 p.target2 = 0.5*max(Infer.x2$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
-x2.lims = range(filter(Infer.x2, prob > p.target2)$x2)
+x2.lims = range(filter(Infer.x2, prob > p.target2)$x)
 # Adjust the extremes if they are not already at the extreme
-if(x2.lims[1] > min(Infer.x2$x2)){
-  pos = which.min(abs(Infer.x2$x2 - x2.lims[1]))
+if(x2.lims[1] > min(Infer.x2$x)){
+  pos = which.min(abs(Infer.x2$x - x2.lims[1]))
   sub = Infer.x2[c(pos-1, pos), ]
-  mod = lm(x2 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target2))
   x2.lims[1] = res
   rm(mod)
 }
-if(x2.lims[2] < max(Infer.x2$x2)){
-  pos = which.min(abs(Infer.x2$x2 - x2.lims[2]))
+if(x2.lims[2] < max(Infer.x2$x)){
+  pos = which.min(abs(Infer.x2$x - x2.lims[2]))
   sub = Infer.x2[c(pos, pos+1), ]
-  mod = lm(x2 ~ prob, data = sub)
+  mod = lm(x ~ prob, data = sub)
   res = predict(object = mod, newdata = data.frame(prob = p.target2))
   x2.lims[2] = res
   rm(mod)
 }
 
 # Marginalize over the specific region of x1
-resolution = 50; MCsamp = 1500
+resolution = 50; MCsamp = 2500
 x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
 x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
 
@@ -1897,33 +2055,34 @@ for(i in 1:resolution){
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x2 = x2.seq[i], prob = mean(fill.frame$p.del1)))
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], 
+                                              prob = mean(fill.frame$p.del1),
+                                              var = 'x2', ncond = '| x1'))
+
   # x1 | x2
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)))
   res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
   res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x1 = x1.seq[i], prob = mean(fill.frame$p.del1)))
+  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i], 
+                                              prob = mean(fill.frame$p.del1),
+                                              var = 'x1', ncond = '| x2'))
 }
 
 # Combine results for visualization
-Infer.x1$var = 'x1';    Infer.x1$cond = 'Single Input';          names(Infer.x1)[1] = 'x'
-Infer.x1.x2$var = 'x1'; Infer.x1.x2$cond = 'Conditional Input';  names(Infer.x1.x2)[1] = 'x'
-Infer.x2$var = 'x2';    Infer.x2$cond = 'Single Input';          names(Infer.x2)[1] = 'x'
-Infer.x2.x1$var = 'x2'; Infer.x2.x1$cond = 'Conditional Input';  names(Infer.x2.x1)[1] = 'x'
-Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1);
-
-ggplot(Infer.plt) +
-  geom_path(mapping = aes(x = x, y = prob, color = cond)) +
+ggplot(rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1)) +
+  geom_path(mapping = aes(x = x, y = prob, color = ncond)) +
   facet_wrap(var~., nrow = 2) + 
-  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if r < 1, f'[1]*' priority < 80%'), color = '') +
+  labs(x = '', y = 'Probability of Acceptance', 
+       subtitle = expression('Accept if r < 1, f'[1]*' priority < 80%'), color = '') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
 # See the improvement due to conditioning
 Infer.diff = data.frame(x = rep(Infer.x1$x, 2),
-                        var = c(rep('x1', nrow(Infer.x1)), rep('x2', nrow(Infer.x1))),
+                        var = c(rep('x1 | x2', nrow(Infer.x1)), rep('x2 | x1', nrow(Infer.x1))),
                         prob = c(Infer.x1.x2$prob - Infer.x1$prob, Infer.x2.x1$prob - Infer.x2$prob))
 ggplot(Infer.diff) +
   geom_path(mapping = aes(x = x, y = prob, color = var)) +
@@ -1932,7 +2091,6 @@ ggplot(Infer.diff) +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
-rm(Infer.diff, Infer.plt)
 ```
 
 ## Comparison of Acceptance Criteria
@@ -1968,11 +2126,11 @@ mod.f1 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), out
 mod.f2 = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2'), output.name = 'f2.norm')
 
 # Apply Kriging functions
-res = predict(object = mod.f1.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.f1, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$f1.mean = res$mean
 fine.grid$f1.sd = res$sd
 
-res = predict(object = mod.f2.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.f2, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
@@ -1986,10 +2144,10 @@ mod.rad = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), ou
 mod.ang = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2'), output.name = 'theta')
 
 # Apply Kriging functions
-res = predict(object = mod.rad.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.rad, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$rad.mean = res$mean
 fine.grid$rad.sd = res$sd
-res = predict(object = mod.ang.init, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
+res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, x2 = fine.grid$x2), type = "UK")
 fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 

@@ -1,0 +1,1233 @@
+---
+title: "Sorbent Activation - 2 electron transfer - Monte Carlo version 3"
+output: html_notebook
+---
+
+Utilizing the same algorithm as version 2 with the following changes:
+* rate is calculated not as the DIC difference, but as the (concentration driving force)x(enhancement factor)
+* removal of the simultaneous capture scenario - the complication that this provides on the rate is significant, and the energy calculations are harder to perform as the system gets more optimized
+* using the cutoff of at least 90% capture from the inlet (minimum lean gas partial pressure below 0.1*inlet pressure, ie. 90% capture), not 0 DIC difference - this will be more restrictive towards systems that achieve the ultimate goal
+* calculation of the thermodynamic minimum energy for 90% capture from the inlet
+
+The concentration driving force is assumed to be at its maximum at the lean gas outlet/reduced species inlet and at 0 at the gas inlet/reduced species outlet. To a first approximation, the concentration gradient decreases linearly.
+The enhancement factor is calculated according to the following equations:
+
+E = (sqrt(M) (Ei - E) / (Ei - 1)) / tanh(sqrt(M) (Ei - E) / (Ei - 1))
+
+sqrt(M) = Hatta number = sqrt(D_co2 k2 [base]) / kL = reaction rate / mass transfer rate
+D_co2 = diffusion coefficient of CO2 in water, approx 0.5-2 cm2/s (using 0.5) [Wilcox book]
+      = 0.024 exp(-2122/T), temp in K; from Versteeg and van Swaaij 1988, units cm2/s
+k2 = 2nd order reaction rate of CO2 + [base]
+kL = mass transfer coefficient, approx 0.01-0.1 cm/s
+
+Ei = 1 + D_base [base] / (z D_co2 [CO2]_interface) = instantaneous limit
+D_base = diffusion coefficient of the base
+[CO2]_interface = concentration of CO2 at the gas-liquid interface, ie. the value from Henry's law
+
+For pH swing, using the "base" is OH-:
+k2 = 6.03e3 L/mol/s [Pocker 1997] ~ 6.745e3 L/mol/s [Zeman 2007] ~ 8.5e3 L/mol/s [Stolaroff 2008] ~ 7.57e3 L/mol/s [Wilcox]
+D_base = 10^-5 cm2/s [Wilcox] ~ 5.2e-5 cm2/s [Lvov, Introduction to Electrochemical Science and Engineering, also PHREEQC database]
+
+For simultaneous pH swing and capture, the total enhancement factor would be
+1/E_tot = 1/E_OH + 1/E_q
+However, since the rate constants (k2) and diffusion coefficients for the quinone are not clearly defined, use E_OH as the lower bound.
+
+The functional form of E has the following simplified cases:
+sqrt(M) > 10 Ei  == reaction rate is so fast it is effectively instantaneous: E = Ei
+sqrt(M) < 1/2 Ei == kineitically limited - pseudo first order reaction (constant CO2 concentration due to fast transport from gas)
+                    E = sqrt(M) / tanh(sqrt(M))
+sqrt(M) > 3 and sqrt(M) > 1/2 Ei == strongly first order
+                    E = sqrt(M)
+If not true for any of these, then need to iterate to solve
+
+The value to report is the mean del(CO2)*E, which is solved for the entire 100-point capture stage (4->1)
+
+```{r}
+# Last update:
+date()
+
+# Clear work space
+rm(list = ls())
+
+# Required libraries (only need to do once)
+library(dplyr) # Data frame processing
+library(ggplot2)
+library(patchwork) # Subplotting
+library(parallel) # Pallel processing for more complicated functions with single inputs for all variables
+library(doParallel); library(foreach) # Foreach loops for specific types of calculations with single inputs for only some variables
+library(randomForest)
+library(graphics) # Convex hull function chull
+library(pracma) # Polygon area functions
+library(sp) # Spatial points - used for point in polygon function
+
+```
+
+```{r}
+# Explicit Functions
+DIC.xA.pCO2.pH.A.k.beta = function(xA, pCO2, pH, A.tot, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Proton concentration
+  H = 10^-pH
+  
+  # Inorganic carbonate
+  CO3.free = kH * pCO2 * (H^2 + kc1 * H + kc1 * kc2) / H^2
+  
+  # Bound carbon
+  CO2.bound = A.tot*xA *k1*k2*(beta1*pCO2 + 2*beta2*pCO2^2)/((1 + beta1*pCO2 + beta2*pCO2^2)*k1*k2 + k1*H + H^2)
+  
+  return(CO3.free + CO2.bound)
+}
+
+pH.xA.pCO2.A.k.beta.Na = function(xA, P, At, k1, k2, beta1, beta2, Na){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x5 = 1
+  x4 = k1 + Na + 2*At*xA 
+  x3 = k1*k2 - kw + k1*Na + beta1*k1*k2*P - kc1*kH*P +
+      beta2*k1*k2*P^2 + 2*At*k1*xA - 2*At*k2*xA
+  x2 = (-k1)*kw + k1*k2*Na - k1*kc1*kH*P - 2*kc1*kc2*kH*P + beta1*k1*k2*Na*P + beta2*k1*k2*Na*P^2 -
+      2*At*k1*k2*xA + 2*At*beta1*k1*k2*P*xA + 2*At*beta2*k1*k2*P^2*xA
+  x1 = (-k1)*k2*kw - k1*k2*kc1*kH*P - 2*k1*kc1*kc2*kH*P - beta1*k1*k2*kw*P -
+      beta1*k1*k2*kc1*kH*P^2 - beta2*k1*k2*kw*P^2 - beta2*k1*k2*kc1*kH*P^3
+  x0 = - 2*k1*k2*kc1*kc2*kH*P - 2*beta1*k1*k2*kc1*kc2*kH*P^2 -
+     2*beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4, x5))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  
+  # It is possible for multiple roots to satisfy the solution. Typical pH is going to be the one closest to 7-8
+  # H = H[which.min(abs(-log10(H) - 7))]
+
+  return(-log10(H[1]))
+}
+
+
+pCO2.xA.pH.A.k.beta.Na = function(xA, pH, At, k1, k2, beta1, beta2, Na, pCO2.prev){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  # Proton concentration
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = (-beta2)*H*k1*k2*kc1*kH - 2*beta2*k1*k2*kc1*kc2*kH
+  x2 = beta2*H^3*k1*k2 - beta1*H*k1*k2*kc1*kH - 2*beta1*k1*k2*kc1*kc2*kH -
+      beta2*H*k1*k2*kw + beta2*H^2*k1*k2*Na + 2*At*beta2*H^2*k1*k2*xA
+  x1 = beta1*H^3*k1*k2 - H^3*kc1*kH - H^2*k1*kc1*kH - H*k1*k2*kc1*kH - 2*H^2*kc1*kc2*kH - 2*H*k1*kc1*kc2*kH -
+      2*k1*k2*kc1*kc2*kH - beta1*H*k1*k2*kw + beta1*H^2*k1*k2*Na +
+      2*At*beta1*H^2*k1*k2*xA
+  x0 = H^5 + H^4*k1 + H^3*k1*k2 - H^3*kw - H^2*k1*kw - H*k1*k2*kw +
+      H^4*Na + H^3*k1*Na + H^2*k1*k2*Na + 2*At*H^4*xA + 2*At*H^3*k1*xA -
+      2*At*H^3*k2*xA - 2*At*H^2*k1*k2*xA
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  # There are cases of multiepl roots. Find the one that is closest to the previous known value
+  pCO2 = pCO2[which.min(abs(log10(pCO2) - log10(pCO2.prev)))]
+  
+  return(pCO2)
+}
+
+pH.DIC.xA.pCO2.A.k.beta = function(DIC, xA, P, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x4 = (DIC - kH*P)
+  x3 = (DIC*k1 - k1*kH*P - kc1*kH*P)
+  x2 = (DIC*k1*k2 + beta1*DIC*k1*k2*P - k1*k2*kH*P - k1*kc1*kH*P - kc1*kc2*kH*P + beta2*DIC*k1*k2*P^2 - 
+    beta1*k1*k2*kH*P^2 - beta2*k1*k2*kH*P^3 - At*beta1*k1*k2*P*xA - 2*At*beta2*k1*k2*P^2*xA)
+  x1 = ((-k1)*k2*kc1*kH*P - k1*kc1*kc2*kH*P - beta1*k1*k2*kc1*kH*P^2 - 
+        beta2*k1*k2*kc1*kH*P^3)
+  x0 = (-k1)*k2*kc1*kc2*kH*P - beta1*k1*k2*kc1*kc2*kH*P^2 - beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  return(-log10(H))
+}
+
+pCO2.DIC.xA.pH.A.k.beta = function(DIC, xA, pH, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = ((-beta2)*H^2*k1*k2*kH - beta2*H*k1*k2*kc1*kH - beta2*k1*k2*kc1*kc2*kH)
+  x2 = (beta2*DIC*H^2*k1*k2 - beta1*H^2*k1*k2*kH - beta1*H*k1*k2*kc1*kH - 
+        beta1*k1*k2*kc1*kc2*kH - 2*At*beta2*H^2*k1*k2*xA)
+  x1 = (beta1*DIC*H^2*k1*k2 - H^4*kH - H^3*k1*kH - H^2*k1*k2*kH - H^3*kc1*kH - 
+        H^2*k1*kc1*kH - H*k1*k2*kc1*kH - H^2*kc1*kc2*kH - H*k1*kc1*kc2*kH - 
+        k1*k2*kc1*kc2*kH - At*beta1*H^2*k1*k2*xA)
+  x0 = DIC*H^4 + DIC*H^3*k1 + DIC*H^2*k1*k2
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  return(pCO2)
+}
+
+pH.it.guess.DIC.At.k.beta = function(pH.guess, xA.next, DIC, A.tot, k1, k2, beta1, beta2, Na){
+  # Iterates to solve the pH and pCO2 at the next electrochemical time step, 
+  # given xA and DIC and an initial guess (the pH at the previous time step)
+  pCO2.it = c(); pH.it = c(pH.guess)
+  pCO2.it = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it, At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  for(n in 2:74){
+    pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    pCO2.it[n] = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it[n], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  } 
+  n = 75
+  pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  # Due to some oscillatory instabilities under specific conditions, take the last 25 and use the value that is closest to the guess
+  pH.res = pH.it[50:75]
+  pH.res = pH.res[which.min(abs(pH.res) - pH.guess)]
+  return(pH.res)
+}
+
+```
+
+```{r}
+# Derived functions
+# DIC difference: CO2/L*cycle
+DIC.diff = function(Na, A, beta1, beta2, k1, k2, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  # pCO2.in = 0.1; pCO2.out = 1
+  
+  # Absorption: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the difference
+  DIC.diff = start.soln$DIC - stop.soln$DIC
+  return(DIC.diff)
+}
+
+# Minimum partial pressure of the lean gas
+pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  
+  # Calculate the DIC of the outlet after complete desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the pCO2 when fully reduced, holding DIC constant. Due to the need for a previous case, run in ~5 steps
+  out.soln = data.frame(DIC = stop.soln$DIC, xA = seq(from = min(xA.lim), to = max(xA.lim), length.out = 5))
+  # Loop the pH and pCO2 simultaneously
+  loop.pH = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = out.soln$xA[1], DIC = out.soln$DIC[1],
+                                      A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  loop.pCO2 = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[1], pH = loop.pH[1],
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:5){
+    loop.pH[i] = pH.it.guess.DIC.At.k.beta(pH.guess = loop.pH[i-1], xA.next = out.soln$xA[i], DIC = out.soln$DIC[i],
+                                        A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    loop.pCO2[i] = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[i], pH = loop.pH[i],
+                                       At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop.pCO2[i-1])
+    
+  }
+  return(loop.pCO2[i])
+}
+
+# Total energy demand - separated process for simplicity
+Energy.tot = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  z = 2; R = 8.314; T = 298; F = 96485; resolution = 151;
+  # pCO2.in = 0.1; pCO2.out = 1
+  xA.lim = c(0.025, 0.975)
+  
+  # 1 -> 2: Electrochemical oxidation (xA decrease to endpoint), constant DIC
+  # Starting solution for initial guess: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Anode progress
+  E.anode = data.frame(DIC = start.soln$DIC, xA = seq(from = start.soln$xA[1], to = min(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = start.soln$pH[1], xA.next = E.anode$xA[1], DIC = E.anode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.anode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.anode$xA[i], DIC = E.anode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.anode$pH = loop; 
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[1], pH = E.anode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = start.soln$p.CO2)
+  for(i in 2:length(E.anode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[i], pH = E.anode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.anode$p.CO2 = loop
+  E.anode$q = abs(E.anode$xA - E.anode$xA[1])*A.tot*z*F # Coulombs
+  
+  # 3 -> 4: Electrochemical reduction (xA increase to endpoint), constant DIC
+  # Starting solution for initial guess: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Cathode progress
+  E.cathode = data.frame(DIC = stop.soln$DIC[1], xA = seq(from = stop.soln$xA[1], to = max(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = E.cathode$xA[1], DIC = E.cathode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.cathode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.cathode$xA[i], DIC = E.cathode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.cathode$pH = loop;
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[1], pH = E.cathode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:length(E.cathode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[i], pH = E.cathode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.cathode$p.CO2 = loop
+  E.cathode$q = abs(E.cathode$xA - E.cathode$xA[1])*A.tot*z*F # Coulombs
+  
+  # Equilibrium potential: Deviation from standard reduction potential
+  E.anode$H = 10^-E.anode$pH
+  E.anode$E = R*T/(z*F) * log( (1 - E.anode$xA)/E.anode$xA * 
+                                   ((1 + beta1*E.anode$p.CO2 + beta2*E.anode$p.CO2^2)*k1*k2 + k1*E.anode$H + E.anode$H^2)/(k1*k2))
+  E.cathode$H = 10^-E.cathode$pH
+  E.cathode$E = R*T/(z*F) * log( (1 - E.cathode$xA)/E.cathode$xA * 
+                                   ((1 + beta1*E.cathode$p.CO2 + beta2*E.cathode$p.CO2^2)*k1*k2 + k1*E.cathode$H + E.cathode$H^2)/(k1*k2))
+  
+  # Total energy
+  E.cell = data.frame(q = E.anode$q, V = E.anode$E - E.cathode$E)
+  # Only the positive energy demand
+  E.cell = filter(E.cell, V > 0)
+  len = length(E.cell$q)
+  if(len == 0){
+    E.cell = data.frame(q = rep(x = 0, times = 10), V = rep(x = 0, times = 10))
+    len = 10
+  }
+  # E.anode$typ = "anode"; E.cathode$typ = "cathode"
+  Energy.tot.sep = sum(0.5*(E.cell$V[2:len] + E.cell$V[1:(len-1)])*(E.cell$q[2:len] - E.cell$q[1:(len-1)]))
+  return(Energy.tot.sep)
+}
+
+```
+
+```{r}
+# Create a function to set up the initial set randomly in the space given a beta2
+boundary.setup = function(beta2){
+  ## Set up the parameter space
+  A.range = c(0.1, 1, 2) # 3 values: the minimum, the median, and the maximum
+  Na.shift.range = c(-0.1, 0, 0.1)
+  k1.range = 10^-seq(from = 4, to = 12, length.out = 3); pka1.bound = -log10(k1.range)
+  k2.range = 10^-seq(from = 4, to = 14, length.out = 3); pka2.bound = -log10(k2.range)
+  if(beta2 == 0){
+    # Grid
+    combinations = expand.grid(Na.shift.range, A.range, k1.range, k2.range)
+    names(combinations) = c("Na.shift", "A", "k1", "k2")
+    # Minimum length is based on the number of variables. If beta2 = 0, then there are only 4. Otherwise 5.
+    num.var = 4
+    set.len = ceiling( (3^num.var) /100)*100
+    combinations$beta1 = 0
+  } else{
+    beta1.range = c(0, 10^c(log10(beta2)/2, log10(beta2)))
+    # Grid
+    combinations = expand.grid(Na.shift.range, A.range, k1.range, k2.range, beta1.range)
+    names(combinations) = c("Na.shift", "A", "k1", "k2", "beta1")
+    # Minimum length is based on the number of variables. If beta2 = 0, then there are only 4. Otherwise 5.
+    num.var = 5
+    set.len = ceiling( (3^num.var) /100)*100
+  }
+  # Sodium concentration is shift from the Na = 0 at min(xA) (when xA = 0.025). Since Na is defined as when xA = 0, then it is shifted slightly
+  combinations$Na = (combinations$Na.shift-0.025*0.5)*combinations$A
+  # Apply constraint: pka2 > pka1. Adjusted by ~0.3 pH units
+  combinations$k2[combinations$k2 >= combinations$k1] = combinations$k1[combinations$k2 >= combinations$k1]*0.5
+  # Save the samples
+  boundary.case = combinations
+  
+  ## Include more points until a set number based on the number of variables
+  len = set.len - length(combinations$A)
+  if(beta2 == 0){
+    combinations = data.frame(A = runif(n = len, min = min(A.range), max = max(A.range)),
+                          Na.shift = runif(n = len, min = min(Na.shift.range), max = max(Na.shift.range)),
+                          k1 = 10^-runif(n = len, min = min(pka1.bound)-0.25, max = max(pka1.bound)+0.25),
+                          k2 = 10^-runif(n = len, min = min(pka2.bound)-0.25, max = max(pka2.bound)+0.25),
+                          beta1 = 0)
+  } else{
+    combinations = data.frame(A = runif(n = len, min = min(A.range), max = max(A.range)),
+                          Na.shift = runif(n = len, min = min(Na.shift.range), max = max(Na.shift.range)),
+                          k1 = 10^-runif(n = len, min = min(pka1.bound)-0.25, max = max(pka1.bound)+0.25),
+                          k2 = 10^-runif(n = len, min = min(pka2.bound)-0.25, max = max(pka2.bound)+0.25),
+                          beta1 = runif(n = len, min = min(beta1.range), max = max(beta1.range)))
+  }
+  combinations$Na = (combinations$Na.shift-0.025*0.5)*combinations$A
+  # Apply constraint of pka2 > pka1. For points that don't satisfy this, make pka2 between 0.1 and 1 pH unit greater than pka1
+  len = length(which(combinations$k2 >= combinations$k1))
+  combinations$k2[combinations$k2 >= combinations$k1] = combinations$k1[combinations$k2 >= combinations$k1]*10^-runif(n = len, min = 0.1, max = 1)
+  # Add the samples
+  boundary.case = rbind(boundary.case, combinations)
+  
+  # Add iteration number and beta2
+  boundary.case$beta2 = beta2; boundary.case$it.num = 0
+  return(boundary.case)
+}
+# Run test of algorithm with beta2 = 0
+boundary.case = boundary.setup(beta2 = 0)
+
+# Run the DIC and energy demand on this set of inputs. Use best case flue gas conditions. Only interested in the separate case, for the simplicity of testing the method
+boundary.case$DIC.diff = mcmapply(DIC.diff, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.in = 0.15, pCO2.out = 1)
+boundary.case$pCO2.lean = mcmapply(pCO2.lean, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.out = 1)
+Energy.J.L = mcmapply(Energy.tot, k1 = boundary.case$k1, k2 = boundary.case$k2,
+           beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+           A.tot = boundary.case$A, Na = boundary.case$Na,
+           pCO2.in = 0.15, pCO2.out = 1, mc.cores = 2)
+# Energy.J.L
+boundary.case$Energy.sep = Energy.J.L/boundary.case$DIC.diff*1e-3
+var = c("Na.shift", "A", "k1", "k2", "beta1", "Na", "beta2", "it.num", "DIC.diff", "pCO2.lean", "Energy.sep")
+boundary.case = boundary.case[var] # Eliminate metadata from the function calls
+
+```
+
+```{r}
+# Functions: Kinetics
+# Check the plot of the enhancement factor
+Ha = 2
+Ei = 1.25
+x = 10^seq(from = -0.5, to = 0.5, length.out = 50)
+y = (Ha*(Ei - x) / (Ei - 1)) / tanh(Ha*(Ei - x) / (Ei - 1))
+ggplot(data.frame(x, y)) +
+  geom_path(mapping = aes(x = x, y = x)) +  geom_point(mapping = aes(x = x, y = y), color = "red") +
+  scale_x_log10() + scale_y_log10() +
+  geom_vline(xintercept = Ei)
+
+# Roughly linear fit to solve the root?
+x.guess = c(1.05, 1.1)*Ei
+y.guess = (Ha*(Ei - x.guess) / (Ei - 1)) / tanh(Ha*(Ei - x.guess) / (Ei - 1)) - x.guess
+slp.fit = (y.guess[1] - y.guess[2]) / (x.guess[1] - x.guess[2])
+y.fit = slp.fit*(x - x.guess[1]) + y.guess[1]
+-y.guess[1]/slp.fit + x.guess[1]
+
+x.guess = c(0.9, 0.95)*Ei
+y.guess = (Ha*(Ei - x.guess) / (Ei - 1)) / tanh(Ha*(Ei - x.guess) / (Ei - 1)) - x.guess
+slp.fit = (y.guess[1] - y.guess[2]) / (x.guess[1] - x.guess[2])
+y.fit2 = slp.fit*(x - x.guess[1]) + y.guess[1]
+-y.guess[1]/slp.fit + x.guess[1]
+
+# There are 2 roots - use the lower of the two; Ei is the upper limit
+ggplot(data.frame(x, y, y.fit, y.fit2)) +
+  geom_path(mapping = aes(x = x, y = x-x)) +  geom_point(mapping = aes(x = x, y = y-x), color = "red") +
+  geom_path(mapping = aes(x = x, y = y.fit)) +
+  geom_path(mapping = aes(x = x, y = y.fit2)) +
+  # scale_x_log10() + scale_y_log10() +
+  geom_vline(xintercept = Ei)
+
+# Clear variables
+rm(x.guess, y.guess, slp.fit, y.fit2, y.fit, Ei, Ha, x, y)
+
+# Since I am solving the reporting the best case-scenario for the energy, it makes more sense to report peak flux.
+
+Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
+  # Constants: general
+  kw = 1e-14 # M^2
+  kH = 3.4e-2; # M/atm
+  z = 1 # OH- + CO2 = HCO3-
+  # Constants: from Wilcox 2012
+  Dco2 = 0.5e-5 # cm2/s, assume slowest due to high ionic strength
+  kL = 0.1 # Assume fast mass transfer of typical range
+  # Constants: average of Pocker 1997, Zeman 2007, Stolaroff 2008, Wilcox 2012
+  k.rate = (6.03e3 + 6.745e3 + 8.5e3 + 12.1e3)/4
+  # Constants: Lvov2012
+  Doh = 5.2e-5 # cm2/s
+
+  # Base concentration = OH + HQ- + 2Q--
+  H = 10^-pH
+  OH = kw/H
+  base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
+  
+  # Interface CO2 concentration - assume 90% capture from the inlet
+  CO2.int = 0.1*pCO2.in*kH
+  
+  # Hatta number: reaction rate / mass transfer rate
+  Ha = sqrt(Dco2*base*k.rate)/kL
+  # Instantaneous enhancement factor
+  Ei = 1 + Doh*base / (z*Dco2*CO2.int)
+  
+  # return(c(Ei, Ha / tanh(Ha), Ha))
+  # Check the extreme cases for E to simplify the equations
+  if(Ha > 10*Ei){ # Instantaneous
+    E = Ei
+  } else if(Ha < Ei/2){ # Pseudo-1st order
+    E = Ha / tanh(Ha)
+  } else if(Ha > 3){ # 1st order
+    E = Ha
+  } else{ # No simplification - Solve the root that is less than Ei, as Ei is the upper bound
+    x.guess = c(0.9, 0.95)*Ei
+    for(i in 1:5){ # Newton's method
+      y.guess = (Ha*(Ei - x.guess) / (Ei - 1)) / tanh(Ha*(Ei - x.guess) / (Ei - 1)) - x.guess
+      slp.fit = (y.guess[1] - y.guess[2]) / (x.guess[1] - x.guess[2])
+      E.guess = -y.guess[1]/slp.fit + x.guess[1]
+      x.guess = c(0.975, 1.025)*E.guess
+    }
+    E = E.guess
+  }
+  #### Need to include order of magnitude for reaction rate with sorbent - use acid anhydride formation rate constants as estimates?
+  return(E)
+}
+
+# Calculate the average kinetic driving force over the course of absorption (stage 4 -> 1)
+kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  kH = 3.4e-2; # M/atm
+  # Calculate the pCO2 of the fully reduced species prior to equilibration with the gas
+  out.pCO2 = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  # If the minimum outlet pCO2 is greater than the target capture:
+  if(out.pCO2 > 0.1*pCO2.in | is.na(out.pCO2)){
+    return(0)
+  } else{
+    # Calculate the pH at the start of desorption
+    soln41 = data.frame(xA = max(xA.lim), p.CO2 = out.pCO2)
+    # Solve pH with multiple cores
+    soln41$pH = pH.xA.pCO2.A.k.beta.Na(xA = soln41$xA, P = soln41$p.CO2, 
+                         At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
+
+    # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
+    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    # Flux: delC * kL * E, assume kL = 0.01 cm/s
+    # Unit conversion: L to cm3, cm2 to m2
+    flux = soln41$delC*soln41$E*0.01 * (1/1e3) * (100^2)
+    # return(soln41)
+    return(signif(flux, 5)) # Highest driving force at outlet
+    # return(soln41)
+  }
+}
+a = 1; b = length(boundary.case$A)
+kinetic = mcmapply(kinetic.force, k1 = boundary.case$k1[a:b], k2 = boundary.case$k2[a:b], 
+                   beta1 = boundary.case$beta1[a:b], beta2 = boundary.case$beta2[a:b], 
+                   A.tot = boundary.case$A[a:b], Na = boundary.case$Na[a:b], pCO2.in = 0.15, pCO2.out = 1)
+# kinetic
+boundary.case$DIC.flux = kinetic
+boundary.case
+
+
+```
+```{r}
+# Kinetics vs energy
+# g1 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = DIC.flux, y = Energy.sep, color = -log10(k1))) +
+#   labs(x = "", y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a1]), title = "pH Swing, 1st pass")
+# g2 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = DIC.flux, y = Energy.sep, color = -log10(k2))) +
+#   labs(x = expression("Peak Flux (mol/m"^2*"/s)"), y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a2]))
+# g3 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = DIC.flux, y = Energy.sep, color = A)) +
+#   labs(x = expression("Peak Flux (mol/m"^2*"/s)"), y = "Energy demand\n(kJ/mol C)", color = expression("[A]"))
+# g1 / g2
+# g3
+# 
+# g1 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = kin.pk, y = Energy.sep, color = -log10(k1))) +
+#   labs(x = "", y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a1]), title = "pH Swing, 1st pass")
+# g2 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = kin.pk, y = Energy.sep, color = -log10(k2))) +
+#   labs(x = expression("Peak Kinetic Driving Force = k"[H]*" \u0394P"[CO2]*" E"), y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a2]))
+# g3 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = kin.pk, y = Energy.sep, color = A)) +
+#   labs(x = expression("Peak Kinetic Driving Force = k"[H]*" \u0394P"[CO2]*" E"), y = "Energy demand\n(kJ/mol C)", color = expression("[A]"))
+# g1 / g2
+# g3
+# 
+# g1 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = E.avg, y = Energy.sep, color = -log10(k1))) +
+#   labs(x = "", y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a1]), title = "pH Swing, 1st pass")
+# g2 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = E.avg, y = Energy.sep, color = -log10(k2))) +
+#   labs(x = "Average enhancement factor", y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a2]))
+# g3 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+#   geom_point(mapping = aes(x = E.avg, y = Energy.sep, color = A)) +
+#   labs(x = "Average enhancement factor", y = "Energy demand\n(kJ/mol C)", color = expression("[A]"))
+# g1 / g2
+# g3
+
+
+g1 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+  geom_point(mapping = aes(x = DIC.flux, y = Energy.sep, color = -log10(k1))) +
+  labs(x = "", y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a1]), title = "pH Swing, 1st pass")
+g2 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+  geom_point(mapping = aes(x = DIC.flux, y = Energy.sep, color = -log10(k2))) +
+  labs(x = expression("Peak Flux (mol/m"^2*"/s)"), y = "Energy demand\n(kJ/mol C)", color = expression("pK"[a2]))
+g3 = ggplot(filter(boundary.case, DIC.flux > 0)) +
+  geom_point(mapping = aes(x = DIC.flux, y = Energy.sep, color = A)) +
+  labs(x = expression("Peak Flux (mol/m"^2*"/s)"), y = "Energy demand\n(kJ/mol C)", color = expression("[A]"))
+g1 / g2
+g3
+
+rm(g1, g2, g3)
+```
+```{r}
+# Normalize the x,y by setting the minimum to 0 and the maximum to 1
+norm.xy = function(data.xy){
+  # Data.xy is a dataframe with columns x and y
+  # Set the 0 to the minimum positive point
+  data.xy$x = data.xy$x - min(filter(data.xy, x >= 0)$x)
+  data.xy$y = data.xy$y - min(filter(data.xy, y >= 0)$y)
+  # Normalize to the highest point
+  data.xy$x = data.xy$x/max(data.xy$x)
+  data.xy$y = data.xy$y/max(data.xy$y)
+  return(data.xy)
+}
+boundary.norm = norm.xy(data.xy = data.frame(x = boundary.case$DIC.flux, y = boundary.case$Energy.sep))
+
+# Obtain the hull space of the first quadrant
+hull.full = function(data.xy){
+  # Data.xy is a dataframe with columns x and y
+  
+  # Hull space describes only the first quadrant
+  x.sub = filter(data.xy, x > 0, y >= 0)$x
+  y.sub = filter(data.xy, x > 0, y >= 0)$y
+  
+  # Hull indices
+  hull.indx = chull(x = x.sub, y = y.sub);  
+  # Hull vertices
+  x.boundary = x.sub[hull.indx]; y.boundary = y.sub[hull.indx]
+  return(data.frame(x.boundary, y.boundary))
+}
+hull.boundary = hull.full(data.xy = data.frame(x = boundary.case$DIC.flux, y = boundary.case$Energy.sep))
+# Close the hull.boundary for plotting
+hull.boundary = rbind(hull.boundary, hull.boundary[1,])
+# Obtain the normalized hull for analysis
+hull.boundary.norm = hull.full(data.xy = boundary.norm)
+
+hull.segment = function(x.boundary, y.boundary){
+  # x.boundary and y.boundary are the vertices of the hull space
+  # output is going to give the optimal edge, defined as the path from the minimum y point to the maximum x point (lower right edge)
+  # Find the maximum x and minimum y in the hull space
+  x.max.pos = which.max(x.boundary); y.min.pos = which.min(y.boundary)
+  pos = c(x.max.pos, y.min.pos)
+  # Two possible segments
+  x.segment1 = x.boundary[seq(from = min(pos), to = max(pos))];   y.segment1 = y.boundary[seq(from = min(pos), to = max(pos))]
+  x.segment2 = x.boundary[-seq(from = min(pos)+1, to = max(pos)-1)];  y.segment2 = y.boundary[-seq(from = min(pos)+1, to = max(pos)-1)]
+  # The segment to keep is the one with the lowest median y value
+  # indx = sort(x.segment1, index.return = TRUE)
+  # x.segment1 = x.segment1[indx$ix]; y.segment1 = y.segment1[indx$ix]
+  if(median(y.segment1) > median(y.segment2)){
+    optim.edge.x = x.segment2
+    optim.edge.y = y.segment2
+  } else{
+    optim.edge.x = x.segment1
+    optim.edge.y = y.segment1
+  }
+  indx = sort(optim.edge.x, index.return = TRUE)
+  optim.edge.x = optim.edge.x[indx$ix]; optim.edge.y = optim.edge.y[indx$ix]
+  
+  # Accounting for the possibility of the fastest rate having multiple points, only take the lower y value
+  pos = which(optim.edge.x == max(optim.edge.x))
+  if(length(pos) > 1){
+    pos.check = which(optim.edge.y[pos] > min(optim.edge.y[pos]))
+    optim.edge.x = optim.edge.x[-pos[pos.check]]
+    optim.edge.y = optim.edge.y[-pos[pos.check]]
+  }
+  # Similarly, if the lowest energy has 2 possible rates, take the faster
+  pos = which(optim.edge.y == min(optim.edge.y))
+  if(length(pos) > 1){
+    pos.check = which(optim.edge.x[pos] < max(optim.edge.x[pos]))
+    optim.edge.x = optim.edge.x[-pos[pos.check]]
+    optim.edge.y = optim.edge.y[-pos[pos.check]]
+  }
+  return(data.frame(optim.edge.x, optim.edge.y))
+}
+# Optimal edge for plotting
+optim.edge = hull.segment(x.boundary = hull.boundary$x.boundary, y.boundary = hull.boundary$y.boundary)
+# Optimal edge for distance calculation
+optim.edge.norm = hull.segment(x.boundary = hull.boundary.norm$x.boundary, y.boundary = hull.boundary.norm$y.boundary)
+
+# Calculate the distance for each point in the data set
+min.dist = function(point.x, point.y, edge){
+  # point.x and point.y are single values
+  # optim.edge is the dataframe output from the hull.segment function
+  # If the x point is 0, then omit (distance is NaN)
+  # if(point.x <= 0){
+  #   return(sqrt(2)) # Maximum distance possible is sqrt(1^2 + 1^2)
+  # } else{
+    # Simplify to rows, each of a single segment
+    edge.semgents = data.frame(point1.x = edge$optim.edge.x[1:(length(edge$optim.edge.x)-1)],
+                          point1.y = edge$optim.edge.y[1:(length(edge$optim.edge.y)-1)],
+                          point2.x = edge$optim.edge.x[2:(length(edge$optim.edge.x))],
+                          point2.y = edge$optim.edge.y[2:(length(edge$optim.edge.y))])
+    edge.semgents$seg.len = sqrt((edge.semgents$point1.x - edge.semgents$point2.x)^2 + (edge.semgents$point1.y - edge.semgents$point2.y)^2)
+    # Find the area of the triangle for each segment
+    dist = c()
+    for(pos in 1:length(edge.semgents$point1.x)){
+      area = polyarea(x = c(edge.semgents$point1.x[pos], edge.semgents$point2.x[pos], point.x),
+                      y = c(edge.semgents$point1.y[pos], edge.semgents$point2.y[pos], point.y))
+      dist[pos] = 2*area/edge.semgents$seg.len[pos]
+    }
+    # Take the minimum distance
+    return(min(abs(dist)))
+  # }
+  # return(edge.semgents)
+}
+
+# Run in parallel to speed up calculation. Best way to do this is a foreach loop
+dist = foreach(row = 1:length(boundary.norm$x)) %dopar%
+  min.dist(point.x = boundary.norm$x[row], point.y = boundary.norm$y[row], edge = optim.edge.norm)
+# Store unlisted values in both the normalized and original data
+boundary.case$dist = unlist(dist)
+boundary.norm$dist = unlist(dist)
+
+# Percentiles
+indx = sort(boundary.norm$dist, index.return = TRUE)
+boundary.norm = boundary.norm[indx$ix,]
+boundary.case = boundary.case[indx$ix,]
+boundary.norm$dist.perc = 1:length(boundary.norm$dist)/length(boundary.norm$dist)
+boundary.case$dist.perc = 1:length(boundary.case$dist)/length(boundary.case$dist)
+boundary.case
+ggplot() +
+  geom_polygon(data = hull.boundary, mapping = aes(x = x.boundary, y = y.boundary), fill = alpha("red", 0.5)) +
+  geom_path(data = optim.edge, mapping = aes(x = optim.edge.x, y = optim.edge.y), color = "blue", size = 2) +
+  geom_point(data = filter(boundary.case, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc*100)) + # Color as the percentiles
+  labs(x = expression("Peak Flux (mol/m"^2*"/s)"), 
+       y = "Energy demand (kJ/mol C)", subtitle = "Boundary + Optimal edge", color = "Distance\n(Percentile)")
+
+filt1 = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = boundary.case)
+
+# Check the random forrest accuracy
+check = predict(filt1, boundary.case)
+plot(boundary.case$dist, check)
+# optim.edge
+# Remove variables
+rm(boundary.norm, dist, hull.boundary, hull.boundary.norm, indx, optim.edge, optim.edge.norm)
+```
+```{r}
+# Sampling function
+data.iterate.beta = function(forest.object, prev.data, beta2, pCO2.in){ # Creates the next iterations for dataset
+  # Set bounds based on bounds of the previous data. The bounds are the weighted average of the total set and the most recent set, weighted by the iteration number. This constrains the points further the more iterations that have been done
+  # Total range
+  A.range.tot = range(prev.data$A); Na.shift.range.tot = range(prev.data$Na.shift)
+  pka1.bound.tot = range(-log10(prev.data$k1)); pka2.bound.tot = range(-log10(prev.data$k2))
+  beta1.bound.tot = range(prev.data$beta1)
+  # Most recent dataset
+  A.range = range(prev.data$A[prev.data$it.num == max(prev.data$it.num)]); 
+  Na.shift.range = range(prev.data$Na.shift[prev.data$it.num == max(prev.data$it.num)])
+  pka1.bound = range(-log10(prev.data$k1[prev.data$it.num == max(prev.data$it.num)])); 
+  pka2.bound = range(-log10(prev.data$k2[prev.data$it.num == max(prev.data$it.num)]))
+  beta1.bound = range(prev.data$beta1[prev.data$it.num == max(prev.data$it.num)])
+  # Weighted average
+  A.range = (A.range*max(prev.data$it.num) + A.range.tot)/(max(prev.data$it.num) + 1)
+  Na.shift.range = (Na.shift.range*max(prev.data$it.num) + Na.shift.range.tot)/(max(prev.data$it.num) + 1)
+  pka1.bound = (pka1.bound*max(prev.data$it.num) + pka1.bound.tot)/(max(prev.data$it.num) + 1)
+  pka2.bound = (pka2.bound*max(prev.data$it.num) + pka2.bound.tot)/(max(prev.data$it.num) + 1)
+  beta1.bound = (beta1.bound*max(prev.data$it.num) + beta1.bound.tot)/(max(prev.data$it.num) + 1)
+  
+  # Set length is based on the number of variables included; it is the same each iteration for simplicty
+  len = length(prev.data$A[prev.data$it.num == 0])
+  
+  # Determine the cutoff value for the distance
+  perc.cutoff = 0.8*0.5^max(prev.data$it.num)
+  dist = sort(prev.data$dist)
+  cutoff.pos = floor(perc.cutoff*length(dist))
+  dist.cutoff = dist[cutoff.pos]
+  
+  # Randomly sample at least 100 points that, according to the random forest, would meet the criteria
+  test.set = data.frame(A = runif(n = len*2, min = min(A.range), max = max(A.range)), # Use double the target because so many will be removed
+                        Na.shift = runif(n = len*2, min = min(Na.shift.range), max = max(Na.shift.range)),
+                        k1 = 10^-runif(n = len*2, min = min(pka1.bound)-0.1, max = max(pka1.bound)+0.1),
+                        k2 = 10^-runif(n = len*2, min = min(pka2.bound)-0.1, max = max(pka2.bound)+0.1),
+                        beta1 = runif(n = len*2, min = min(beta1.bound), max = max(beta1.bound))) # Expand the pka range out slightly 
+                                                                                                  # for better histograms later
+  test.set$Na = (test.set$Na.shift-0.025*0.5)*test.set$A
+  test.set$beta2 = beta2
+  # Determine reject if pka1 > pka2
+  test.set = filter(test.set, k2 < k1)
+  # Calculate the predicted distance from the line, apply the cutoff value
+  test.set$dist = predict(forest.object, test.set)
+  test.set = filter(test.set, dist < dist.cutoff)
+  # Remove points with insufficient capture
+  if(length(test.set$A) > 0){
+    test.set$pCO2.lean = mcmapply(pCO2.lean, Na = test.set$Na, A =  test.set$A, beta1 = test.set$beta1, beta2 = test.set$beta2,
+                                k1 = test.set$k1, k2 = test.set$k2, pCO2.out = 1)
+    test.set = filter(test.set, pCO2.lean < 0.1*pCO2.in)
+  }
+  
+  while(length(test.set$A) < len){
+    add = (len - length(test.set$A))*2 # Get double the points as the cutoff; more is better
+    # New option
+    new.point = data.frame(A = runif(n = add, min = min(A.range), max = max(A.range)),
+                           Na.shift = runif(n = add, min = min(Na.shift.range), max = max(Na.shift.range)),
+                           k1 = 10^-runif(n = add, min = min(pka1.bound)-0.1, max = max(pka1.bound)+0.1),
+                           k2 = 10^-runif(n = add, min = min(pka2.bound)-0.1, max = max(pka2.bound)+0.1),
+                           beta1 = runif(n = add, min = min(beta1.bound), max = max(beta1.bound)))
+    new.point$Na = (new.point$Na.shift-0.025*0.5)*new.point$A
+    new.point$beta2 = beta2
+    # Apply constraints: as before, in order to minimize number of time-consuming calculations
+    new.point = filter(new.point, k2 < k1)
+    new.point$dist = predict(forest.object, new.point)
+    new.point = filter(new.point, dist < dist.cutoff)
+    if(length(new.point$A) > 0){ # Errors in calculation if the new points don't meet the criteria to begin with
+      new.point$pCO2.lean = mcmapply(pCO2.lean, Na = new.point$Na, A =  new.point$A, beta1 = new.point$beta1, beta2 = new.point$beta2,
+                                k1 = new.point$k1, k2 = new.point$k2, pCO2.out = 1)
+      new.point = filter(new.point, pCO2.lean < 0.1*pCO2.in)
+    }
+    # Accept the new point if the new probability (unweighted) is greater than the adjusted probability of the previous point
+    test.set = rbind(test.set, new.point)
+  }
+  test.set$it.num = max(prev.data$it.num) + 1
+  return(test.set[1:len, ]) # Only the first X points, where x is the target length. Cut off extra points for analysis purposes
+}
+
+```
+
+```{r}
+# Create a loop to iterate
+sys.iterate = function(data.start, filt.start, n){
+  data = data.start; filt = filt.start
+  for(i in 1:n){
+    ## New points for next iteration
+    dat = data.iterate.beta(forest.object = filt, prev.data = data, beta2 = data$beta2[1], pCO2.in = 0.15)
+    # return(dat)
+    # Calculate DIC difference and total energy deman
+    dat$DIC.diff = mcmapply(DIC.diff, Na = dat$Na, A =  dat$A, beta1 = dat$beta1, beta2 = dat$beta2,
+                                      k1 = dat$k1, k2 = dat$k2, pCO2.in = 0.15, pCO2.out = 1)
+    Energy.J.L = mcmapply(Energy.tot, k1 = dat$k1, k2 = dat$k2,
+               beta1 = dat$beta1, beta2 = dat$beta2,
+               A.tot = dat$A,     Na = dat$Na,
+               pCO2.in = 0.15, pCO2.out = 1, mc.cores = 2)
+    dat$Energy.sep = Energy.J.L/dat$DIC.diff*1e-3
+    # Calculate kinetic factors
+    kinetic = mcmapply(kinetic.force, k1 = dat$k1, k2 = dat$k2, beta1 = dat$beta1, beta2 = dat$beta2, 
+                  A.tot = dat$A, Na = dat$Na, pCO2.in = 0.15, pCO2.out = 1)
+    dat$DIC.flux = kinetic
+    # dat
+    
+    ## Re-calculate the hull space and distance
+    # Normalize
+    dat.all = filter(rbind(dat, data[names(data) != "dist.perc"]), Energy.sep < 100)
+    dat.norm = norm.xy(data.xy = data.frame(x = dat.all$DIC.flux, y = dat.all$Energy.sep))
+  
+    # Obtain the hull space of the first quadrant
+    hull.dat = hull.full(data.xy = data.frame(x = dat.all$DIC.flux, y = dat.all$Energy.sep))
+    # Close the hull.boundary for plotting
+    hull.dat = rbind(hull.dat, hull.dat[1,])
+    # Obtain the normalized hull for analysis
+    hull.dat.norm = hull.full(data.xy = dat.norm)
+    
+    # Optimal edge for plotting
+    optim.edge1 = hull.segment(x.boundary = hull.dat$x.boundary, y.boundary = hull.dat$y.boundary)
+    # Optimal edge for distance calculation
+    optim.edge1.norm = hull.segment(x.boundary = hull.dat.norm$x.boundary, y.boundary = hull.dat.norm$y.boundary)
+    
+    # Calculate distance in parallel to speed up calculation. Best way to do this is a foreach loop
+    dist = foreach(row = 1:length(dat.norm$x)) %dopar%
+      min.dist(point.x = dat.norm$x[row], point.y = dat.norm$y[row], edge = optim.edge1.norm)
+    # Store unlisted values in both the normalized and original data
+    dat.all$dist = unlist(dist)
+    dat.norm$dist = unlist(dist)
+    
+    # Percentiles
+    indx = sort(dat.norm$dist, index.return = TRUE)
+    dat.all = dat.all[indx$ix,]
+    dat.all$dist.perc = 1:length(dat.all$dist)/length(dat.all$dist)
+    
+    # Save for next loop
+    data = dat.all
+    filt = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = data, mtry = 10)
+  }
+  return(dat.all)
+}
+
+iterate.beta0 = sys.iterate(data = boundary.case, filt = filt1, n = 2)
+# To save time, if already run, load the file instead
+# iterate.beta0 = read.csv("SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-0e0.csv")
+
+# Run another iteration. Separate this to account for possible interruptions partway.
+filt1 = randomForest(dist ~ A * k1 * k2 * Na.shift * beta1, data = iterate.beta0, mtry = 10)
+check = predict(filt1, iterate.beta0)
+plot(iterate.beta0$dist, check)
+iterate.beta0 = sys.iterate(data = iterate.beta0, filt = filt1, n = 1)
+
+ggplot() +
+  geom_point(data = filter(iterate.beta0, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc, shape = as.factor(it.num)))
+
+write.csv(iterate.beta0, "SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-0e0.csv", row.names = FALSE)
+```
+
+```{r}
+filter.create = function(dat){ # Create the dataframe for the filter, not the filter itself
+  ## Calculate the hull space and distance to get the first filter function
+  # Normalize
+  dat.all = filter(dat, Energy.sep < 100)
+  dat.norm = norm.xy(data.xy = data.frame(x = dat.all$DIC.flux, y = dat.all$Energy.sep))
+  
+  # Obtain the hull space of the first quadrant
+  hull.dat = hull.full(data.xy = data.frame(x = dat.all$DIC.flux, y = dat.all$Energy.sep))
+  # Close the hull.boundary for plotting
+  hull.dat = rbind(hull.dat, hull.dat[1,])
+  # Obtain the normalized hull for analysis
+  hull.dat.norm = hull.full(data.xy = dat.norm)
+  
+  # Optimal edge for plotting
+  optim.edge1 = hull.segment(x.boundary = hull.dat$x.boundary, y.boundary = hull.dat$y.boundary)
+  # Optimal edge for distance calculation
+  optim.edge1.norm = hull.segment(x.boundary = hull.dat.norm$x.boundary, y.boundary = hull.dat.norm$y.boundary)
+  
+  # Calculate distance in parallel to speed up calculation. Best way to do this is a foreach loop
+  dist = foreach(row = 1:length(dat.norm$x)) %dopar%
+    min.dist(point.x = dat.norm$x[row], point.y = dat.norm$y[row], edge = optim.edge1.norm)
+  # Store unlisted values in both the normalized and original data
+  dat.all$dist = unlist(dist)
+  dat.norm$dist = unlist(dist)
+  
+  # Percentiles
+  indx = sort(dat.norm$dist, index.return = TRUE)
+  dat.all = dat.all[indx$ix,]
+  dat.all$dist.perc = 1:length(dat.all$dist)/length(dat.all$dist)
+  return(dat.all)
+}
+
+randomForest(dist ~ A * k1 * k2 * Na * beta1, data = filter.create(dat = iterate.beta0))
+
+```
+
+```{r}
+# Run process with other beta - target values: 0, 1, 10, 100, 1e4, 1e6
+boundary.case = boundary.setup(beta2 = 1e1)
+
+# Run the DIC and energy demand on this set of inputs. Use best case flue gas conditions. Only interested in the separate case, for the simplicity of testing the method
+boundary.case$DIC.diff = mcmapply(DIC.diff, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.in = 0.15, pCO2.out = 1)
+boundary.case$pCO2.lean = mcmapply(pCO2.lean, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.out = 1)
+Energy.J.L = mcmapply(Energy.tot, k1 = boundary.case$k1, k2 = boundary.case$k2,
+           beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+           A.tot = boundary.case$A, Na = boundary.case$Na,
+           pCO2.in = 0.15, pCO2.out = 1, mc.cores = 3)
+boundary.case$Energy.sep = Energy.J.L/boundary.case$DIC.diff*1e-3
+# Energy.J.L
+# Remove temp variables that sometimes appear
+var = c("Na.shift", "A", "k1", "k2", "beta1", "Na", "beta2", "it.num", "DIC.diff", "pCO2.lean", "Energy.sep")
+boundary.case = boundary.case[var] # Eliminate metadata from the function calls
+
+# Kinetics
+kinetic = mcmapply(kinetic.force, k1 = boundary.case$k1, k2 = boundary.case$k2,
+                   beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                   A.tot = boundary.case$A, Na = boundary.case$Na, pCO2.in = 0.15, pCO2.out = 1)
+# kinetic
+boundary.case$DIC.flux = kinetic
+# boundary.case
+
+# Create filter for next iteration
+boundary.case = filter.create(dat = boundary.case)
+filt1 = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = boundary.case)
+
+# Iterate
+iterate.beta1 = sys.iterate(data = boundary.case, filt = filt1, n = 2)
+# To save time, if already run, load the file instead
+# iterate.beta1 = read.csv("SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e1.csv")
+# Run another iteration, separated in case of errors (happens frequently enough)
+filt1 = randomForest(dist ~ A * k1 * k2 * Na.shift * beta1, data = iterate.beta1, mtry = 10)
+check = predict(filt1, iterate.beta1)
+plot(iterate.beta1$dist, check)
+iterate.beta1 = sys.iterate(data = iterate.beta1, filt = filt1, n = 1)
+
+# iterate.beta1
+ggplot() +
+  geom_point(data = filter(iterate.beta1, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc, shape = as.factor(it.num))) +
+  labs(subtitle = iterate.beta1$beta2[1])
+
+write.csv(iterate.beta1, "SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e1.csv", row.names = FALSE)
+```
+```{r}
+# Run process with other beta - target values: 0, 1, 10, 100, 1e4, 1e6
+boundary.case = boundary.setup(beta2 = 1e2)
+
+# Run the DIC and energy demand on this set of inputs. Use best case flue gas conditions. Only interested in the separate case, for the simplicity of testing the method
+boundary.case$DIC.diff = mcmapply(DIC.diff, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.in = 0.15, pCO2.out = 1)
+boundary.case$pCO2.lean = mcmapply(pCO2.lean, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.out = 1)
+Energy.J.L = mcmapply(Energy.tot, k1 = boundary.case$k1, k2 = boundary.case$k2,
+           beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+           A.tot = boundary.case$A, Na = boundary.case$Na,
+           pCO2.in = 0.15, pCO2.out = 1, mc.cores = 3)
+boundary.case$Energy.sep = Energy.J.L/boundary.case$DIC.diff*1e-3
+# Energy.J.L
+# Remove temp variables that sometimes appear
+var = c("Na.shift", "A", "k1", "k2", "beta1", "Na", "beta2", "it.num", "DIC.diff", "pCO2.lean", "Energy.sep")
+boundary.case = boundary.case[var] # Eliminate metadata from the function calls
+
+# Kinetics
+kinetic = mcmapply(kinetic.force, k1 = boundary.case$k1, k2 = boundary.case$k2,
+                   beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                   A.tot = boundary.case$A, Na = boundary.case$Na, pCO2.in = 0.15, pCO2.out = 1)
+# kinetic
+boundary.case$DIC.flux = kinetic
+# boundary.case
+
+# Create filter for next iteration
+boundary.case = filter.create(dat = boundary.case)
+filt1 = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = boundary.case)
+
+# Iterate
+iterate.beta1 = sys.iterate(data = boundary.case, filt = filt1, n = 2)
+# iterate.beta1
+# To save time, if already run, load the file instead
+# iterate.beta1 = read.csv("SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e2.csv")
+# Run another iteration, separated for possible errors
+filt1 = randomForest(dist ~ A * k1 * k2 * Na.shift * beta1, data = iterate.beta1, mtry = 10)
+check = predict(filt1, iterate.beta1)
+plot(iterate.beta1$dist, check)
+iterate.beta1 = sys.iterate(data = iterate.beta1, filt = filt1, n = 1)
+
+ggplot() +
+  geom_point(data = filter(iterate.beta1, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc, shape = as.factor(it.num)))
+
+write.csv(iterate.beta1, "SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e2.csv", row.names = FALSE)
+
+```
+```{r}
+boundary.case = boundary.setup(beta2 = 1e0)
+
+# Run the DIC and energy demand on this set of inputs. Use best case flue gas conditions. Only interested in the separate case, for the simplicity of testing the method
+boundary.case$DIC.diff = mcmapply(DIC.diff, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.in = 0.15, pCO2.out = 1)
+boundary.case$pCO2.lean = mcmapply(pCO2.lean, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.out = 1)
+Energy.J.L = mcmapply(Energy.tot, k1 = boundary.case$k1, k2 = boundary.case$k2,
+           beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+           A.tot = boundary.case$A, Na = boundary.case$Na,
+           pCO2.in = 0.15, pCO2.out = 1, mc.cores = 3)
+boundary.case$Energy.sep = Energy.J.L/boundary.case$DIC.diff*1e-3
+# Energy.J.L
+# Remove temp variables that sometimes appear
+var = c("Na.shift", "A", "k1", "k2", "beta1", "Na", "beta2", "it.num", "DIC.diff", "pCO2.lean", "Energy.sep")
+boundary.case = boundary.case[var] # Eliminate metadata from the function calls
+
+# Kinetics
+kinetic = mcmapply(kinetic.force, k1 = boundary.case$k1, k2 = boundary.case$k2,
+                   beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                   A.tot = boundary.case$A, Na = boundary.case$Na, pCO2.in = 0.15, pCO2.out = 1)
+# kinetic
+boundary.case$DIC.flux = kinetic
+# boundary.case
+
+# Create filter for next iteration
+boundary.case = filter.create(dat = boundary.case)
+filt1 = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = boundary.case)
+# Iterate
+iterate.beta1 = sys.iterate(data = boundary.case, filt = filt1, n = 1)
+# iterate.beta1
+# To save time, if already run, load the file instead
+# iterate.beta1 = read.csv("SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e0.csv")
+# Run another iteration, separated for possible errors
+
+filt1 = randomForest(dist ~ A * k1 * k2 * Na.shift * beta1, data = iterate.beta1, mtry = 10)
+check = predict(filt1, iterate.beta1)
+plot(iterate.beta1$dist, check)
+iterate.beta1 = sys.iterate(data = iterate.beta1, filt = filt1, n = 1)
+
+filt1 = randomForest(dist ~ A * k1 * k2 * Na.shift * beta1, data = iterate.beta1, mtry = 10)
+check = predict(filt1, iterate.beta1)
+plot(iterate.beta1$dist, check)
+iterate.beta1 = sys.iterate(data = iterate.beta1, filt = filt1, n = 1)
+
+ggplot() +
+  geom_point(data = filter(iterate.beta1, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc, shape = as.factor(it.num))) +
+  labs(subtitle = iterate.beta1$beta2[1])
+
+write.csv(iterate.beta1, "SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e0.csv", row.names = FALSE)
+```
+```{r}
+boundary.case = boundary.setup(beta2 = 1e4)
+
+# Run the DIC and energy demand on this set of inputs. Use best case flue gas conditions. Only interested in the separate case, for the simplicity of testing the method
+boundary.case$DIC.diff = mcmapply(DIC.diff, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.in = 0.15, pCO2.out = 1)
+boundary.case$pCO2.lean = mcmapply(pCO2.lean, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.out = 1)
+Energy.J.L = mcmapply(Energy.tot, k1 = boundary.case$k1, k2 = boundary.case$k2,
+           beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+           A.tot = boundary.case$A, Na = boundary.case$Na,
+           pCO2.in = 0.15, pCO2.out = 1, mc.cores = 3)
+boundary.case$Energy.sep = Energy.J.L/boundary.case$DIC.diff*1e-3
+# Energy.J.L
+# Remove temp variables that sometimes appear
+var = c("Na.shift", "A", "k1", "k2", "beta1", "Na", "beta2", "it.num", "DIC.diff", "pCO2.lean", "Energy.sep")
+boundary.case = boundary.case[var] # Eliminate metadata from the function calls
+
+# Kinetics
+kinetic = mcmapply(kinetic.force, k1 = boundary.case$k1, k2 = boundary.case$k2,
+                   beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                   A.tot = boundary.case$A, Na = boundary.case$Na, pCO2.in = 0.15, pCO2.out = 1)
+# kinetic
+boundary.case$DIC.flux = kinetic
+# boundary.case
+
+# Create filter for next iteration
+boundary.case = filter.create(dat = boundary.case)
+filt1 = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = boundary.case)
+
+# Iterate
+iterate.beta1 = sys.iterate(data = boundary.case, filt = filt1, n = 2)
+# To save time, if already run, load the file instead
+# iterate.beta1 = read.csv("SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e4.csv")
+# Run another iteration, separated for possible errors
+filt1 = randomForest(dist ~ A * k1 * k2 * Na.shift * beta1, data = iterate.beta1, mtry = 10)
+check = predict(filt1, iterate.beta1)
+plot(iterate.beta1$dist, check)
+iterate.beta1 = sys.iterate(data = iterate.beta1, filt = filt1, n = 1)
+
+# iterate.beta1
+ggplot() +
+  geom_point(data = filter(iterate.beta1, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc, shape = as.factor(it.num))) +
+  labs(subtitle = iterate.beta1$beta2[1])
+
+write.csv(iterate.beta1, "SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e4.csv", row.names = FALSE)
+```
+
+```{r}
+boundary.case = boundary.setup(beta2 = 1e6)
+
+# Run the DIC and energy demand on this set of inputs. Use best case flue gas conditions. Only interested in the separate case, for the simplicity of testing the method
+boundary.case$DIC.diff = mcmapply(DIC.diff, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.in = 0.15, pCO2.out = 1)
+boundary.case$pCO2.lean = mcmapply(pCO2.lean, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.out = 1)
+Energy.J.L = mcmapply(Energy.tot, k1 = boundary.case$k1, k2 = boundary.case$k2,
+           beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+           A.tot = boundary.case$A, Na = boundary.case$Na,
+           pCO2.in = 0.15, pCO2.out = 1, mc.cores = 3)
+boundary.case$Energy.sep = Energy.J.L/boundary.case$DIC.diff*1e-3
+# Energy.J.L
+# Remove temp variables that sometimes appear
+var = c("Na.shift", "A", "k1", "k2", "beta1", "Na", "beta2", "it.num", "DIC.diff", "pCO2.lean", "Energy.sep")
+boundary.case = boundary.case[var] # Eliminate metadata from the function calls
+
+# Kinetics
+kinetic = mcmapply(kinetic.force, k1 = boundary.case$k1, k2 = boundary.case$k2,
+                   beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                   A.tot = boundary.case$A, Na = boundary.case$Na, pCO2.in = 0.15, pCO2.out = 1)
+# kinetic
+boundary.case$DIC.flux = kinetic
+# boundary.case
+
+# Create filter for next iteration
+boundary.case = filter.create(dat = boundary.case)
+filt1 = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = boundary.case)
+
+# Iterate
+iterate.beta1 = sys.iterate(data = boundary.case, filt = filt1, n = 2)
+# iterate.beta1
+# To save time, if already run, load the file instead
+# iterate.beta1 = read.csv("SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e6.csv")
+# Run another iteration, separated for possible errors
+filt1 = randomForest(dist ~ A * k1 * k2 * Na.shift * beta1, data = iterate.beta1, mtry = 10)
+check = predict(filt1, iterate.beta1)
+plot(iterate.beta1$dist, check)
+iterate.beta1 = sys.iterate(data = iterate.beta1, filt = filt1, n = 1)
+
+ggplot() +
+  geom_point(data = filter(iterate.beta1, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc, shape = as.factor(it.num))) +
+  labs(subtitle = iterate.beta1$beta2[1])
+
+write.csv(iterate.beta1, "SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e6.csv", row.names = FALSE)
+```
+
+
+# Code to run for each new beta2:
+boundary.case = boundary.setup(beta2 = 1e2)
+
+# Run the DIC and energy demand on this set of inputs. Use best case flue gas conditions. Only interested in the separate case, for the simplicity of testing the method
+boundary.case$DIC.diff = mcmapply(DIC.diff, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.in = 0.15, pCO2.out = 1)
+boundary.case$pCO2.lean = mcmapply(pCO2.lean, Na = boundary.case$Na, A =  boundary.case$A, beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                                  k1 = boundary.case$k1, k2 = boundary.case$k2, pCO2.out = 1)
+Energy.J.L = mcmapply(Energy.tot, k1 = boundary.case$k1, k2 = boundary.case$k2,
+           beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+           A.tot = boundary.case$A, Na = boundary.case$Na,
+           pCO2.in = 0.15, pCO2.out = 1, mc.cores = 3)
+boundary.case$Energy.sep = Energy.J.L/boundary.case$DIC.diff*1e-3
+# Energy.J.L
+# Remove temp variables that sometimes appear
+var = c("Na.shift", "A", "k1", "k2", "beta1", "Na", "beta2", "it.num", "DIC.diff", "pCO2.lean", "Energy.sep")
+boundary.case = boundary.case[var] # Eliminate metadata from the function calls
+
+# Kinetics
+kinetic = mcmapply(kinetic.force, k1 = boundary.case$k1, k2 = boundary.case$k2,
+                   beta1 = boundary.case$beta1, beta2 = boundary.case$beta2,
+                   A.tot = boundary.case$A, Na = boundary.case$Na, pCO2.in = 0.15, pCO2.out = 1)
+# kinetic
+boundary.case$DIC.flux = as.numeric(unlist(strsplit(kinetic, ","))[c(TRUE, FALSE, FALSE)])
+boundary.case$kin.pk = as.numeric(unlist(strsplit(kinetic, ","))[c(FALSE, TRUE, FALSE)])
+boundary.case$E.avg = as.numeric(unlist(strsplit(kinetic, ","))[c(FALSE, FALSE, TRUE)])
+# boundary.case
+
+# Create filter for next iteration
+boundary.case = filter.create(dat = boundary.case)
+filt1 = randomForest(dist ~ A * k1 * k2 * Na * beta1, data = boundary.case)
+
+# Iterate
+iterate.beta1 = sys.iterate(data = boundary.case, filt = filt1, n = 2)
+# iterate.beta1
+ggplot() +
+  geom_point(data = filter(iterate.beta1, DIC.flux > 0), mapping = aes(x = DIC.flux, y = Energy.sep, color = dist.perc, shape = as.factor(it.num))) +
+  labs(subtitle = iterate.beta1$beta2[1])
+
+write.csv(iterate.beta1, "SorbentActivation-2e-MonteCarlo-HullPerimeterDistance-v3-beta2-1e2.csv", row.names = FALSE)

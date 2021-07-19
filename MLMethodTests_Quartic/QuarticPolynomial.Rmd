@@ -189,14 +189,14 @@ Comparison of the boundaries to show how changing the acceptance criteria change
 ```{r GP: Comparison of Acceptance Criteria}
 ## Loading
 # Load datasets for obtaining the refined probability functions
-data.delta = read.csv('GPar_Accept_Delta1.csv')
-data.cutof = read.csv('GPar_Accept_Threshold.csv')
-data.radan = read.csv('GPar_Accept_Radius.csv')
+data.delta = read.csv('../Ex_Quartic/GPar_Accept_Delta1.csv')
+data.cutof = read.csv('../Ex_Quartic/GPar_Accept_Threshold.csv')
+data.radan = read.csv('../Ex_Quartic/GPar_Accept_Radius.csv')
 # Load datasets prior to refinement
-data.paret = read.csv('GPar_all_start.csv')
+data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
 data.paret$rad = sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2)
 # Compare to the estimate of the Pareto frontier
-GPar.front = read.csv(file = 'GPar_fnt_start.csv')
+GPar.front = read.csv(file = '../Ex_Quartic/GPar_fnt_start.csv')
 
 ##
 # Grid of the relevant region to visualize and interpret
@@ -394,12 +394,150 @@ ggplot() +
                      labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
                      values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
   labs(x = expression('x'[1]), x = expression('x'[2]), color = '',
-       subtitle = expression('Criteria: Utopia point distance and f'[1]*' Priority < 80%')) +
+       subtitle = expression('Criteria: Utopia point distance and f'[1]*' Priority > 80%')) +
   theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85)) +
   scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
 
 
 ```
+
+```{r}
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.pre, 
+               fill = 'pre'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.pre, color = 'pre'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = delta, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85),
+        axis.text = element_text(size = 16), axis.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 16), legend.text = element_text(size = 16)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.post, 
+               fill = 'post'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta.post, color = 'post'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = delta, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85),
+        axis.text = element_text(size = 16), axis.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 16), legend.text = element_text(size = 16)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+## Threshold
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.pre, 
+               fill = 'pre'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.pre, color = 'pre'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85),
+        axis.text = element_text(size = 16), axis.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 16), legend.text = element_text(size = 16)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.post, 
+               fill = 'post'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof.post, color = 'post'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85),
+        axis.text = element_text(size = 16), axis.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 16), legend.text = element_text(size = 16)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+## Radius-angle
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.pre, 
+               fill = 'pre'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.pre, color = 'pre'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85),
+        axis.text = element_text(size = 16), axis.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 16), legend.text = element_text(size = 16)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+ggplot() +
+  # Boundaries: +/- some separation from 0.5
+  geom_contour_filled(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.post, 
+               fill = 'post'), 
+               breaks = c(sep, -sep)+0.5, linetype = 2, alpha = trans) +
+  # Actual boundaries
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan.post, color = 'post'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = radan, color = 'tru'), 
+               breaks = 0.5, linetype = 1, size = ln.sz) +
+  scale_color_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  scale_fill_manual(breaks = c('tru', 'pre', 'post'),
+                     labels = c('tru' = 'True Boundary', 'pre' = 'Before Refinement', 'post' = 'After Refinement'),
+                     values = c('tru' = 'red', 'pre' = '#1b9e77', 'post' = '#3c3780')) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = '') +
+  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85),
+        axis.text = element_text(size = 16), axis.title = element_text(size = 16),
+        plot.subtitle = element_text(size = 16), legend.text = element_text(size = 16)) +
+  scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
+
+```
+
 
 The error rate in the GP model estimate should account for the built-in uncertainty in the model. 
 The probability that the model gives the wrong result given the (x1, x2) coordinates is the probability that it accepts the point when it should reject it, or vice versa.
@@ -413,6 +551,9 @@ error.rate = data.frame(method = 'GP', source = rep(c('0pre', '1post'), 3),
                         criteria = c('Pareto Distance', 'Pareto Distance', 
                                      'Objective Cutoff', 'Objective Cutoff', 
                                      'Utopia Distance + Priority', 'Utopia Distance + Priority'))
+error.rate$criteria = factor(error.rate$criteria, levels = c('Pareto Distance', 
+                                     'Objective Cutoff', 'Utopia Distance + Priority'))
+
 error.rate$rate =
   c(mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.pre,  filter(fine.grid, delta == 0)$prob.delta.pre)),
     mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.post, filter(fine.grid, delta == 0)$prob.delta.post)),
@@ -489,7 +630,7 @@ g.tru = ggplot() +
 g.est + g.tru
 
 # Single variable conditional
-Infer.plt = read.csv('Marginals_Delta.csv')
+Infer.plt = read.csv('../Ex_Quartic/Marginals_Delta.csv')
 ggplot(Infer.plt) +
   geom_path(mapping = aes(x = x, y = prob, color = as.factor(ncond))) +
   facet_wrap(var~., nrow = 2) + 
@@ -564,7 +705,7 @@ g.tru = ggplot() +
 g.est + g.tru
 
 # Single variable conditional
-Infer.plt = read.csv('Marginals_Threshold.csv')
+Infer.plt = read.csv('../Ex_Quartic/Marginals_Threshold.csv')
 ggplot(Infer.plt) +
   geom_path(mapping = aes(x = x, y = prob, color = as.factor(ncond))) +
   facet_wrap(var~., nrow = 2) + 
@@ -685,11 +826,11 @@ g.est + g.tru
 ```
 
 ```{r GP-True Comparison: Radius-Theta}
-Infer.plt = read.csv('Marginals_Radius.csv')
+Infer.plt = read.csv('../Ex_Quartic/Marginals_Radius.csv')
 ggplot(Infer.plt) +
   geom_path(mapping = aes(x = x, y = prob, color = as.factor(ncond))) +
   facet_wrap(var~., nrow = 2) + 
-  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if r < 1, f'[1]*' priority < 80%'), 
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if r < 1, f'[1]*' priority > 80%'), 
        color = '') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
@@ -775,8 +916,8 @@ SVM.err = function(fine.input, mod.list){
 
 
 ```{r SVM: Distance}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
-data.delta = read.csv('GPar_Accept_Delta1.csv')
+GPar.all = read.csv(file = '../Ex_Quartic/GPar_all_start.csv')
+data.delta = read.csv('../Ex_Quartic/GPar_Accept_Delta1.csv')
 
 # Define acceptance
 GPar.all$cat = 0; data.delta$cat = 0; fine.grid$cat = 0
@@ -897,8 +1038,8 @@ The partial conditional, where the secondary variable is bounded to its "optimal
 Repeating for the f1 and f2 cutoffs.
 
 ```{r SVM: Threshold}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
-data.cutof = read.csv('GPar_Accept_Threshold.csv')
+GPar.all = read.csv(file = '../Ex_Quartic/GPar_all_start.csv')
+data.cutof = read.csv('../Ex_Quartic/GPar_Accept_Threshold.csv')
 
 # Define acceptance
 GPar.all$cat = 0; data.cutof$cat = 0; fine.grid$cat = 0
@@ -1002,8 +1143,8 @@ Graphically, the results are the same as the distance cutoff: the polynomial and
 
 Repeat for radius-angle cutoff
 ```{r SVM: Radius and Priority}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
-data.radan = read.csv('GPar_Accept_Radius.csv')
+GPar.all = read.csv(file = '../Ex_Quartic/GPar_all_start.csv')
+data.radan = read.csv('../Ex_Quartic/GPar_Accept_Radius.csv')
 
 # Define acceptance
 GPar.all$cat = 0; data.radan$cat = 0; fine.grid$cat = 0
@@ -1118,7 +1259,7 @@ For the purposes of analysis, three models will be tested based on the input to 
 Up to 12 categories will be allowed, and any type of Gaussian models will be accepted. This will lead to longer fitting time, but should help with accuracy.
 
 ```{r}
-GPar.all = read.csv(file = 'GPar_all_start.csv')
+GPar.all = read.csv(file = '../Ex_Quartic/GPar_all_start.csv')
 
 # names(GPar.all)
 max.cat = 12
@@ -1138,7 +1279,7 @@ GPar.all$typ.out = cluster.out$classification
 ggplot() +
   # Boundaries: +/- some separation from 0.5
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist, color = 'delta'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1, color = 'cutof'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof, color = 'cutof'), breaks = c(0.5)) +
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = rad, color = 'rad'), breaks = c(1)) +
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ang, color = 'ang'), breaks = c(50)) +
   # Pareto frontier
@@ -1166,7 +1307,7 @@ ggplot() +
 ggplot() +
   # Boundaries: +/- some separation from 0.5
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist, color = 'delta'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1, color = 'cutof'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof, color = 'cutof'), breaks = c(0.5)) +
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = rad, color = 'rad'), breaks = c(1)) +
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ang, color = 'ang'), breaks = c(50)) +
   # Pareto frontier
@@ -1194,7 +1335,7 @@ ggplot() +
 ggplot() +
   # Boundaries: +/- some separation from 0.5
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist, color = 'delta'), breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1, color = 'cutof'), breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof, color = 'cutof'), breaks = c(0.5)) +
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = rad, color = 'rad'), breaks = c(1)) +
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ang, color = 'ang'), breaks = c(50)) +
   # Pareto frontier
@@ -1235,7 +1376,7 @@ ggplot() +
   geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(cluster.out))) +
   # Boundaries: +/- some separation from 0.5
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), color = 'black', breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), color = 'red', breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof), color = 'red', breaks = c(0.5)) +
 
   labs(x = expression('x'[1]), y = expression('x'[2]), 
        color = 'Group', fill = 'Group', 
@@ -1251,7 +1392,7 @@ ggplot() +
   geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(cluster.all)), size = 4) +
   # Boundaries: +/- some separation from 0.5
   geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = dist), color = 'black', breaks = c(1)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = ff1), color = 'red', breaks = c(0.5)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = cutof), color = 'red', breaks = c(0.5)) +
 
   labs(x = expression('x'[1]), y = expression('x'[2]), 
        color = 'Group', fill = 'Group', 
@@ -1369,7 +1510,12 @@ The error rate can only be compared between the the GP and SVM methods because t
 
 ```{r Error comparison}
 dat = rbind(error.rate, err.svm.dist, err.svm.radan, err.svm.threshold)
+dat$criteria = factor(dat$criteria, levels = c('Pareto Distance',
+                                     'Objective Cutoff', 'Distance + Priority'))
 dat$criteria[dat$criteria == 'Utopia Distance + Priority'] = 'Distance + Priority'
+dat$criteria[is.na(dat$criteria)] = 'Distance + Priority'
+dat
+
 
 ggplot(dat) +
   geom_col(mapping = aes(x = source, fill = source, y = rate)) +
@@ -1377,7 +1523,13 @@ ggplot(dat) +
   facet_grid(criteria~method, switch = 'x') +
   scale_x_discrete(breaks = c()) + scale_y_continuous(expand = c(0.01, 0)) +
   scale_fill_discrete(labels = c('0pre' = 'Before', '1post' = 'After'), breaks = c('0pre', '1post')) +
-  labs(x = '', y = 'Error Probability', fill = 'Refined')
+  labs(x = '', y = 'Error Probability', fill = 'Refined') +
+  theme(axis.text = element_text(size = 16),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        axis.title = element_text(size = 16))
+
 ggplot(filter(dat, method != 'SVM-sig')) +
   geom_col(mapping = aes(x = source, fill = source, y = rate)) +
   geom_errorbar(mapping = aes(x = source, y = rate, ymax = rate+err, ymin = rate-err), width = 0.5) +
@@ -1394,9 +1546,6 @@ The iterative refinement process does not help the accuracy of the SVM models; i
 
 A qualitative comparison can be made among the methods' probability outputs, as well as the true marginal estimate.
 
-```{r}
-
-```
 
 
 # Overall:

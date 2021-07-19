@@ -418,8 +418,6 @@ ggplot(error.rate) +
 
 In 3 dimensions, it is difficult to compare the calculated and true boundary edges without prohibitively fine resolution calculations. Instead, the primary accuracy measure is the probability that the model incorrectly categorizes a point as sub-optimal based on the defined criteria. These probabilities are incredibly small, likely due to the fact that optimal points are rare events. Of the 3 criteria, 2 showed a slight improvement in accuracy due to additional points being included in the training data. It is possible that the additional data biased the results in such a way to minimize the importance of the local minima, instead smoothing over it instead.
 
-------------
-
 # Existing Method: Support Vector Machines
 The method should use only the data from the initial Pareto front calculation. 
 Additional samples may be necessary to refine the results, but there is no established method for this refinement as of yet.
@@ -561,7 +559,13 @@ ggplot(rbind(error.rate, err.SVM)) +
   geom_errorbar(mapping = aes(x = source, y = rate, ymin = err.lo, ymax = err.hi), color = 'black', width = 0.5) +
   facet_grid(criteria~method) +
   labs(x = '', y = 'Error Probability', fill = '') + scale_x_discrete(breaks = c()) +
-  scale_fill_discrete(breaks = c('0pre', '1post'), labels = c('0pre' = 'Before', '1post' = 'After'))
+  scale_fill_discrete(breaks = c('0pre', '1post'), labels = c('0pre' = 'Before', '1post' = 'After')) +
+  theme(axis.text = element_text(size = 16),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16),
+        axis.title = element_text(size = 16))
+ggsave('/home/jkboualavong/Desktop/PSU/Data202102_Paper2_BayesOpt/Figures/ZDT4_Accuracy.jpg', width = 8, height = 6)
 
 ```
 
@@ -589,6 +593,21 @@ fine.grid$f1 = res[,1]; fine.grid$f2 = res[,2]
 fine.grid = n.obj(GPar.data = fine.grid, GPar.front = GPar.front)
 fine.grid$tru = 0; fine.grid$tru[fine.grid$f1.norm <= 2 & fine.grid$f2.norm <= 2] = 1
 
+# GP Model result
+res1 = predict(object = mod.f1.pre,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
+res2 = predict(object = mod.f2.pre,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
+fine.grid$GP.pre  = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*
+  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+res1 = predict(object = mod.f1.post,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
+res2 = predict(object = mod.f2.post,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
+fine.grid$GP.post  = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*
+  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+
+# fine.grid$GP.pre = 0; fine.grid$GP.post = 0
+# fine.grid$GP.pre[fine.grid$mod.f1.pre <= 1, fine.grid$mod.f2.pre <= 1] = 1
+# fine.grid$GP.post[fine.grid$mod.f1.post <= 1, fine.grid$mod.f2.post <= 1] = 1
+
+
 g1 = ggplot() +
   geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = rad)) +
   labs(subtitle = 'SVM: Radius', title = 'Threshold Cutoff', x = '', y = '') + guides(color = FALSE)
@@ -610,8 +629,19 @@ g6 = ggplot() +
              color = 'black', size = 3, shape = 21) +
   labs(subtitle = 'Training Data', x = '', y = '', fill = 'Designation') + 
   guides(alpha = FALSE) + scale_fill_discrete(labels = c('Reject', 'Accept'))
-
 ((g1 + g2 + g5) / (g3 + g4 + g6))
+
+g7 = ggplot() +
+  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = (GP.pre > 0.5))) +
+  labs(subtitle = 'GP: Before', x = '', y = '', title = '') + guides(color = FALSE)
+g8 = ggplot() +
+  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = (GP.post > 0.5))) +
+  labs(subtitle = 'GP: After', x = '', y = '') + guides(color = FALSE)
+((g1 + g2) / (g3 + g4))
+ggsave('/home/jkboualavong/Desktop/PSU/Data202102_Paper2_BayesOpt/Figures/ZDT4_Slice1.jpg', width = 8, height = 6)
+((g7 + g5) / (g8 + g6))
+ggsave('/home/jkboualavong/Desktop/PSU/Data202102_Paper2_BayesOpt/Figures/ZDT4_Slice2.jpg', width = 8, height = 6)
+
 ```
 ```{r}
 # Pareto distance: Cutoff
