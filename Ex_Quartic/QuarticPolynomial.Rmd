@@ -729,6 +729,7 @@ for(i in 1:resolution){
   fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
   Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
                                         prob = mean(fill.frame$p.del1), 
+                                        psd = sd(fill.frame$p.del1),
                                         p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
                                         p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
                                         var = 'x1', ncond = 'None'))  
@@ -737,6 +738,7 @@ for(i in 1:resolution){
   res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
   Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
+                                        psd = sd(fill.frame$p.del1),
                                         p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
                                         p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
                                         prob = mean(fill.frame$p.del1),
@@ -771,6 +773,34 @@ ggplot() +
                     labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
   theme_bw() + guides(fill = FALSE)
 
+# Plot with standard deviation
+ggplot() +
+  # Percentiles as an area
+  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
+                              y = c(Infer.x1$prob, rev(Infer.x1$prob)),
+                              sd = c(Infer.x1$psd, -rev(Infer.x1$psd))),
+            mapping = aes(x = x, y = y + sd, fill = 'x1'), alpha = 0.25) +
+  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
+                              y = c(Infer.x2$prob, rev(Infer.x2$prob)),
+                              sd = c(Infer.x2$psd, -rev(Infer.x2$psd))),
+            mapping = aes(x = x, y = y + sd, fill = 'x2'), alpha = 0.25) +
+
+  # Mean values as a line
+  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
+  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
+  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
+  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
+                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
+    theme_classic() + theme(legend.position = c(0.85, 0.9), legend.background = element_rect(fill = 'white'), 
+                          legend.title = element_blank(),
+                          title = element_text(size = 18),
+                          legend.text = element_text(size = 18),
+                          axis.title = element_text(size = 18),
+                          axis.text = element_text(size = 18)) + guides(fill = FALSE)
+ggsave('/home/jkboualavong/Desktop/PSU/Data202102_Paper2_BayesOpt/Figures/Quartic_1MarginSD.jpg', width = 8, height = 6)
+
 # Relative importance: inverse of the area under the curve, normalized units
 ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
                       resolution/sum(Infer.x2$p75 - Infer.x2$p25)),
@@ -782,8 +812,8 @@ ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25),
   scale_fill_manual(values = c('purple3', 'orange'))
 
 # Remove the percentiles for later
-Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25')]
-Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25')]
+# Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25', 'psd')]
+# Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25', 'psd')]
 ```
 
 Consistent with the correlation coefficients, the probability of acceptance when only $x_1$ has a higher and sharper peak than $x_2$.

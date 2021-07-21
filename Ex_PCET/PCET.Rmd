@@ -403,12 +403,17 @@ pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
 
 
 Penalty function: logistic weighting function such that for values where 90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
-The hyperparameters L, k, and x0 of the weighting function were tuned by fitting to a variety of minimum lean gas pressures on the range of 0.016 to 2.5 atm and then selected as the modal value.
+The hyperparameters L, k, and x0 of the logistic component of the weighting function were tuned by fitting to a variety of minimum lean gas pressures on the range of 0.016 to 2.5 atm and then selected as the modal value.
 The logistic function was tuned such that the growth rate steepness captured the range of 0 to 90% capture; when no CO2 could be captured, the weight is applied fully.
 
 A penalty function is not necessary for the flux because insufficient capture would manifest as negative fluxes. It may still show up in the Pareto frontier, but it can easily be filtered out, unlike the cases with the energy demand.
 
-```{r PCET Derived Functions: Energy Deman}
+Further tuning of the exact value of L is based on the minimumm energy demand for the specific lean gas minimum.
+
+```{r}
+GPar.all = read.csv(file = 'GPar_WeightTuningSet.csv')
+
+# Original weighting function: adjust by the minimum energy demand, simplified
 weight.fun = function(pCO2.lean){
   # Maximum weight
   weight.max = log(1/10) / log(pCO2.lean/0.15)
@@ -419,12 +424,297 @@ weight.fun = function(pCO2.lean){
   return(L/(1 + exp(-k * (pCO2.lean - x0))) + 1)
 }
 
-# # Demo of the weight effects: insufficient capture
-# pCO2.test = 10^seq(from = -4, to = log(0.15, base = 10), by = 0.1)
-# plot(pCO2.test, weight.fun(pCO2.lean = pCO2.test))
-# # When the minimum lean gas pressure exceeds the inlet pressure, then a negative energy is obtained, so the weight should be negative
-# pCO2.test = 10^seq(from = log(0.16, base = 10), to = 1, by = 0.1)
-# plot(pCO2.test, weight.fun(pCO2.lean = pCO2.test))
+# Calculate weight
+GPar.all$weight = weight.fun(GPar.all$pCO2.lean)
+
+ggplot(filter(GPar.all, Energy.kJ.mol*weight < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = weight)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Simplified Weight')
+ggplot(filter(GPar.all, Energy.kJ.mol*weight < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = Energy.kJ.mol)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Unweighted Energy')
+ggplot(filter(GPar.all, Energy.kJ.mol*weight < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = Energy.kJ.mol*weight)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Simple Weighted Energy')
+
+
+```
+
+Simple weighted energy is not enough of a penalty; the minimum energy for systems that do not capture >90% of the CO2 are still showing lower energy demands. 
+
+Using the complete expression for minimum energy demand instead of the simplified form, which makes a number of assumptions about negliglbe terms.
+
+Minimum energy demand:
+$$ RT \sum [n_{CO_2} \ ln(y_{CO_2}) +  n_{-CO_2} \ ln(y_{-CO_2})]_{outlet} - [n_{CO_2} \ ln(y_{CO_2}) +  n_{-CO_2} \ ln(y_{-CO_2})]_{inlet}$$
+
+Since the concern is only the ratio for the weighting factor, then can assume the $RT$ term cancels.
+
+The inlet term is constant at 0.15 atm and the reference point is 90% reduction in the partial pressure in the lean gas.
+The calculation is based on mass balance, assuming that the volume adjusted to maintain a total pressure of 1 atm.
+
+Assuming 1 total mole of gas is processed at the reference point:
+* Inlet: 0.15 mol CO2, 0.85 mol not CO2
+* Lean gas: 0.85 mol not CO2, (0.015*0.85)/(1 - 0.015) mol CO2
+* Enriched gas: 1 - (0.015*0.85)/(1 - 0.015) mol CO2, 0.1% not CO2
+
+The lean gas and enriched gas will change according to the system with a similar mass balance.
+
+```{r}
+weight.fun2 = function(pCO2.lean){
+  # Ideal
+  n.inlet = c(0.15, 0.85)
+  n.lean = c(0.85, 0.015*0.85/(1 - 0.015))
+  n.enrich = c(0.001*(1 - 0.015*0.85/(1 - 0.015)), 1 - 0.015*0.85/(1 - 0.015))
+  
+  E.ideal = sum(n.enrich*log(n.enrich/sum(n.enrich)) + 
+                  n.lean*log(n.lean/sum(n.lean)) - 
+                  n.inlet*log(n.inlet/sum(n.inlet)))
+
+  # Actual: separate into 3 cases:
+  E.tru = rep(x = 0, times = length(pCO2.lean))
+  # Third case: if the lean gas pressure is above 1, i.e. it pressurized
+  pos3 = (pCO2.lean >= 0.99)
+  # Set the lean gas pressure to 0.999, 
+  # then multiply the weight by the actual pressure to correct the energy; 
+  # since the weight is divided by this energy, this means dividing by the pressure
+  set.lean = 0.999
+  n.enrich.co2 = (set.lean - 0.15)/(1 - set.lean)
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos3] = (- sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))) / pCO2.lean[pos3]
+
+  # Second case: if the lean gas pressure is between 0.15 and 1, 
+  # i.e. the CO2 was moved from the pure gas to the lean gas
+  pos2 = (pCO2.lean >= 0.15 & pCO2.lean < 0.99)
+  # For the mass balance to work, gas must have moved from the enriched stream to the lean gas
+  n.enrich.co2 = (pCO2.lean[pos2] - 0.15)/(1 - pCO2.lean[pos2])
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos2] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # First case: if the lean gas pressure is less than 0.15, i.e. some amount of capture happened
+  pos1 = (pCO2.lean < 0.15)
+  # Mathematically identical to the lean gas case, just adjusting the lean gas and enriched gas mass balance
+  n.lean = pCO2.lean[pos1]*0.85/(1 - pCO2.lean[pos1])
+  n.enrich.co2 = 0.15 - n.lean
+  n.enrich.gas = 0.001*n.enrich.co2
+  
+  E.tru[pos1] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # Maximum weight
+  weight.max = E.ideal/E.tru
+
+  # Logistic function
+  L = weight.max - 0.98
+  k = 267; x0 = 0.071
+  # data.frame(weight.max)
+  return(L/(1 + exp(-k * (pCO2.lean - x0))) + 1)
+}
+
+test.pco2 = 10^seq(from = -10, to = 2, by = 0.1)
+weight.test = weight.fun2(test.pco2)
+class = rep(0, length(test.pco2)); class[test.pco2 >= 0.15] = 1; class[test.pco2 >= 1] = 2
+ggplot(filter(data.frame(x = test.pco2, y = weight.test, class) )) +
+  geom_point(mapping = aes(x = x, y = y, color = (x < 0.015))) +
+  scale_x_log10() + facet_wrap(~class, scales = 'free')
+rm(test.pco2, weight.test, class)
+
+# Calculate weight
+GPar.all$weight2 = weight.fun2(GPar.all$pCO2.lean)
+
+ggplot(filter(GPar.all, Energy.kJ.mol*weight2 < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = weight2)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Complete Weight')
+ggplot(filter(GPar.all, Energy.kJ.mol*weight2 < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = Energy.kJ.mol)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Unweighted Energy')
+ggplot(filter(GPar.all, Energy.kJ.mol*weight2 < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = Energy.kJ.mol*weight2)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Complete Weighted Energy')
+
+```
+
+While better, using the complete energy is not fixed upon this correction in that the minimum energy is still at a value where the flux would be negative. Amplifying an additional multiplicative factor to amplify the weight:
+
+```{r}
+weight.fun3 = function(pCO2.lean){
+  # Ideal
+  n.inlet = c(0.15, 0.85)
+  n.lean = c(0.85, 0.015*0.85/(1 - 0.015))
+  n.enrich = c(0.001*(1 - 0.015*0.85/(1 - 0.015)), 1 - 0.015*0.85/(1 - 0.015))
+  
+  E.ideal = sum(n.enrich*log(n.enrich/sum(n.enrich)) + 
+                  n.lean*log(n.lean/sum(n.lean)) - 
+                  n.inlet*log(n.inlet/sum(n.inlet)))
+
+  # Actual: separate into 3 cases:
+  E.tru = rep(x = 0, times = length(pCO2.lean))
+  # Third case: if the lean gas pressure is above 1, i.e. it pressurized
+  pos3 = (pCO2.lean >= 0.99)
+  # Set the lean gas pressure to 0.999, 
+  # then multiply the weight by the actual pressure to correct the energy; 
+  # since the weight is divided by this energy, this means dividing by the pressure
+  set.lean = 0.999
+  n.enrich.co2 = (set.lean - 0.15)/(1 - set.lean)
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos3] = (- sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))) / pCO2.lean[pos3]
+
+  # Second case: if the lean gas pressure is between 0.15 and 1, 
+  # i.e. the CO2 was moved from the pure gas to the lean gas
+  pos2 = (pCO2.lean >= 0.15 & pCO2.lean < 0.99)
+  # For the mass balance to work, gas must have moved from the enriched stream to the lean gas
+  n.enrich.co2 = (pCO2.lean[pos2] - 0.15)/(1 - pCO2.lean[pos2])
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos2] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # First case: if the lean gas pressure is less than 0.15, i.e. some amount of capture happened
+  pos1 = (pCO2.lean < 0.15)
+  # Mathematically identical to the lean gas case, just adjusting the lean gas and enriched gas mass balance
+  n.lean = pCO2.lean[pos1]*0.85/(1 - pCO2.lean[pos1])
+  n.enrich.co2 = 0.15 - n.lean
+  n.enrich.gas = 0.001*n.enrich.co2
+  
+  E.tru[pos1] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # Maximum weight
+  weight.max = E.ideal/E.tru
+
+  # Logistic function
+  L = weight.max - 0.98
+  k = 267; x0 = 0.071
+  # data.frame(weight.max)
+  return(25*L/(1 + exp(-k * (pCO2.lean - x0))) + 1)
+}
+
+test.pco2 = 10^seq(from = -10, to = 2, by = 0.1)
+weight.test = weight.fun2(test.pco2)
+class = rep(0, length(test.pco2)); class[test.pco2 >= 0.15] = 1; class[test.pco2 >= 1] = 2
+ggplot(filter(data.frame(x = test.pco2, y = weight.test, class) )) +
+  geom_point(mapping = aes(x = x, y = y, color = (x < 0.015))) +
+  scale_x_log10() + facet_wrap(~class, scales = 'free')
+rm(test.pco2, weight.test, class)
+
+# Calculate weight
+GPar.all$weight3 = weight.fun3(GPar.all$pCO2.lean)
+
+ggplot(filter(GPar.all, Energy.kJ.mol*weight3 < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = weight3)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Amplified Weight')
+ggplot(filter(GPar.all, Energy.kJ.mol*weight3 < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = Energy.kJ.mol)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Unweighted Energy')
+ggplot(filter(GPar.all, Energy.kJ.mol*weight3 < 100)) +
+  geom_point(mapping = aes(x = pCO2.lean, y = Energy.kJ.mol*weight3)) +
+  facet_grid(~(pCO2.lean >= 0.015), scales = 'free_x') +
+  scale_x_log10() + labs(y = 'Amplified Weighted Energy')
+
+```
+
+Multiplying the logarithmic term by a factor of 25 appears to be sufficiently large to adjust the energies without overshooting the weight.
+
+```{r}
+rm(weight.fun, weight.fun2, weight.fun3, GPar.all)
+```
+
+Applying the penalty function directly to energy demand
+
+```{r PCET Derived Functions: Energy Demand}
+weight.fun = function(pCO2.lean){
+  # Ideal
+  n.inlet = c(0.15, 0.85)
+  n.lean = c(0.85, 0.015*0.85/(1 - 0.015))
+  n.enrich = c(0.001*(1 - 0.015*0.85/(1 - 0.015)), 1 - 0.015*0.85/(1 - 0.015))
+  
+  E.ideal = sum(n.enrich*log(n.enrich/sum(n.enrich)) + 
+                  n.lean*log(n.lean/sum(n.lean)) - 
+                  n.inlet*log(n.inlet/sum(n.inlet)))
+
+  # Actual: separate into 3 cases:
+  E.tru = rep(x = 0, times = length(pCO2.lean))
+  # Third case: if the lean gas pressure is above 1, i.e. it pressurized
+  pos3 = (pCO2.lean >= 0.99)
+  # Set the lean gas pressure to 0.999, 
+  # then multiply the weight by the actual pressure to correct the energy; 
+  # since the weight is divided by this energy, this means dividing by the pressure
+  set.lean = 0.999
+  n.enrich.co2 = (set.lean - 0.15)/(1 - set.lean)
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos3] = (- sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))) / pCO2.lean[pos3]
+
+  # Second case: if the lean gas pressure is between 0.15 and 1, 
+  # i.e. the CO2 was moved from the pure gas to the lean gas
+  pos2 = (pCO2.lean >= 0.15 & pCO2.lean < 0.99)
+  # For the mass balance to work, gas must have moved from the enriched stream to the lean gas
+  n.enrich.co2 = (pCO2.lean[pos2] - 0.15)/(1 - pCO2.lean[pos2])
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos2] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # First case: if the lean gas pressure is less than 0.15, i.e. some amount of capture happened
+  pos1 = (pCO2.lean < 0.15)
+  # Mathematically identical to the lean gas case, just adjusting the lean gas and enriched gas mass balance
+  n.lean = pCO2.lean[pos1]*0.85/(1 - pCO2.lean[pos1])
+  n.enrich.co2 = 0.15 - n.lean
+  n.enrich.gas = 0.001*n.enrich.co2
+  
+  E.tru[pos1] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # Maximum weight
+  weight.max = E.ideal/E.tru
+
+  # Logistic function
+  L = weight.max - 0.98
+  k = 267; x0 = 0.071
+  # data.frame(weight.max)
+  return(25*L/(1 + exp(-k * (pCO2.lean - x0))) + 1)
+}
 
 # Total energy demand - 4-stage process for simplicity
 Energy.tot = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
@@ -531,7 +821,6 @@ Energy.tot = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
   
   # Normalize by the total amount of carbon moved, i.e. units of kJ/mol
   DIC.capture = DIC.diff(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.in = pCO2.in, pCO2.out = pCO2.out)
-  
   return(Energy.tot.sep*penalty/DIC.capture*1e-3)
 }
 
@@ -619,6 +908,7 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
 }
 
 ```
+
 
 To work with GPareto, the two objective functions need to combined, and the input should be a matrix, not a dataframe. I account for this with a wrapper function to simplify the process.
 
@@ -724,41 +1014,6 @@ write.csv(design.start, file = 'PCET_StartDesign.csv')
 
 ```
 
-```{r}
-# design.start$x = 1:nrow(design.start)
-# result.start$x = 1:nrow(result.start)
-# des = merge(design.start, result.start, by = 'x')
-des = design.start
-des$DIC.cyc = NaN; des$pCO2.lean = NaN
-for(i in 1:nrow(des)){
-  des$DIC.cyc[i] = DIC.diff(Na = des$Na.A[i]*10^des$logA[i], 
-                                 A = 10^des$logA[i], 
-                                 beta1 = 0, beta2 = 0, 
-                                 k1 = 10^-des$pka1[i], 
-                                 k2 = 10^-(des$pka2[i] + des$pka1[i]), 
-                                 pCO2.in = 0.15, pCO2.out = 1)
-  # if(des$DIC.cyc[i] > 0){
-    des$pCO2.lean[i] = pCO2.lean(Na = des$Na.A[i]*10^des$logA[i], 
-                                      A = 10^des$logA[i], 
-                                      beta1 = 0, beta2 = 0, 
-                                      k1 = 10^-des$pka1[i], 
-                                      k2 = 10^-(des$pka2[i] + des$pka1[i]), 
-                                      pCO2.out = 1)
-  # }
-}
-
-
-ggplot(filter(des, Energy.kJ.mol < 100)) +
-  geom_point(mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol))
-
-des
-ggplot(filter(des)) +
-  geom_point(mapping = aes(x = pCO2.lean, y = Flux.mol.m2s)) +
-  facet_grid((pCO2.lean >= 0.015)~(Flux.mol.m2s > 0), scales = 'free') +
-  scale_x_log10()
-
-```
-
 ```{r Pareto Search: GPareto}
 # Load design
 design.start = read.csv(file = 'PCET_StartDesign.csv')
@@ -783,164 +1038,567 @@ write.csv(GPar.all, file = 'GPar_all_data.csv')
 write.csv(GPar.front, file = 'GPar_fnt_data.csv')
 ```
 
-```{r}
-# Calculate total CO2 per cycle; minimum lean gas
-GPar.all$pCO2.lean = NaN; GPar.all$DIC.cyc = NaN;
-for(i in 1:nrow(GPar.all)){
-  GPar.all$DIC.cyc[i] = DIC.diff(Na = GPar.all$Na.A[i]*10^GPar.all$logA[i], 
-                                 A = 10^GPar.all$logA[i], 
-                                 beta1 = 0, beta2 = 0, 
-                                 k1 = 10^-GPar.all$pka1[i], 
-                                 k2 = 10^-(GPar.all$pka2[i] + GPar.all$pka1[i]), 
-                                 pCO2.in = 0.15, pCO2.out = 1)
-  # if(GPar.all$DIC.cyc[i] > 0){
-    GPar.all$pCO2.lean[i] = pCO2.lean(Na = GPar.all$Na.A[i]*10^GPar.all$logA[i], 
-                                      A = 10^GPar.all$logA[i], 
-                                      beta1 = 0, beta2 = 0, 
-                                      k1 = 10^-GPar.all$pka1[i], 
-                                      k2 = 10^-(GPar.all$pka2[i] + GPar.all$pka1[i]), 
-                                      pCO2.out = 1)
-  # }
-}
+```{r Visualize the Pareto Front}
+# rm(res)
+GPar.all = read.csv(file = 'GPar_all_data.csv')
+GPar.front = read.csv(file = 'GPar_fnt_data.csv')
+ggplot() +
+  geom_point(filter(GPar.all, abs(Flux.mol.m2s) < 0.1, Energy.kJ.mol < 150), 
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s)) +
+  geom_line(filter(GPar.front, abs(Flux.mol.m2s) < 1, Energy.kJ.mol < 150), 
+            mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s), color = 'cyan') +
+  geom_point(filter(GPar.front, abs(Flux.mol.m2s) < 1, Energy.kJ.mol < 150), 
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s), color = 'cyan') +
+  labs(x = 'CO2 Flux (mol/m^2/s)', y = 'Energy Demand (kJ/mol)', subtitle = 'Pareto Frontier')
+
+ggplot() +
+  geom_point(filter(GPar.all, Flux.mol.m2s > 0), 
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s)) +
+  geom_line(filter(GPar.front, Flux.mol.m2s > 0), 
+            mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s), color = 'cyan') +
+  geom_point(filter(GPar.front, Flux.mol.m2s > 0), 
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s), color = 'cyan') +
+  labs(x = 'CO2 Flux (mol/m^2/s)', y = 'Energy Demand (kJ/mol)', subtitle = 'Pareto Frontier')
 
 ```
 
-```{r}
-ggplot() +
-  geom_point(data = filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
-  geom_point(data = filter(GPar.front, Flux.mol.m2s > 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
-  geom_line(data = filter(GPar.front, Flux.mol.m2s > 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red')
+# Requirements for CO2 capture
 
-ggplot() +
-  geom_point(data = filter(GPar.all, Flux.mol.m2s < 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
-  geom_point(data = filter(GPar.front, Flux.mol.m2s < 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
-  geom_line(data = filter(GPar.front, Flux.mol.m2s < 0, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red')
+A substantial fraction of points were not able to satisfy the 90% capture constraint, as noted by their negative CO2 flux. 
+The first step is to see if the size of the search space can be reduced for future optimization to only the 90% capture conditions.
+This will be done by making a GP model of the kinetic rate, sampling points with a kinetic rate of 0 (signifying 90% capture), then marginalizating the probability that the result has positive flux.
 
-ggplot() +
-  geom_point(data = filter(GPar.all, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
-  geom_point(data = filter(GPar.front, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
-  geom_line(data = filter(GPar.front, Energy.kJ.mol < 100), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red')
+The GP model sometimes does not converge because it is optimized using a genetic algorithm. 
+This leads to a model that is unrepresentative. This function checks that the resulting model has adequate variance variability and outputs only models that make sense for the training data.
 
-```
-
-```{r}
-filter(GPar.front, Flux.mol.m2s >= 0)
-```
-
-
-Lean pressures above 0.015 should be showing the flux going the wrong direction, but they are not exclusively doing so. Why? Is the enhancement factor calculated as negative?
-
-```{r}
-kinetic.force2 = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
-  # Constants
-  xA.lim = c(0.025, 0.975)
-  kH = 3.4e-2; # M/atm
-  # Calculate the pCO2 of the fully reduced species prior to equilibration with the gas
-  out.pCO2 = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
-  # If the minimum outlet pCO2 is greater than the target capture:
-  # if(out.pCO2 > 0.1*pCO2.in | is.na(out.pCO2)){
-  if(is.na(out.pCO2)){
-    return(0)
-  } else{
-    # Calculate the pH at the start of desorption
-    soln41 = data.frame(xA = max(xA.lim), p.CO2 = out.pCO2)
-    # Solve pH with multiple cores
-    soln41$pH = pH.xA.pCO2.A.k.beta.Na(xA = soln41$xA, P = soln41$p.CO2, 
-                         At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
-    soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
-
-    # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
-    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
-    # Flux: delC * kL * E, assume kL = 0.01 cm/s
-    # Unit conversion: L to cm3, cm2 to m2
-    flux = soln41$delC*soln41$E*0.01 * (1/1e3) * (100^2)
-    # return(soln41)
-    # return(signif(flux, 5)) # Highest driving force at outlet
-    return(soln41)
+```{r 90% Capture Refinement Functions}
+fill.sample.mod = function(GPar.data, input.name, output.name){
+  # Calculate the GP model to use. 
+  # Using the km function, but applies checks on the system to make sure that 
+  # the model uncertainty matches expectations based on GP, ie. it did not
+  # fail to converge.
+  
+  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
+  # of the standard deviation are of the same order of magnitude. This is easiest
+  # checked if the difference between the 10th and 90th percentile
+  # is larger than the difference between the 25th and 75th.
+  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
+  while(log10(pt90/pt10) <= log10(pt75/pt25)){
+    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
+                 covtyp = 'gauss', # Gaussian uncertainty
+                 optim.method = 'gen', # Genetic algorithm optimization
+                 control = list(trace = FALSE, # Turn off tracking to simplify output
+                                pop.size = 50), # Increase robustness
+                 nugget = 1e-6, # Avoid eigenvalues of 0
+                 )
     
+    # Randomly sample 1000 points from the search space.
+    pt = 1000; i = 1
+    lims = range(GPar.data[,input.name[i]])
+    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
+    for(i in 2:length(input.name)){
+      lims = range(GPar.data[,input.name[i]])
+      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
+    }
+    names(samp) = input.name
+    
+    # Find model output to find the percentile ranks for this iteration
+    res = predict(object = mod.out, newdata = samp, type = 'UK')
+    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
+    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
   }
+  return(mod.out)
 }
 
+fill.sample.obj.nec = function(x, model.flux){
+  # Evaluate the Kriging model function at x 
+  res.flux = predict(object = model.flux, 
+                     newdata = data.frame(pka1 = x[1], 
+                                          pka2 = x[2], 
+                                          logA = x[3], 
+                                          Na.A = x[4]), type = 'UK')
+
+  # Probability distribution fits a Gaussian distribution
+  # Interested in the probability that the distribution has a true mean of 0
+  # Calculate a t-statistic, randomly sampling 1000 points from the normal distribution
+  nsamp = 1000
+  rsamp = rnorm(n = nsamp, mean = res.flux$mean, sd = res.flux$sd)
+  p = t.test(x = rsamp, y = rep(0, nsamp), alternative = 'two.sided')
+  prob = p$p.value
+  
+  # Variance based on propagation of errors, assuming independent measures
+  sd = res.flux$sd
+
+  # Objective result
+  return(sd*(prob*(1-prob) + 0.25/9))
+}
+
+# Next point search function
+fill.sample.nec = function(GPar.data){
+  # Model
+  mod.flux = fill.sample.mod(GPar.data = GPar.data, input.name = c('pka1', 'pka2', 'logA', 'Na.A'), 
+                             output.name = 'Flux.mol.m2s')
+  
+  # Next point by genetic algorithm
+  GA.pred = ga(type = 'real-valued',
+               fitness = function(x){fill.sample.obj.nec(x, model = mod.flux)},
+               lower = c(2, 0, -2, -1), upper = c(13.5, 5.5, 0.5, 5),
+               popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
+               parallel = 2)
+  point.next = GA.pred@solution[1,]
+  GPar.new = data.frame(pka1 = point.next[1],
+                        pka2 = point.next[2],
+                        logA = point.next[3],
+                        Na.A = point.next[4])
+  
+  # True result for both the energy and kinetics to add this to the dataset
+  res = PCET.obj.flu(inputs = point.next)
+  GPar.new$Energy.kJ.mol = res[1]
+  GPar.new$Flux.mol.m2s  = -res[2] # Flip sign because optimization function minimizes
+  GPar.new$order = max(GPar.data$order) + 1
+
+  # Also add the fitness to the dataframe for iteration cutoffs
+  GPar.new$fit = max(GA.pred@fitness)
+  
+  # Return the new point and the fitness
+  return(GPar.new)
+}
+
+```
+
+Applying the functions with a looping iterative search
+
+```{r 90% Capture Refinement Iterations}
+# Load data
+GPar.all = read.csv(file = 'GPar_all_data.csv')
+# Remove indices
+GPar.all = GPar.all[, !(names(GPar.all) %in% c("X"))]
+
+# First iteration to set the baseline of how much improvement there is to find.
+newpoint = fill.sample.nec(GPar.data = GPar.all)
+start.fit = newpoint$fit; 
+current.fit = newpoint$fit; 
+
+# Repeat for a maximum of 200 iterations, or until the fitness drops below 1/1000 of the starting fitness, 
+# indicating little further improvement
+max.iter = max(GPar.all$order) + 200
+while(max(GPar.all$order) < max.iter & current.fit*1e3 > start.fit){
+  GPar.all = rbind(GPar.all, newpoint[,names(newpoint) %in% names(GPar.all)])
+  newpoint = fill.sample.nec(GPar.data = GPar.all)
+  current.fit = newpoint$fit
+}
+
+# Store the data
+write.csv(GPar.all, file = 'GPar_90Cap_data.csv')
+
+
+```
+
+```{r 90% Capture Refinement Iteration Visualization}
+# Plot the results to show refinement
+GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
+ggplot(filter(GPar.all, Energy.kJ.mol < 100)) +
+  geom_point(mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = (order > 200))) +
+  facet_wrap(~(Flux.mol.m2s > 0), scales = 'free_x') +
+  labs(x = 'CO2 flux at 90% capture (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
+  scale_color_manual(labels = c('Initial', 'Refinement'), values = c('red', 'blue'), name = '')
+
+# Show on a log scale (separating the positive and negative fluxes) to see how low the magnitude of the flux can be
+ggplot(filter(GPar.all, Energy.kJ.mol < 100)) +
+  geom_point(mapping = aes(x = abs(Flux.mol.m2s), y = Energy.kJ.mol, color = (order > 200))) +
+  facet_wrap(~(Flux.mol.m2s > 0), scales = 'free_x') +
+  scale_x_log10() +
+  labs(x = 'CO2 flux at 90% capture (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
+  scale_color_manual(labels = c('Initial', 'Refinement'), values = c('red', 'blue'), name = '')
+
+# Display the characteristics of points with very high flux
+g1 = ggplot() +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s > 1e-4), 
+               mapping = aes(x = pka1, color = 'good')) +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s < 0), 
+               mapping = aes(x = pka1, color = 'bad')) +
+  labs(x = 'pKa1', y = 'Probability Density') + guides(color = FALSE) + 
+  scale_color_manual(values = c('good' = 'blue', 'bad' = 'red'),
+                     labels = c('good' = 'High Flux', 'bad' = 'No Capture'),
+                     name = '', breaks = c('good', 'bad'))
+g2 = ggplot() +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s > 1e-4),
+               mapping = aes(x = pka1 + pka2, color = 'good')) +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s < 0), 
+               mapping = aes(x = pka1 + pka2, color = 'bad')) +
+  labs(x = 'pKa2', y = 'Probability Density') + guides(color = FALSE) + 
+  scale_color_manual(values = c('good' = 'blue', 'bad' = 'red'),
+                     labels = c('good' = 'High Flux', 'bad' = 'No Capture'),
+                     name = '', breaks = c('good', 'bad'))
+g3 = ggplot() +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s > 1e-4),
+               mapping = aes(x = 10^logA, color = 'good')) +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s < 0), 
+               mapping = aes(x = 10^logA, color = 'bad')) +
+  labs(x = '[Quinone] (M)', y = 'Probability Density') + guides(color = FALSE) +
+  scale_color_manual(values = c('good' = 'blue', 'bad' = 'red'),
+                     labels = c('good' = 'High Flux', 'bad' = 'No Capture'),
+                     name = '', breaks = c('good', 'bad'))
+g4 = ggplot() +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s > 1e-4),
+               mapping = aes(x = 10^logA*Na.A, color = 'good')) +
+  geom_density(filter(GPar.all, Energy.kJ.mol < 100, Flux.mol.m2s < 0), 
+               mapping = aes(x = 10^logA*Na.A, color = 'bad')) +
+  labs(x = 'Additional Base (M)', y = 'Probability Density') +
+  scale_color_manual(values = c('good' = 'blue', 'bad' = 'red'),
+                     labels = c('good' = 'High Flux', 'bad' = 'No Capture'),
+                     name = '', breaks = c('good', 'bad'))
+(g1 + g3) / (g2 + g4)
+
+rm(g1, g2, g3, g4)
+```
+
+In addition to refining knowledge of the boundary where the flux is zero (90% capture), I show the distribution of "good" points (above 10^-4 mol/m2/s flux) and "bad" points (no flux).
+The distinct differences between the two suggests that high and low flux conditions are very distinct in their pKa and concentration profiles, but the amount of acid or base is not a substantial factor.
+
+After performing the marginalization to determine if the search space can be constrained, the Pareto front will be re-calculated with this new information.
+
+Based on the distributions of the high flux conditions compared to the no capture conditions, it is likely that the result falls near an optimum rather than any of the extremes of the sample region.
+
+For marginalization, assume a uniform distribution. 
+While this is unrealistic, it is just to establish a constraint on the bounds rather than to identify real compounds.
+Additionally, the interest is in removing the conditions that have a <5% likelihood of capturing >90% CO2, regardless of the other variables.
+
+```{r 90% Capture Marginalization}
+GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
+mod.flux = fill.sample.mod(GPar.data = GPar.all, input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
+                           output.name = 'Flux.mol.m2s')
+
+# Set up the marginalization
+resolution = 50; MCsamp = 2000
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-1, 5)
+# Note: for the Na/A ratio, the interest is in the order of magnitude shifts, not the absolute shifts, going down to 10^-7.
+# Since it is being tested for both positive and negative values, but they are of similar order of magnitude, half will be dedicated to each side
+
+# Set the ranges
+kin.constrain = data.frame(pka1 = seq(from = pka1.rng[1], to = pka1.rng[2], length.out = resolution),
+                           pka2 = seq(from = pka2.rng[1], to = pka2.rng[2], length.out = resolution),
+                           logA = seq(from = logA.rng[1], to = logA.rng[2], length.out = resolution),
+                           Na.A = c(-10^seq(from = 0, to = -7, length.out = resolution/2),
+                                    10^seq(from = -7, to = log10(Na.A.rng[2]), length.out = resolution/2)),
+                           p.pka1 = NaN, p.pka2 = NaN, p.logA = NaN, p.Na.A = NaN, # Probability acceptance median
+                           l.pka1 = NaN, l.pka2 = NaN, l.logA = NaN, l.Na.A = NaN, # lower bound
+                           h.pka1 = NaN, h.pka2 = NaN, h.logA = NaN, h.Na.A = NaN) # upper bound
+lower = 0.25; upper = 0.75
+
+for(i in 1:resolution){
+  # pka1
+  fill.frame = data.frame(pka1 = kin.constrain$pka1[i],
+                          pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
+                          logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+  res = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
+  fill.frame$p.accept = pnorm(q = 0, mean = res$mean - 1e-5, sd = res$sd)
+  kin.constrain$p.pka1[i] = mean(fill.frame$p.accept)
+  kin.constrain$h.pka1[i] = quantile(fill.frame$p.accept, probs = upper)
+  kin.constrain$l.pka1[i] = quantile(fill.frame$p.accept, probs = lower)
+
+  # pka2
+  fill.frame = data.frame(pka2 = kin.constrain$pka2[i],
+                          pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
+                          logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+  res = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
+  fill.frame$p.accept = pnorm(q = 0, mean = res$mean - 1e-5, sd = res$sd)
+  kin.constrain$p.pka2[i] = mean(fill.frame$p.accept)
+  kin.constrain$h.pka2[i] = quantile(fill.frame$p.accept, probs = upper)
+  kin.constrain$l.pka2[i] = quantile(fill.frame$p.accept, probs = lower)
+
+  # pka1
+  fill.frame = data.frame(logA = kin.constrain$logA[i],
+                          pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
+                          pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
+                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+  res = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
+  fill.frame$p.accept = pnorm(q = 0, mean = res$mean - 1e-5, sd = res$sd)
+  kin.constrain$p.logA[i] = mean(fill.frame$p.accept)
+  kin.constrain$h.logA[i] = quantile(fill.frame$p.accept, probs = upper)
+  kin.constrain$l.logA[i] = quantile(fill.frame$p.accept, probs = lower)
+  
+  # pka2
+  fill.frame = data.frame(Na.A = kin.constrain$Na.A[i],
+                          pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
+                          pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
+                          logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]))
+  res = predict(object = mod.flux, newdata = fill.frame - 1e-5, type = 'UK')
+  fill.frame$p.accept = pnorm(q = 0, mean = res$mean, sd = res$sd)
+  kin.constrain$p.Na.A[i] = mean(fill.frame$p.accept)
+  kin.constrain$h.Na.A[i] = quantile(fill.frame$p.accept, probs = upper)
+  kin.constrain$l.Na.A[i] = quantile(fill.frame$p.accept, probs = lower)
+}
+
+# Split the acid and base addition
+kin.constrain$ph.cond = 'Acidic'
+kin.constrain$ph.cond[kin.constrain$Na.A > 0] = 'Basic'
 
 ```
 
 ```{r}
-test = filter(des, (Flux.mol.m2s > 0), (pCO2.lean >= 0.015))[1:2,]
-test
-kinetic.force(k1 = 10^-test$pka1[1], k2 = 10^-(test$pka1[1] + test$pka2[1]),
-               beta1 = 0, beta2 = 0, 
-               A.tot = 10^test$logA[1], Na = 10^test$logA[1]*test$Na.A[1], 
-               pCO2.in = 0.15, pCO2.out = 1)
-kinetic.force(k1 = 10^-test$pka1[2], k2 = 10^-(test$pka1[2] + test$pka2[2]),
-               beta1 = 0, beta2 = 0, 
-               A.tot = 10^test$logA[2], Na = 10^test$logA[2]*test$Na.A[2], 
-               pCO2.in = 0.15, pCO2.out = 1)
+kin.constrain
+g1 = ggplot(kin.constrain) +
+  geom_line(mapping = aes(x = pka1, y = p.pka1)) +
+  geom_line(mapping = aes(x = pka1, y = h.pka1), linetype = 2) +
+  geom_line(mapping = aes(x = pka1, y = l.pka1), linetype = 2) +
+  labs(x = 'pKa1', y = 'Probability of >90% Capture')
+g2 = ggplot(kin.constrain) +
+  geom_line(mapping = aes(x = pka2, y = p.pka2)) +
+  geom_line(mapping = aes(x = pka2, y = h.pka2), linetype = 2) +
+  geom_line(mapping = aes(x = pka2, y = l.pka2), linetype = 2) +
+  labs(x = 'pKa2 - pKa1', y = 'Probability of >90% Capture')
+g3 = ggplot(kin.constrain) +
+  geom_line(mapping = aes(x = 10^logA, y = p.logA)) +
+  geom_line(mapping = aes(x = 10^logA, y = h.logA), linetype = 2) +
+  geom_line(mapping = aes(x = 10^logA, y = l.logA), linetype = 2) +
+  labs(x = 'Quinone Concentration', y = 'Probability of >90% Capture') +
+  scale_x_log10()
+g4 = ggplot(kin.constrain) +
+  geom_line(mapping = aes(x = abs(Na.A), y = p.Na.A)) +
+  geom_line(mapping = aes(x = abs(Na.A), y = h.Na.A), linetype = 2) +
+  geom_line(mapping = aes(x = abs(Na.A), y = l.Na.A), linetype = 2) +
+  facet_wrap(~ph.cond, scales = 'free_x') +  scale_x_log10() +
+  labs(x = 'Na/Quinone Concentration Ratio', y = 'Probability of >90% Capture')
 
-as.matrix(test)[,2:5]
-PCET.obj.flu(inputs = as.matrix(test)[,2:5])
+(g1 + g3) / (g2 + g4)
+rm(g1, g2, g3, g4)
+```
+
+Dotted lines represent the asymmetric 50% confidence interval, i.e. 50% of outcomes where the other variables are randomly selected will fall between those two lines.
+None of the partial dependence probability curves indicate an unambiguous region of the search space that can be omitted, it does indicate some interesting features:
+
+* Lower pKa1 values are more likely to capture sufficient carbon, contrary to the belief that high pKas (both) would be most efficient due to a greater difference in H+ upon oxidation or reduction.
+* Higher concentrations of quinone have higher variance, and thus are more likely to be unambiguously viable or inviable.
+* It is difficult to determine if the uptick from very low quinone concentrations and the downticks from very high acid or base additions are from edge effects or not.
+* The system works best if the two pKa values are closer together.
+
+While these cannot be used to remove areas of the search space from sampling, it does give some indication of what to consider when comparing options.
+
+One possible improvement to this presentation is to marginalize against 2 variables instead of just 1. 
+It is likely that the combination of both pKas or of both concentrations is what matters, and this may provide more insight into restricting the space further since many inputs are co-correlated.
+
+```{r 90% Capture 2D Marginal}
+GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
+mod.flux = fill.sample.mod(GPar.data = GPar.all, input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
+                           output.name = 'Flux.mol.m2s')
+
+# Set up the marginalization
+resolution = 35; MCsamp = 1500
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-1, 5)
+lower = 0.25; upper = 0.75
+
+# Set up the grid search
+pkaX.grid = expand.grid(seq(from = pka1.rng[1], to = pka1.rng[2], length.out = resolution),
+                        seq(from = pka2.rng[1], to = pka2.rng[2], length.out = resolution))
+pkaX.grid = pkaX.grid[,c(1:2)]
+names(pkaX.grid) = c('pka1', 'pka2')
+pkaX.grid$p = NaN; pkaX.grid$l = NaN; pkaX.grid$s = NaN # Probability and the high and low
+
+# Note: for the Na/A ratio, the interest is in the order of magnitude shifts, not the absolute shifts, going down to 10^-7.
+# Since it is being tested for both positive and negative values, but they are of similar order of magnitude, half will be dedicated to each side
+conc.grid = expand.grid(seq(from = logA.rng[1], to = logA.rng[2], length.out = resolution),
+                        c(-10^seq(from = 0, to = -7, length.out = resolution/2-1),
+                          10^seq(from = -7, to = log10(Na.A.rng[2]), length.out = resolution/2)) )
+conc.grid = conc.grid[,c(1:2)]
+names(conc.grid) = c('logA', 'Na.A')
+conc.grid$p = NaN; conc.grid$l = NaN; conc.grid$s = NaN # Probability and the high and low
+
+# Loop
+for(i in 1:nrow(pkaX.grid)){
+  # pKa grid
+  fill.frame = data.frame(pka1 = pkaX.grid$pka1[i],
+                          pka2 = pkaX.grid$pka2[i],
+                          logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+  res = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
+  fill.frame$p.accept = pnorm(q = 0, mean = res$mean, sd = res$sd)
+  pkaX.grid$p[i] = mean(fill.frame$p.accept)
+  pkaX.grid$h[i] = quantile(fill.frame$p.accept, probs = upper)
+  pkaX.grid$l[i] = quantile(fill.frame$p.accept, probs = lower)
+  
+  # Concentration grid
+  fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
+                          pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
+                          logA = conc.grid$logA[i],
+                          Na.A = conc.grid$Na.A[i])
+  res = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
+  fill.frame$p.accept = pnorm(q = 0, mean = res$mean, sd = res$sd)
+  conc.grid$p[i] = mean(fill.frame$p.accept)
+  conc.grid$h[i] = quantile(fill.frame$p.accept, probs = upper)
+  conc.grid$l[i] = quantile(fill.frame$p.accept, probs = lower)
+}
+
+# Split the acid and base addition
+conc.grid$ph.cond = 'Acidic'
+conc.grid$ph.cond[conc.grid$Na.A > 0] = 'Basic'
 
 ```
 
-
 ```{r}
-ggplot(GPar.all) +
-  geom_density(mapping = aes(x = logA))
-ggplot(GPar.all) +
-  geom_density(mapping = aes(x = pka1)) +
-  geom_density(mapping = aes(x = pka1+pka2), color = 'red')
-ggplot(GPar.all) +
-  geom_density(mapping = aes(x = pka2))
-ggplot(GPar.all) +
-  geom_density(mapping = aes(x = Na.A))
+# Input variables: pKa
+g1 = ggplot(pkaX.grid) +
+  geom_tile(mapping = aes(x = pka1, y = pka2, fill = p)) +
+  labs(x = 'pka1', y = '', fill = 'P[Flux > 0]', subtitle = 'Mean') +
+  scale_fill_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5) +
+  guides(fill = FALSE)
+g2 = ggplot(pkaX.grid) +
+  geom_tile(mapping = aes(x = pka1, y = pka2, fill = h)) +
+  labs(x = '', y = '', fill = 'P[Flux > 0]', subtitle = '75th Percentile') +
+  scale_fill_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g3 = ggplot(pkaX.grid) +
+  geom_tile(mapping = aes(x = pka1, y = pka2, fill = l)) +
+  labs(x = '', y = 'pka2 - pka1', fill = 'P[Flux > 0]', subtitle = '25th Percentile') +
+  scale_fill_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5) +
+  guides(fill = FALSE)
+g3 + g1 + g2
 
+# Input variables: Concentrations
+g1 = ggplot(conc.grid) +
+  geom_raster(mapping = aes(x = logA, y = abs(Na.A), fill = p)) +
+  facet_grid(ph.cond ~ ., scales = 'free_y') +
+  labs(x = 'log10 [Quinone]', y = '', fill = 'P[Flux > 0]', subtitle = 'Mean') +
+  scale_y_log10() + guides(fill = FALSE) +
+  scale_fill_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g2 = ggplot(conc.grid) +
+  geom_raster(mapping = aes(x = logA, y = abs(Na.A), fill = l)) +
+  facet_grid(ph.cond ~ ., scales = 'free_y') +
+  labs(x = '', y = 'pH Corrector/Quinone', fill = 'P[Flux > 0]', subtitle = '25th Percentile') +
+  scale_y_log10() + guides(fill = FALSE) +
+  scale_fill_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g3 = ggplot(conc.grid) +
+  geom_raster(mapping = aes(x = logA, y = abs(Na.A), fill = h)) +
+  facet_grid(ph.cond ~ ., scales = 'free_y') +
+  labs(x = '', y = '', fill = 'P[Flux > 0]', subtitle = '75th Percentile') +
+  scale_y_log10() +
+  scale_fill_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g2 + g1 + g3
+
+# Natural variables: pka
+g1 = ggplot(pkaX.grid) +
+  geom_point(mapping = aes(x = pka1, y = pka1 + pka2, color = p)) +
+  geom_hline(yintercept = c(10.3, 6.3)) +
+  labs(x = 'pka1', y = '', color = 'P[Flux > 0]', subtitle = 'Mean') +
+  scale_color_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5) +
+  guides(color = FALSE)
+g2 = ggplot(pkaX.grid) +
+  geom_point(mapping = aes(x = pka1, y = pka1 + pka2, color = h)) +
+  geom_hline(yintercept = c(10.3, 6.3)) +
+  labs(x = '', y = '', color = 'P[Flux > 0]', subtitle = '75th Percentile') +
+  scale_color_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g3 = ggplot(pkaX.grid) +
+  geom_point(mapping = aes(x = pka1, y = pka1 + pka2, color = l)) +
+  geom_hline(yintercept = c(10.3, 6.3)) +
+  labs(x = '', y = 'pka2', color = 'P[Flux > 0]', subtitle = '25th Percentile') +
+  scale_color_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5) +
+  guides(color = FALSE)
+g3 + g1 + g2
+
+# Input variables: Concentrations
+g1 = ggplot(conc.grid) +
+  geom_point(mapping = aes(x = 10^logA, y = 10^logA*abs(Na.A), color = p)) +
+  facet_grid(ph.cond ~ ., scales = 'free_y') +
+  labs(x = '[Quinone]', y = '', color = 'P[Flux > 0]', subtitle = 'Mean') +
+  scale_y_log10() + scale_x_log10() + guides(color = FALSE) +
+  scale_color_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g2 = ggplot(conc.grid) +
+  geom_point(mapping = aes(x = 10^logA, y = 10^logA*abs(Na.A), color = l)) +
+  facet_grid(ph.cond ~ ., scales = 'free_y') +
+  labs(x = '[Quinone]', y = 'pH Corrector', color = 'P[Flux > 0]', subtitle = '25th Percentile') +
+  scale_y_log10() + scale_x_log10() + guides(color = FALSE) +
+  scale_color_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g3 = ggplot(conc.grid) +
+  geom_point(mapping = aes(x = 10^logA, y = 10^logA*abs(Na.A), color = h)) +
+  facet_grid(ph.cond ~ ., scales = 'free_y') +
+  labs(x = '', y = '', color = 'P[Flux > 0]', subtitle = '75th Percentile') +
+  scale_y_log10() + scale_x_log10() +
+  scale_color_gradient2(limits = c(0, 1), 
+                       low="navy", mid="white", high="red", midpoint = 0.5)
+g2 + g1 + g3
+
+rm(g1, g2, g3)
+```
+
+What is evident from these 2D partial component probability plots is that there are regions where the probability is very low, but they are not clearly delineated by single variable cutoffs.
+The only case where there might be a cutoff is the concentration of quinone, where high (>1 M) concentrations lead to generally low probabilities of capture.
+However, it is possible that this is from extrapolation errors due to how close this is to the edge of the search space causing fewer points to be sampled near there.
+
+Insights from these 2D plots:
+
+* Lower pKa1 values do, in fact, lead to better outcomes. In particular, the first pKa should be below 7.5 to guarantee capture. However, this is counter to the density function of the high flux conditions, which found typically higher pKa values led to better flux. This is reflected in the large variance in the high pKa estimates.
+* There is a definitive band of pKa combinations that do not yield good results, mostly when the higher pKa value is around 10.3, i.e. the pKa of carbonate. This is likely because the buffer capacity benefit from the quinone is less important the more its buffer region overlaps with that of carbonate.
+* Generally speaking, the concentration of additional acid or base has next to no impact on the flux. There is a slight trend towards lower concentrations, but it is difficult to tell if that is caused by the edge effects as observed with the concentration of quinone.
+* There is a band of quinone concentrations of the order 0.1 to 1 M that more often than not leads to good outcomes. Below that region, the probability is typically low, while above that region, the variance is high.
+
+# Refinement to optimal conditions
+
+In addition to refining the model close to 0 to separate the conditions that are viable and inviable, the above process found some points that were previously unexplored which outperformed the Pareto front.
+Therefore, the Pareto front needs to be updated.
+
+```{r Updated Pareto Front}
+# Load data
+GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
+GPar.front = read.csv(file = 'GPar_fnt_data.csv')
+# Compare the matrices of just the outputs - need as a matri
+test = as.matrix(GPar.all[GPar.all$Flux.mol.m2s > 0,names(GPar.all) %in% c('Energy.kJ.mol', 'Flux.mol.m2s')])
+# For comparison, need both to minimize
+test[,2] = -test[,2]
+
+par.front = t(nondominated_points(points = t(test)))
+par.front[,2] = -par.front[,2]
+ggplot() +
+  geom_vline(xintercept = 0.1*max(GPar.front$Flux.mol.m2s), color = 'black', linetype = 3) +
+  geom_point(filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
+             mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
+  # New front
+  geom_line(data.frame(par.front), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = 'new')) +
+  geom_point(data.frame(par.front), mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = 'new')) +
+  # Old front
+  geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = 'old')) +
+  geom_point(GPar.front, mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = 'old')) +
+  labs(x = 'CO2 flux (mol/m2/s)', y = 'Energy Demand (kJ/mol C)') +
+  scale_color_manual(values = c('new' = 'red', 'old' = 'cyan'), 
+                     labels = c('new' = 'New Front', 'old' = 'Old Front'),
+                     name = '')
+  
+
+# Identify the conditions leading to the Pareto front
+GPar.front = filter(GPar.all, Energy.kJ.mol %in% par.front[,1], Flux.mol.m2s %in% par.front[,2])
+GPar.front = GPar.front[,!names(GPar.front) %in% 'X']
+write.csv(GPar.front, file = 'GPar_fnt_data_90Cap.csv')
+
+```
+
+The energy target for CO2 capture from flue gas is approximately 25-30 kJe/mol C to achieve a < 35% increase in cost relative to a power plant not capturing carbon.
+The majority of the Pareto front satisfies this criteria, and the points that do not are still relatively low (up to 37 kJe/mol C) and competitive with temperature-swing absorption.
+The entire Pareto front also falls entirely above 10% of the maximum flux (vertical dotted line), suggesting that the flux does not have substantial variability.
+The selection criteria is therefore going to be all points that meet both an energy and flux cutoff threshold set by the 1-variable optima.
+To give some amount of tolerance, the flux cutoff is 10% of the maximum flux, and the energy cutoff is 40 kJ/mol C.
+
+Based on prior tests with mathematical test functions, this type of criteria is both robust to modeling and converges relatively quickly.
+An initial pass on the inputs conditions that meet this criteria:
+
+```{r Optimal Capture Marginals Before Refinement}
 
 ```
 
 
 ### ----------------------
-
-<!-- The modified function ZDT4 takes N inputs, each on the domain of (0,1). The function is built into the GPareto package and does not need to be constructed explicitly. -->
-
-1. Solve objective functions with a space filling method to obtain an initial set of data.
-The 2D function takes two inputs, defined $x_1$ and $x_2$, to produce two outputs $f_1$ and $f_2$. 
-The domain of both $x_1$ and $x_2$ is [0,5]. The space-filling method here is a simple square grid construction.
-
-```{r Grid Setup}
-# Set up simple grid
-sz = 5
-x1.rng = seq(from = 0, to = 1, length.out = sz)
-x2.rng = seq(from = 0, to = 1, length.out = sz)
-x3.rng = seq(from = 0, to = 1, length.out = sz)
-des.start = expand.grid(x1.rng, x2.rng, x3.rng)
-des.start = des.start[,1:3]
-names(des.start) = c('x1', 'x2', 'x3')
-
-# Solve edge cases
-Pareto.budget = 20
-des.start = matrix(c(des.start$x1, des.start$x2, des.start$x3), ncol = 3, nrow = nrow(des.start))
-res.start = ZDT4.mod(x = des.start)
-
-```
-
-2. Use GPareto to find the Pareto front.
-
-GPareto uses Gaussian processes to approximate the Pareto frontier, defaulting to the SMS-EGO selection criterion.
-The function produces both the Pareto frontier estimate and the set of iterations, which will both be used in subsequent steps.
-To simplify computation time, the data are stored in .csv files so these variables do not need to be calculated with each attempt.
-
-```{r GPareto Calculation}
-res = easyGParetoptim(fn = ZDT4.mod, budget = Pareto.budget, lower = c(0, 0, 0), upper = c(1, 1, 1), 
-                      par = des.start, value = res.start, ncores = 2)
-plotGPareto(res)
-# Format into dataframe for easier plotting
-GPar.front = data.frame(x1 = res$par[,1], x2 = res$par[,2], x3 = res$par[,3], f1 = res$value[,1], f2 = res$value[,2])
-GPar.all =  data.frame(x1 = res$history$X[,1], x2 = res$history$X[,2], x3 = res$history$X[,3], f1 = res$history$y[,1], f2 = res$history$y[,2])
-GPar.all$order = c(rep(0, nrow(des.start)), seq(from = 1, to = Pareto.budget, by = 1))
-rm(res)
-write.csv(GPar.all, file = 'GPar_all_data.csv')
-write.csv(GPar.front, file = 'GPar_fnt_data.csv')
-```
-
 3. Calculatate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics will be used to establish the acceptable suboptimal performance and the relative importance of each input variable.
 
 Normalization is defined such that (0,0) is the utopia point and (1,0) and (0,1) are the single-objective optimizations. The prioitization is the angle $\theta$ made between the point in the normalized objective space and the x-axis, i.e. the axis of purely prioritizing objective 2. This angle is re-mapped to a percentage from 0 to 100% prioritization of objective 2. The distance between each point and the Pareto front is the distance in the normalized space
@@ -1029,159 +1687,6 @@ write.csv(x = GPar.front, file = 'GPar_fnt_start.csv')
 
 ```
 
-Plot the contours of the original functions
-```{r Plot Objective Functions}
-# Fine grid spacing
-sz.fine = 50
-x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
-x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
-# x3.rng = seq(from = 0, to = 1, length.out = 5)
-# x3.rng = unique(c(x3.rng, unique(GPar.front$x3)))
-x3.rng = 0 # Simple slice for visualization
-con.fine = expand.grid(x1.rng, x2.rng, x3.rng)
-con.fine = con.fine[,1:3]
-names(con.fine) = c('x1', 'x2', 'x3')
-
-# Calculate
-res = ZDT4.mod(x = as.matrix(con.fine))
-con.fine$f1 = res[,1]; con.fine$f2 = res[,2]
-
-ggplot() +
-  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = f1, color = 'f1'), bins = 10) +
-  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = f2, color = 'f2'), bins = 10) +
-  labs(x = expression('x'[1]), y = expression('x'[2])) +
-  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = "black") +
-  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2), color = "black", method = 'loess', formula = (y~x)) +
-  scale_color_manual(name = 'Objective', values = c('f1' = 'red', 'f2' = 'blue'), 
-                     labels = c('f1' = expression('F'[1]), 'f2' = expression('F'[2]))) +
-  theme_classic() +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-
-sz.fine = 100
-x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
-x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
-x3.rng = seq(from = 0, to = 1, length.out = 9) # Simple slice for visualization
-con.fine = expand.grid(x1.rng, x2.rng, x3.rng)
-con.fine = con.fine[,1:3]
-names(con.fine) = c('x1', 'x2', 'x3')
-
-# Calculate
-res = ZDT4.mod(x = as.matrix(con.fine))
-con.fine$f1 = res[,1]; con.fine$f2 = res[,2]
-
-ggplot() +
-  geom_point(data = con.fine, 
-                      mapping = aes(x = x1, y = x2, color = f2)) +
-  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[2])) +
-  theme_classic() + facet_wrap(~x3) + 
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-
-ggplot() +
-  geom_point(data = con.fine, 
-                      mapping = aes(x = x1, y = x2, color = f1)) +
-  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[1])) +
-  theme_classic() + facet_wrap(~x3) + 
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-
-rm(res, con.fine, x1.rng, x2.rng, x3.rng)
-```
-
-Three different selection criteria are to be tested: (1) normalized distance to the Pareto frontier, (2) independent threshold values of the two objective functions, (3) distance to the utopia point and relative prioritization. The hypervolume of the accepted region in the input space should be at least 5% of the total hypervolume. This requires some tuning to decide on what the selection criteria should be so a sufficiently large region is accepted.
-
-This 5% cutoff will be assessed by Monte Carlo sampling, combined with a coarse 3x3 resolution grid to ensure all regions are sampled.
-
-```{r Identifying cutoff criteria}
-# Set up the grid
-bounds = seq(from = 0, to = 1, length.out = 4)
-# Collect an equal number of points from each grid section
-nsamp = 5e2
-test.samp = data.frame()
-for(i in 1:3){
-  for(j in 1:3){
-    for(k in 1:3){
-      next.grid = data.frame(x1 = runif(n = nsamp, min = bounds[i], max = bounds[i+1]),
-                             x2 = runif(n = nsamp, min = bounds[j], max = bounds[j+1]),
-                             x3 = runif(n = nsamp, min = bounds[k], max = bounds[k+1]))
-      test.samp = rbind(test.samp, next.grid)
-    }
-  }
-}
-
-# Calculate the function evaluations
-res = ZDT4.mod(x = as.matrix(test.samp[,c('x1', 'x2', 'x3')]))
-test.samp$f1 = res[,1]; test.samp$f2 = res[,2]
-# Normalized variables
-test.samp = n.obj(GPar.data = test.samp, GPar.front = GPar.front)
-
-# Calculate theta according to the angle. Remap from [0, pi/2] to [0, 100] for simplicity
-test.samp$theta = atan(test.samp$f2.norm/test.samp$f1.norm)*180/pi*10/9
-
-# Distance to the Pareto front
-cl <- makeCluster(2)
-registerDoParallel(cl)
-dist = foreach(row = 1:nrow(test.samp)) %dopar%
-  n.dist(f1.norm = test.samp$f1.norm[row], f2.norm = test.samp$f2.norm[row], GPar.front = GPar.front)
-stopCluster(cl)
-test.samp$dist = unlist(dist)
-rm(dist, cl)
-
-# Fraction meeting dist < specific value
-dist.check = data.frame(x = seq(from = 0, to = 5, length.out = 20),
-                        delta = 0, cutof = 0, radan = 0)
-for(i in 1:nrow(dist.check)){
-  bound = dist.check$x[i]
-  dist.check$delta[i] = nrow(filter(test.samp, dist <= bound))/nrow(test.samp)
-  dist.check$cutof[i] = nrow(filter(test.samp, f1.norm <= bound, f2.norm <= bound))/nrow(test.samp)
-  dist.check$radan[i] = nrow(filter(test.samp, sqrt(f1.norm^2 + f2.norm^2) <= bound & theta > 20))/nrow(test.samp)
-  
-}
-sz = 2.5
-dist.check
-ggplot(dist.check) +
-  geom_point(mapping = aes(x = x, y = delta, color = 'delta', shape = 'delta'), size = sz) +
-  geom_point(mapping = aes(x = x, y = cutof, color = 'cutof', shape = 'cutof'), size = sz) +
-  geom_point(mapping = aes(x = x, y = radan, color = 'radan', shape = 'radan'), size = sz) +
-  scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green3'),
-                     labels = c('delta' = 'P.Dist', 'cutof' = 'Cutoff', 'radan' = 'U.Dist'), 
-                     name = '') +
-  scale_shape_manual(values = c('delta' = 1, 'cutof' = 2, 'radan' = 3),
-                     labels = c('delta' = 'P.Dist', 'cutof' = 'Cutoff', 'radan' = 'U.Dist'),
-                     name = '') +
-  labs(x = 'Cutoff Value', y = 'Accepted Fraction')
-
-rm(bounds, nsamp, test.samp, sz, dist.check, next.grid, res)
-
-```
-Based on this Monte Carlo estimate, the cutoff value should be approximately 2 for all 3 criteria to guarantee at least 5% of the total hypervolume space is accepted.
-
-Plot the full dataset in the objective space
-```{r Visualize GPareto and Normalization, fig.width=6, fig.height=6}
-gplt.GPar = ggplot() +
-  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
-  geom_line(data = GPar.front, mapping = aes(x = f1, y = f2), color = "black") +
-  geom_point(data = GPar.all, mapping = aes(x = f1, y = f2, color = (order > 0), 
-                                            shape = (dist == 0)), size = 2) +
-  labs(x = "Function 1", y = "Function 2", color = "") +  
-  scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
-  scale_shape_discrete(labels = c('Pareto frontier'), breaks = c(TRUE)) +
-  theme_classic() + theme(legend.position = c(0.85, 0.85), legend.background = element_rect(fill = 'white'), 
-                          legend.title = element_blank())
-
-gplt.Norm = ggplot() +
-  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
-  geom_line(data = GPar.front, mapping = aes(x = f1.norm, y = f2.norm), color = "black") +
-  geom_point(data = GPar.all, mapping = aes(x = f1.norm, y = f2.norm, color = (order > 0),
-                                            shape = (dist == 0)), size = 2) +
-  labs(x = "Normalized Function 1", y = "Normalized Function 2", color = "") +  
-  scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
-  scale_shape_discrete(labels = c('Pareto frontier'), breaks = c(TRUE)) +
-  guides(color = FALSE, shape = FALSE) +
-  theme_classic() + theme(legend.position = c(0.85, 0.85), legend.background = element_rect(fill = 'white'),
-                          legend.title = element_blank())
-
-gplt.GPar / gplt.Norm
-rm(gplt.GPar, gplt.Norm)
-```
 
 ## II. Acceptable suboptimal performance (the "near-Pareto set")
 4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
@@ -1210,115 +1715,6 @@ When the point is sampled, this means information gained is maximized.
 Points on the boundary have intermediate acceptance probabilities, ie. close to 0.5, while points with the greatest model uncertainty have the greatest standard error. 
 Therefore, the utility function can be estimated as the product of the standard error, the probability of being accepted, and the probability of being rejected.
 
-```{r Functions: Iterative Sampling, message=FALSE, warning=FALSE}
-fill.sample.mod = function(GPar.data, input.name, output.name){
-  # Calculate the GP model to use. 
-  # Using the km function, but applies checks on the system to make sure that 
-  # the model uncertainty matches expectations based on GP, ie. it did not
-  # fail to converge.
-  
-  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
-  # of the standard deviation are of the same order of magnitude. This is easiest
-  # checked if the difference between the 10th and 90th percentile
-  # is larger than the difference between the 25th and 75th.
-  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
-  while(log10(pt90/pt10) <= log10(pt75/pt25)){
-    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
-                 covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
-                 control = list(trace = FALSE, # Turn off tracking to simplify output
-                                pop.size = 50), # Increase robustness
-                 nugget = 1e-6, # Avoid eigenvalues of 0
-                 )
-    
-    # Randomly sample 1000 points from the search space.
-    pt = 1000; i = 1
-    lims = range(GPar.data[,input.name[i]])
-    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
-    for(i in 2:length(input.name)){
-      lims = range(GPar.data[,input.name[i]])
-      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
-    }
-    names(samp) = input.name
-    
-    # Find model output to find the percentile ranks for this iteration
-    res = predict(object = mod.out, newdata = samp, type = 'UK')
-    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
-    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
-  }
-  return(mod.out)
-}
-
-fill.sample.obj = function(x, model){
-  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
-  # the function will output the objective function evaluated at x = (x1, x2)
-  
-  # Evaluate the Kriging model function at x 
-  res = predict(object = model, newdata = data.frame(x1 = x[1], x2 = x[2], x3 = x[3]), type = 'UK')
-  
-  # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
-
-  # Objective result
-  return(res$sd*(prob*(1-prob) + 0.25/9))
-}
-
-# Check to make sure that the front estimate is correct after sampling
-fill.sample.front.check = function(point.new, front.old){
-  # Only need x and f variables
-  front.old = front.old[,names(point.new)]
-  # Check all possible points, assuming multiple are screened at once
-  for(i in 1:nrow(point.new)){
-    # If it dominates an existing Pareto point:
-    front.old[front.old$f1 > point.new$f1[i] & front.old$f2 > point.new$f2[i]] = NULL
-    # If it is non-dominating but not strictly worse
-    pos1 = (front.old$f1 < point.new$f1[i] & front.old$f2 > point.new$f2[i]) | 
-      (front.old$f1 > point.new$f1[i] & front.old$f2 < point.new$f2[i])
-    if(all(pos1)){front.old = rbind(front.old, point.new)}
-  }
-  # Re-calculate the normalization
-  front.new = n.obj(front.old, front.old)
-  return(front.new)
-}
-
-```
-
-Visualize the first iteration to show that it actually samples the point that is most useful
-```{r Iteration 1: Distance less than 1}
-# Search for the first point
-mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'dist')
-GA.pred = ga(type = 'real-valued',
-             fitness = function(x){fill.sample.obj(x, model = mod.dist)},
-             lower = c(0, 0, 0), upper = c(1, 1, 1),
-             popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
-             parallel = 2)
-# Next point to sample is the solution to this optimization
-point.next = GA.pred@solution[1,]
-GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2], x3 = point.next[3])
-res = ZDT4.mod(x = as.matrix(GPar.new))
-GPar.new$f1 = res[,1]; GPar.new$f2 = res[,2]
-GPar.front = fill.sample.front.check(point.new = GPar.new, front.old = GPar.front)
-  
-# Fill in the remaining calculations: normalized outputs, distance, theta, order
-GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
-GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
-cl <- makeCluster(2)
-registerDoParallel(cl)
-dist = foreach(row = 1:nrow(GPar.new)) %dopar%
-  n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
-stopCluster(cl)
-GPar.new$dist = unlist(dist)
-GPar.new$order = max(GPar.all$order) + 1
-
-# The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
-start.fit = max(GA.pred@fitness)
-# Store first point for plotting
-GPar.new1 = GPar.new
-rm(dist)
-
-# Store the initial mod.dist for later
-mod.dist.init = mod.dist
-```
 
 ```{r}
 lower = c(0, 0.3, 0); upper = c(1, 0.7, 1)
