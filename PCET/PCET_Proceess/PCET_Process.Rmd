@@ -1,0 +1,2274 @@
+---
+title: "Proof of concept: CO2 capture with PCET-based pH swings"
+author: "Jonathan Boualavong"
+output: html_notebook
+---
+
+<!-- output:    -->
+<!--   md_document: -->
+<!--     variant: markdown_github -->
+
+# Description
+This notebook takes the results from PCET optimization using the established method and interrogates specific points to illustrate 
+
+(1) the mathematical underpinnings of the physical model and 
+(2) identify why specific inputs lead to better or worse performance.
+
+The source data (GPar_AcidBase_data.csv and GPar_AcidBase_fnt.csv) were those calculated from the scripts in the Ex_PCET_Acid and Ex_PCET_Base folders.
+
+# Code
+## Initialization
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Clear the workspace and define the functions.
+
+```{r Load Packages}
+# Setup
+rm(list = ls())
+# Visualization
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+# Parallel processing
+library(parallel)
+library(doParallel)
+# Gaussian processes
+library(GPareto)
+library(DiceKriging)
+library(DiceOptim)
+# Optimization
+library(GA)
+```
+
+## Parameter space
+Data for restricting the quinone features is based on results from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
+
+Remove points that are not likely to be stable within the electrochemcial window of water. For the process:
+Q + 2e- + 2H+ <-> QH2
+We can roughly assume that the reduction reaction is competing with hydrogen evolution
+2H+ + 2e- <-> H2
+and the oxidation reaction is competing with oxygen evolution
+2H2O + 4OH- <-> O2 + 4e-
+
+Both of these reactions are pH dependent, so the cutoff values are not obvious. 
+At the extreme, the reduction potential of hydrogen evolution will be at its highest (most likely to compete with the quinone reduction) at the lowest pH, which would typically be at the pH where carbonic acid makes up > 90% of the CO2 speciation (pH = 5.33).
+Similarly, the reduction potential of oxygen evolution will be at its lowest at the highest pH, which would be just above the hydroquinone's buffer region (the higher of its pKas + 1).
+
+Practically, the quinone electrochemistry has much faster kinetics than either gas evolution reaction in the absence of a specific water-splitting catalyst, so a tolerance of about 200 mV will be added to accommodate.
+
+```{r}
+# Load data and correlation plot package
+quinone.data = read.csv(file = 'HuynhData.csv', skip = 1)
+
+# Filter the data to only those whose reaction would be stable in water
+## Hydrogen evolution
+h2.evo = -59.2*1e-3 * 5.33
+quinone.data = filter(quinone.data, E0.2 > h2.evo)
+
+## Cutoff value for oxygen evolution
+o2.evo = 1.229 + -59.2*1e-3*quinone.data$Pka.2+1
+quinone.data = filter(quinone.data, E0.1 < o2.evo)
+
+quinone.data
+
+# Correlation plot between the E0 and pka values
+cor.mat = matrix(data = rep(0, 16), nrow = 4)
+for(i in seq(from = 6, to = 9, by = 1)){
+  for(j in seq(from = i, to = 9, by = 1)){
+    cor.mat[i-5,j-5] = cor(x = quinone.data[,i], y = quinone.data[,j])
+  }
+}
+cor.mat
+
+g1 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.1, x = E0.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[1,2], 3))) 
+g2 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.1, x = Pka.1)) +
+  labs(subtitle = paste('r = ', round(cor.mat[1,3], 3)))
+g3 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.1, x = Pka.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[1,4], 3)))
+g4 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.2, x = Pka.1)) +
+  labs(subtitle = paste('r = ', round(cor.mat[2,3], 3)))
+g5 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = E0.2, x = Pka.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[2,4], 3)))
+g6 = ggplot(quinone.data) +
+  geom_point(mapping = aes(y = Pka.1, x = Pka.2)) +
+  labs(subtitle = paste('r = ', round(cor.mat[3,4], 3)))
+
+(g1 + g2 + g3) / (plot_spacer() + g4 + g5) / (plot_spacer() + plot_spacer() + g6)
+rm(g1, g2, g3, g4, g5, g6)
+rm(h2.evo, i, j, o2.evo, cor.mat)
+
+# Determine the value for the standard deviation that should be used to encompass 98% of the search space
+q2 = quantile(quinone.data$Pka.2 - quinone.data$Pka.1, probs = c(0.95))
+# Plot the data and the search space
+fit.ln = data.frame(Pka.1 = seq(from = -8.33, to = 13.41, length.out = 3))
+ggplot() +
+  geom_point(quinone.data, mapping = aes(x = Pka.1, y = Pka.2), color = 'blue', alpha = 0.5) +
+  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.1), color = 'red', linetype = 2) +
+  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.1+q2), color = 'red', linetype = 2) +
+  labs(title = expression('Known Quinone p'*italic(K)*''[a]*'s'),
+       y = expression('p'*italic(K)*''['a,2']),
+       x = expression('p'*italic(K)*''['a,1']))
+q2
+rm(fit.ln)
+
+```
+
+While all four variables are strongly co-correlated, this is largely irrelevant because the thermodynamic and kinetic analyses do not rely on the reduction potential besides assuming that gas evolution does not occur.
+There is a Bronsted-like relationship between the reduction potential and the reaction rate of the deprotonated hydroquinone nucleophilically attacking the CO2 [Simpson & Durand 1990, doi: 10.1016/0013-4686(90)85012-C], but this is not likely to be the dominant mechanism because the reaction with OH- is approximately 10 to 100 times faster in water.
+To determine which pKa will be the free variable and which will be represented by an error term of the linear regression, the relative normalized standard deviations of the errors were compared. 
+
+
+## CO2 Capture Model
+
+The objective function for energy demand solves the set of equilibrium equations across the range of charge and gas transfers based on four state variables: 
+total dissolved inorganic carbon (DIC), state of charge (xA), partial pressure of CO2 (pCO2), and solution pH.
+
+The minimum energy demand assumes all charge is passed at the Nernst potential, which is updated as charge passes through the system.
+The energy demand assumes anti-symmetric operation, ie. quinone reduction at the cathode and hydroquinone oxidation at the anode.
+Charge balance of the anolyte and catholyte are assumed to be the result of the background electrolyte travelling across an ion selective membrane.
+The gas transfers are assumed to be separate stages from the electrochemical stages, purely for the sake of simplicity. 
+This estimate for the minimum energy is a slight overestimate because of over-pressurization of the CO2; coupling the gas transfer steps with the appropriate electrochemical steps decreases the minimum energy by approximately a factor of 2.
+The function can accommodate feed CO2 gases of any partial pressure, but this study is interested in 3 applications: coal flue gas (15v% feed to 1.5v% lean), air revitalization (2000 ppm to 1000 ppm), and direct air capture (400 ppm to 250 ppm).
+
+This code is broken down into explicit functions and derived functions.
+Explicit functions are a series of sub-functions which solve for one of the four state variables using knowledge of the other three state variables and the solution conditions. 
+These functions solve the set of chemical equilibrium, mass, and charge balance equations for the bulk solution.
+Derived functions use the information from the explicit functions to determine relevant information for determining the energy demand and CO2 flux.
+
+For the purpose of generalization, these equations are written with the variables 'beta1' and 'beta2' which describe the deprotonated hydroquinone's affinity for CO2, forming an organic carbonate. 
+This species is ignored in this particular notebook for the above-stated reason (slow kinetics), and therefore both variables are set to 0.
+These variables are included because other compounds have been proposed to capture CO2 primarily through that mechanism, and thus they could also be studied with this script.
+
+```{r PCET Explicit functions}
+# Direct explicit functions
+# Functions are named with the output variable first, then all relevant inputs
+DIC.xA.pCO2.pH.A.k.beta = function(xA, pCO2, pH, A.tot, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Proton concentration
+  H = 10^-pH
+  
+  # Inorganic carbonate
+  CO3.free = kH * pCO2 * (H^2 + kc1 * H + kc1 * kc2) / H^2
+  
+  # Bound carbon
+  CO2.bound = A.tot*xA *k1*k2*(beta1*pCO2 + 2*beta2*pCO2^2)/((1 + beta1*pCO2 + beta2*pCO2^2)*k1*k2 + k1*H + H^2)
+  
+  return(CO3.free + CO2.bound)
+}
+
+pH.xA.pCO2.A.k.beta.Na = function(xA, P, At, k1, k2, beta1, beta2, Na){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x5 = 1
+  x4 = k1 + Na + 2*At*xA 
+  x3 = k1*k2 - kw + k1*Na + beta1*k1*k2*P - kc1*kH*P +
+      beta2*k1*k2*P^2 + 2*At*k1*xA - 2*At*k2*xA
+  x2 = (-k1)*kw + k1*k2*Na - k1*kc1*kH*P - 2*kc1*kc2*kH*P + beta1*k1*k2*Na*P + beta2*k1*k2*Na*P^2 -
+      2*At*k1*k2*xA + 2*At*beta1*k1*k2*P*xA + 2*At*beta2*k1*k2*P^2*xA
+  x1 = (-k1)*k2*kw - k1*k2*kc1*kH*P - 2*k1*kc1*kc2*kH*P - beta1*k1*k2*kw*P -
+      beta1*k1*k2*kc1*kH*P^2 - beta2*k1*k2*kw*P^2 - beta2*k1*k2*kc1*kH*P^3
+  x0 = - 2*k1*k2*kc1*kc2*kH*P - 2*beta1*k1*k2*kc1*kc2*kH*P^2 -
+     2*beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4, x5))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  
+  # It is possible for multiple roots to satisfy the solution. Typical pH is going to be the one closest to 7-8
+  # H = H[which.min(abs(-log10(H) - 7))]
+
+  return(-log10(H[1]))
+}
+
+pCO2.xA.pH.A.k.beta.Na = function(xA, pH, At, k1, k2, beta1, beta2, Na, pCO2.prev){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  # Proton concentration
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = (-beta2)*H*k1*k2*kc1*kH - 2*beta2*k1*k2*kc1*kc2*kH
+  x2 = beta2*H^3*k1*k2 - beta1*H*k1*k2*kc1*kH - 2*beta1*k1*k2*kc1*kc2*kH -
+      beta2*H*k1*k2*kw + beta2*H^2*k1*k2*Na + 2*At*beta2*H^2*k1*k2*xA
+  x1 = beta1*H^3*k1*k2 - H^3*kc1*kH - H^2*k1*kc1*kH - H*k1*k2*kc1*kH - 2*H^2*kc1*kc2*kH - 2*H*k1*kc1*kc2*kH -
+      2*k1*k2*kc1*kc2*kH - beta1*H*k1*k2*kw + beta1*H^2*k1*k2*Na +
+      2*At*beta1*H^2*k1*k2*xA
+  x0 = H^5 + H^4*k1 + H^3*k1*k2 - H^3*kw - H^2*k1*kw - H*k1*k2*kw +
+      H^4*Na + H^3*k1*Na + H^2*k1*k2*Na + 2*At*H^4*xA + 2*At*H^3*k1*xA -
+      2*At*H^3*k2*xA - 2*At*H^2*k1*k2*xA
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  # There are cases of multiepl roots. Find the one that is closest to the previous known value
+  pCO2 = pCO2[which.min(abs(log10(pCO2) - log10(pCO2.prev)))]
+  
+  return(pCO2)
+}
+
+pH.DIC.xA.pCO2.A.k.beta = function(DIC, xA, P, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x4 = (DIC - kH*P)
+  x3 = (DIC*k1 - k1*kH*P - kc1*kH*P)
+  x2 = (DIC*k1*k2 + beta1*DIC*k1*k2*P - k1*k2*kH*P - k1*kc1*kH*P - kc1*kc2*kH*P + beta2*DIC*k1*k2*P^2 - 
+    beta1*k1*k2*kH*P^2 - beta2*k1*k2*kH*P^3 - At*beta1*k1*k2*P*xA - 2*At*beta2*k1*k2*P^2*xA)
+  x1 = ((-k1)*k2*kc1*kH*P - k1*kc1*kc2*kH*P - beta1*k1*k2*kc1*kH*P^2 - 
+        beta2*k1*k2*kc1*kH*P^3)
+  x0 = (-k1)*k2*kc1*kc2*kH*P - beta1*k1*k2*kc1*kc2*kH*P^2 - beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  return(-log10(H))
+}
+
+pCO2.DIC.xA.pH.A.k.beta = function(DIC, xA, pH, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = ((-beta2)*H^2*k1*k2*kH - beta2*H*k1*k2*kc1*kH - beta2*k1*k2*kc1*kc2*kH)
+  x2 = (beta2*DIC*H^2*k1*k2 - beta1*H^2*k1*k2*kH - beta1*H*k1*k2*kc1*kH - 
+        beta1*k1*k2*kc1*kc2*kH - 2*At*beta2*H^2*k1*k2*xA)
+  x1 = (beta1*DIC*H^2*k1*k2 - H^4*kH - H^3*k1*kH - H^2*k1*k2*kH - H^3*kc1*kH - 
+        H^2*k1*kc1*kH - H*k1*k2*kc1*kH - H^2*kc1*kc2*kH - H*k1*kc1*kc2*kH - 
+        k1*k2*kc1*kc2*kH - At*beta1*H^2*k1*k2*xA)
+  x0 = DIC*H^4 + DIC*H^3*k1 + DIC*H^2*k1*k2
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  return(pCO2)
+}
+
+# There are cases in the process where both pH and pCO2 are unknown. 
+# For those cases, both variables can be solved togther, but it leads to coupled nonlinear root finding problems. 
+# Initial testing of the equations has found that using an initial guess of pH (such as the pH at the immediately previous state of charge) leads to a good enough estimate of the pH to solve pCO2.
+pH.it.guess.DIC.At.k.beta = function(pH.guess, xA.next, DIC, A.tot, k1, k2, beta1, beta2, Na){
+  # Iterates to solve the pH and pCO2 at the next electrochemical time step, 
+  # given xA and DIC and an initial guess (the pH at the previous time step)
+  pCO2.it = c(); pH.it = c(pH.guess)
+  pCO2.it = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it, At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  for(n in 2:74){
+    pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    pCO2.it[n] = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it[n], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  } 
+  n = 7:5
+  pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  # Due to some oscillatory instabilities under specific conditions, take the last 25 and use the value that is closest to the guess
+  pH.res = pH.it[50:75]
+  pH.res = pH.res[which.min(abs(pH.res) - pH.guess)]
+  return(pH.res)
+}
+```
+
+```{r PCET Derived Functions: Process Conditions}
+# Derived functions
+# DIC difference: CO2/L*cycle - this is a good first check for the condition to ensure that CO2 is, in fact, captured, represented by a positive value.
+DIC.diff = function(Na, A, beta1, beta2, k1, k2, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  # pCO2.in = 0.1; pCO2.out = 1
+  
+  # Absorption: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the difference
+  DIC.diff = start.soln$DIC - stop.soln$DIC
+  return(DIC.diff)
+}
+
+# Minimum partial pressure of the lean gas
+pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  
+  # Calculate the DIC of the outlet after complete desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the pCO2 when fully reduced, holding DIC constant. Due to the need for a previous case, run in ~5 steps
+  out.soln = data.frame(DIC = stop.soln$DIC, xA = seq(from = min(xA.lim), to = max(xA.lim), length.out = 5))
+  # Loop the pH and pCO2 simultaneously
+  loop.pH = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = out.soln$xA[1], DIC = out.soln$DIC[1],
+                                      A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  loop.pCO2 = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[1], pH = loop.pH[1],
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, 
+                                     pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:5){
+    loop.pH[i] = pH.it.guess.DIC.At.k.beta(pH.guess = loop.pH[i-1], xA.next = out.soln$xA[i], DIC = out.soln$DIC[i],
+                                        A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    loop.pCO2[i] = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[i], pH = loop.pH[i],
+                                       At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, 
+                                       pCO2.prev = loop.pCO2[i-1])
+    
+  }
+  return(loop.pCO2[i])
+}
+
+```
+
+
+Penalty function: logistic weighting function such that for values where 90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
+The hyperparameters L, k, and x0 of the logistic component of the weighting function were tuned by fitting to a variety of minimum lean gas pressures on the range of 0.016 to 2.5 atm and then selected as the modal value.
+The logistic function was tuned such that the growth rate steepness captured the range of 0 to 90% capture; when no CO2 could be captured, the weight is applied fully.
+
+A penalty function is not necessary for the flux because insufficient capture would manifest as negative fluxes. It may still show up in the Pareto frontier, but it can easily be filtered out, unlike the cases with the energy demand.
+
+See the script analyzing the basic conditions for details on its construction.
+
+The inlet term is constant at 0.15 atm and the reference point is 90% reduction in the partial pressure in the lean gas.
+The calculation is based on mass balance, assuming that the volume adjusted to maintain a total pressure of 1 atm.
+
+Assuming 1 total mole of gas is processed at the reference point:
+* Inlet: 0.15 mol CO2, 0.85 mol not CO2
+* Lean gas: 0.85 mol not CO2, (0.015*0.85)/(1 - 0.015) mol CO2
+* Enriched gas: 1 - (0.015*0.85)/(1 - 0.015) mol CO2, 0.1% not CO2
+
+The lean gas and enriched gas will change according to the system with a similar mass balance.
+
+Applying the penalty function directly to energy demand
+
+```{r PCET Derived Functions: Energy Demand}
+weight.fun = function(pCO2.lean){
+  # Ideal
+  n.inlet = c(0.15, 0.85)
+  n.lean = c(0.85, 0.015*0.85/(1 - 0.015))
+  n.enrich = c(0.001*(1 - 0.015*0.85/(1 - 0.015)), 1 - 0.015*0.85/(1 - 0.015))
+  
+  E.ideal = sum(n.enrich*log(n.enrich/sum(n.enrich)) + 
+                  n.lean*log(n.lean/sum(n.lean)) - 
+                  n.inlet*log(n.inlet/sum(n.inlet)))
+
+  # Actual: separate into 3 cases:
+  E.tru = rep(x = 0, times = length(pCO2.lean))
+  # Third case: if the lean gas pressure is above 1, i.e. it pressurized
+  pos3 = (pCO2.lean >= 0.99)
+  # Set the lean gas pressure to 0.999, 
+  # then multiply the weight by the actual pressure to correct the energy; 
+  # since the weight is divided by this energy, this means dividing by the pressure
+  set.lean = 0.999
+  n.enrich.co2 = (set.lean - 0.15)/(1 - set.lean)
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos3] = (- sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))) / pCO2.lean[pos3]
+
+  # Second case: if the lean gas pressure is between 0.15 and 1, 
+  # i.e. the CO2 was moved from the pure gas to the lean gas
+  pos2 = (pCO2.lean >= 0.15 & pCO2.lean < 0.99)
+  # For the mass balance to work, gas must have moved from the enriched stream to the lean gas
+  n.enrich.co2 = (pCO2.lean[pos2] - 0.15)/(1 - pCO2.lean[pos2])
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos2] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # First case: if the lean gas pressure is less than 0.15, i.e. some amount of capture happened
+  pos1 = (pCO2.lean < 0.15)
+  # Mathematically identical to the lean gas case, just adjusting the lean gas and enriched gas mass balance
+  n.lean = pCO2.lean[pos1]*0.85/(1 - pCO2.lean[pos1])
+  n.enrich.co2 = 0.15 - n.lean
+  n.enrich.gas = 0.001*n.enrich.co2
+  
+  E.tru[pos1] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # Maximum weight
+  weight.max = E.ideal/E.tru
+
+  # Logistic function
+  L = weight.max - 0.98
+  k = 267; x0 = 0.071
+  # data.frame(weight.max)
+  return(25*L/(1 + exp(-k * (pCO2.lean - x0))) + 1)
+}
+
+# Total energy demand - 4-stage process for simplicity
+Energy.tot = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  z = 2; R = 8.314; T = 298; F = 96485; resolution = 151;
+  # pCO2.in = 0.1; pCO2.out = 1
+  xA.lim = c(0.025, 0.975)
+  
+  # 1 -> 2: Electrochemical oxidation (xA decrease to endpoint), constant DIC
+  # Starting solution for initial guess: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Anode progress
+  E.anode = data.frame(DIC = start.soln$DIC, xA = seq(from = start.soln$xA[1], to = min(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = start.soln$pH[1], xA.next = E.anode$xA[1], DIC = E.anode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.anode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.anode$xA[i], DIC = E.anode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.anode$pH = loop; 
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[1], pH = E.anode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = start.soln$p.CO2)
+  for(i in 2:length(E.anode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[i], pH = E.anode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.anode$p.CO2 = loop
+  E.anode$q = abs(E.anode$xA - E.anode$xA[1])*A.tot*z*F # Coulombs
+  
+  # 3 -> 4: Electrochemical reduction (xA increase to endpoint), constant DIC
+  # Starting solution for initial guess: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Cathode progress
+  E.cathode = data.frame(DIC = stop.soln$DIC[1], xA = seq(from = stop.soln$xA[1], to = max(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = E.cathode$xA[1], DIC = E.cathode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.cathode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.cathode$xA[i], DIC = E.cathode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.cathode$pH = loop;
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[1], pH = E.cathode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:length(E.cathode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[i], pH = E.cathode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.cathode$p.CO2 = loop
+  E.cathode$q = abs(E.cathode$xA - E.cathode$xA[1])*A.tot*z*F # Coulombs
+  
+  # Equilibrium potential: Deviation from standard reduction potential
+  E.anode$H = 10^-E.anode$pH
+  E.anode$E = R*T/(z*F) * log( (1 - E.anode$xA)/E.anode$xA * 
+                                   ((1 + beta1*E.anode$p.CO2 + beta2*E.anode$p.CO2^2)*k1*k2 + k1*E.anode$H + E.anode$H^2)/(k1*k2))
+  E.cathode$H = 10^-E.cathode$pH
+  E.cathode$E = R*T/(z*F) * log( (1 - E.cathode$xA)/E.cathode$xA * 
+                                   ((1 + beta1*E.cathode$p.CO2 + beta2*E.cathode$p.CO2^2)*k1*k2 + k1*E.cathode$H + E.cathode$H^2)/(k1*k2))
+  
+  # Total energy
+  E.cell = data.frame(q = E.anode$q, V = E.anode$E - E.cathode$E)
+  # Only the positive energy demand
+  E.cell = filter(E.cell, V > 0)
+  len = length(E.cell$q)
+  if(len == 0){
+    E.cell = data.frame(q = rep(x = 0, times = 10), V = rep(x = 0, times = 10))
+    len = 10
+  }
+  # E.anode$typ = "anode"; E.cathode$typ = "cathode"
+  Energy.tot.sep = sum(0.5*(E.cell$V[2:len] + E.cell$V[1:(len-1)])*(E.cell$q[2:len] - E.cell$q[1:(len-1)]))
+  
+  ## Adjust the total energy by multiplying by the penalty function
+  # Calculate the lean gas pressure
+  # k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out
+  p.lean = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  penalty = weight.fun(pCO2.lean = p.lean)
+  
+  # Normalize by the total amount of carbon moved, i.e. units of kJ/mol
+  DIC.capture = DIC.diff(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.in = pCO2.in, pCO2.out = pCO2.out)
+  return(Energy.tot.sep*penalty/DIC.capture*1e-3)
+}
+
+```
+
+
+```{r PCET Derived Functions: CO2 Flux}
+# These equations are based on the framework for determining the CO2 flux as presented in Wilcox 2012.
+Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
+  # Constants: general
+  kw = 1e-14 # M^2
+  kH = 3.4e-2; # M/atm
+  z = 1 # OH- + CO2 = HCO3-
+  # Constants: from Wilcox 2012
+  Dco2 = 0.5e-5 # cm2/s, assume slowest due to high ionic strength
+  kL = 0.1 # Assume fast mass transfer of typical range
+  # Constants: average of Pocker 1997, Zeman 2007, Stolaroff 2008, Wilcox 2012
+  k.rate = (6.03e3 + 6.745e3 + 8.5e3 + 12.1e3)/4
+  # Constants: Lvov2012
+  Doh = 5.2e-5 # cm2/s
+
+  # Base concentration = OH + HQ- + 2Q--
+  H = 10^-pH
+  OH = kw/H
+  base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
+  
+  # Interface CO2 concentration - assume 90% capture from the inlet
+  CO2.int = 0.1*pCO2.in*kH
+  
+  # Hatta number: reaction rate / mass transfer rate
+  Ha = sqrt(Dco2*base*k.rate)/kL
+  # Instantaneous enhancement factor
+  Ei = 1 + Doh*base / (z*Dco2*CO2.int)
+  
+  # return(c(Ei, Ha / tanh(Ha), Ha))
+  # Check the extreme cases for E to simplify the equations
+  if(Ha > 10*Ei){ # Instantaneous
+    E = Ei
+  } else if(Ha < Ei/2){ # Pseudo-1st order
+    E = Ha / tanh(Ha)
+  } else if(Ha > 3){ # 1st order
+    E = Ha
+  } else{ # No simplification - Solve the root that is less than Ei, as Ei is the upper bound
+    x.guess = c(0.9, 0.95)*Ei
+    for(i in 1:5){ # Newton's method
+      y.guess = (Ha*(Ei - x.guess) / (Ei - 1)) / tanh(Ha*(Ei - x.guess) / (Ei - 1)) - x.guess
+      slp.fit = (y.guess[1] - y.guess[2]) / (x.guess[1] - x.guess[2])
+      E.guess = -y.guess[1]/slp.fit + x.guess[1]
+      x.guess = c(0.975, 1.025)*E.guess
+    }
+    E = E.guess
+  }
+  #### Need to include order of magnitude for reaction rate with sorbent - use acid anhydride formation rate constants as estimates?
+  return(E)
+}
+
+# Calculate the average kinetic driving force over the course of absorption (stage 4 -> 1)
+kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  kH = 3.4e-2; # M/atm
+  # Calculate the pCO2 of the fully reduced species prior to equilibration with the gas
+  out.pCO2 = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  # If the minimum outlet pCO2 is greater than the target capture:
+  # if(out.pCO2 > 0.1*pCO2.in | is.na(out.pCO2)){
+  if(is.na(out.pCO2)){
+    return(0)
+  } else{
+    # Calculate the pH at the start of desorption
+    soln41 = data.frame(xA = max(xA.lim), p.CO2 = out.pCO2)
+    # Solve pH with multiple cores
+    soln41$pH = pH.xA.pCO2.A.k.beta.Na(xA = soln41$xA, P = soln41$p.CO2, 
+                         At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
+
+    # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
+    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    # Flux: delC * kL * E, assume kL = 0.01 cm/s
+    # Unit conversion: L to cm3, cm2 to m2
+    flux = soln41$delC*soln41$E*0.01 * (1/1e3) * (100^2)
+    # return(soln41)
+    return(signif(flux, 5)) # Highest driving force at outlet
+    # return(soln41)
+  }
+}
+
+```
+
+
+To work with GPareto, the two objective functions need to combined, and the input should be a matrix, not a dataframe. I account for this with a wrapper function to simplify the process.
+
+```{r}
+PCET.obj.flu = function(inputs){
+  # Inputs is a matrix where each row is an instance and each column is a specific variable:
+  # From left to right, the columns are:
+  # pka1, err.pka2, log10(A.tot), Na/A.tot
+  # For the functions, the variables should be:
+  # k1, k2, A.tot, Na
+  # The use of log units and ratios helps alleviate resolution issues associated with spanning multiple orders of magnitude
+  # The use of the error of pKa2 removes the correlation between the two variables
+  
+  # Storing the proper information.
+  if(is.matrix(inputs)){
+    dat = data.frame(k1 = 10^-inputs[,1],
+                     k2 = 10^-(inputs[,2]),
+                     A.tot = 10^inputs[,3],
+                     Na = inputs[,5]*10^(inputs[,4]))
+  } else{
+    # The optimization function sometimes stores as a vector instead of as a matrix if it is just a single point
+    dat = data.frame(k1 = 10^-inputs[1],
+                     k2 = 10^-(inputs[2]),
+                     A.tot = 10^inputs[3],
+                     Na = inputs[5]*10^(inputs[4]))
+  }
+  # The following conditions are assumed for PCET from flue gas
+  beta1 = 0; beta2 = 0;
+  pCO2.in = 0.15; pCO2.out = 1;
+  
+  # The functions require substantial computation, so each row has to be processed independently
+  energy = c(); flux = c()
+  for(i in 1:nrow(dat)){
+    energy[i] = Energy.tot(k1 = dat$k1[i], k2 = dat$k2[i], 
+                           beta1 = 0, beta2 = 0, 
+                           A.tot = dat$A.tot[i], Na = dat$Na[i], 
+                           pCO2.in = 0.15, pCO2.out = 1)
+    flux[i] = kinetic.force(k1 = dat$k1[i], k2 = dat$k2[i], 
+                            beta1 = 0, beta2 = 0, 
+                            A.tot = dat$A.tot[i], Na = dat$Na[i], 
+                            pCO2.in = 0.15, pCO2.out = 1)
+  }
+  # Function is not being optimized in this script; just output the results
+  return(c(energy, flux)) 
+}
+
+```
+
+```{r GP Model Generation}
+fill.sample.sign = function(GPar.data, input.name, output.name){
+  # Calculate the GP model to use for the direction of the flux.
+  # Since magnitude is determined using log values, it obscures the direction information 
+  # and incorrectly suggests optimal performance if the flux is very high in the opposite direction.
+  # This model does not need to be particularly accurate, only that it gives the correct direction.
+  # Using the km function, but applies checks on the system to make sure that 
+  # the model uncertainty matches expectations based on GP, ie. it did not
+  # fail to converge.
+  
+  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
+  # of the standard deviation are of the same order of magnitude. This is easiest
+  # checked if the difference between the 10th and 90th percentile
+  # is larger than the difference between the 25th and 75th.
+  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
+  while(log10(pt90/pt10) <= log10(pt75/pt25)){
+    mod.out = km(design = GPar.data[, input.name], response = 1e3*GPar.data[, output.name],
+                 # Result is more accurate with log units, but need to account for negative values
+                 covtyp = 'gauss', # Gaussian uncertainty
+                 optim.method = 'gen', # Genetic algorithm optimization
+                 control = list(trace = FALSE, # Turn off tracking to simplify output
+                                pop.size = 50,
+                                max.generations = 5), # Increase robustness
+                 nugget = 5e-2)
+    
+    # Randomly sample from the search space.
+    pt = 500; i = 1
+    lims = range(GPar.data[,input.name[i]])
+    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
+    for(i in 2:length(input.name)){
+      lims = range(GPar.data[,input.name[i]])
+      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
+    }
+    names(samp) = input.name
+    
+    # Find model output to find the percentile ranks for this iteration
+    res = predict(object = mod.out, newdata = samp, type = 'UK')
+    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
+    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
+  }
+  return(mod.out)
+}
+
+fill.sample.flux = function(GPar.data, input.name, output.name){
+  # Calculate the GP model to use. 
+  # Using the km function, but applies checks on the system to make sure that 
+  # the model uncertainty matches expectations based on GP, ie. it did not
+  # fail to converge.
+  
+  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
+  # of the standard deviation are of the same order of magnitude. This is easiest
+  # checked if the difference between the 10th and 90th percentile
+  # is larger than the difference between the 25th and 75th.
+  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
+  while(log10(pt90/pt10) <= log10(pt75/pt25)){
+    mod.out = km(design = GPar.data[, input.name], response = log10(GPar.data[, output.name]^2),
+                 # Result is more accurate with log units, but need to account for negative values
+                 covtyp = 'gauss', # Gaussian uncertainty
+                 optim.method = 'gen', # Genetic algorithm optimization
+                 control = list(trace = FALSE, # Turn off tracking to simplify output
+                                pop.size = 50,
+                                max.generations = 20), # Increase robustness
+                 nugget = 5e-2)
+    
+    # Randomly sample 1000 points from the search space.
+    pt = 1000; i = 1
+    lims = range(GPar.data[,input.name[i]])
+    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
+    for(i in 2:length(input.name)){
+      lims = range(GPar.data[,input.name[i]])
+      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
+    }
+    names(samp) = input.name
+    
+    # Find model output to find the percentile ranks for this iteration
+    res = predict(object = mod.out, newdata = samp, type = 'UK')
+    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
+    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
+  }
+  return(mod.out)
+}
+
+fill.sample.ener = function(GPar.data, input.name, output.name){
+  # Calculate the GP model to use. 
+  # Using the km function, but applies checks on the system to make sure that 
+  # the model uncertainty matches expectations based on GP, ie. it did not
+  # fail to converge.
+  
+  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
+  # of the standard deviation are of the same order of magnitude. This is easiest
+  # checked if the difference between the 10th and 90th percentile
+  # is larger than the difference between the 25th and 75th.
+  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
+  while(log10(pt90/pt10) <= log10(pt75/pt25)){
+    mod.out = km(design = GPar.data[, input.name], response = log10(GPar.data[, output.name]), 
+                 covtyp = 'gauss', # Gaussian uncertainty
+                 # optim.method = 'gen', # Genetic algorithm optimization
+                 control = list(trace = FALSE, # Turn off tracking to simplify output
+                                pop.size = 50,
+                                max.generations = 20), # Increase robustness
+                 nugget = 5e-2, # Avoid eigenvalues of 0
+                 )
+    
+    # Randomly sample 1000 points from the search space.
+    pt = 1000; i = 1
+    lims = range(GPar.data[,input.name[i]])
+    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
+    for(i in 2:length(input.name)){
+      lims = range(GPar.data[,input.name[i]])
+      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
+    }
+    names(samp) = input.name
+    
+    # Find model output to find the percentile ranks for this iteration
+    res = predict(object = mod.out, newdata = samp, type = 'UK')
+    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
+    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
+  }
+  return(mod.out)
+}
+
+
+```
+
+
+```{r Optimal Capture Marginals: Setup}
+# Load dataset
+GPar.all = read.csv(file = 'GPar_AcidBase_data.csv')
+GPar.front = read.csv(file = 'GPar_AcidBase_fnt.csv')
+# Remove unneeded variables
+GPar.all = GPar.all[,!(names(GPar.all) %in% c('X', 'X.1'))]
+GPar.front = GPar.front[,!(names(GPar.front) %in% c('X', 'X.1'))]
+
+# Natural variables conversion
+GPar.nat = GPar.all
+GPar.nat$pka2 = GPar.nat$pka1 + GPar.nat$pka2
+GPar.nat$Na.A = GPar.nat$logA + GPar.nat$Na.A
+
+# For acid/base, low additions (<10^-7) are effectively no additions
+GPar.nat$typ.none = GPar.nat$typ
+GPar.nat$typ.none[GPar.nat$Na.A < -7] = 'None'
+
+sz = 2
+ggplot(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0)) +
+  geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+  geom_point(mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), size = sz) +
+  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing'), color = 'pH Correction', shape = 'pH Correction') +
+  theme_classic() + theme(legend.position = c(0.9, 0.9), 
+                          legend.box.background = element_rect(color = 'black', linetype = 1))
+
+# Regions of interest
+# Region 1: acceptable results: < 40 kJ/mol, > 10% of the maximum flux
+region1 = data.frame(min.flux = 0.1*max(GPar.front$Flux.mol.m2s),
+                     max.flux = max(GPar.front$Flux.mol.m2s),
+                     min.ener = min(GPar.front$Energy.kJ.mol), max.ener = 40)
+# Region 2: the right-hand side of high flux but moderate energy, i.e. flux > 0.23 mmol/m2s
+region2 = data.frame(min.flux = 0.23e-3, max.flux = max(GPar.front$Flux.mol.m2s),
+                     min.ener = min(filter(GPar.front, Flux.mol.m2s > 0.23e-3)$Energy.kJ.mol),
+                     max.ener = 40)
+# Region 3: the bottom section of low energy but moderate flux
+region3 = data.frame(min.flux = 0.1*max(GPar.front$Flux.mol.m2s),
+                     max.flux = 0.23e-3, min.ener = min(GPar.front$Energy.kJ.mol),
+                     max.ener = mean(range(filter(GPar.front, Flux.mol.m2s < 0.23e-3)$Energy.kJ.mol)))
+# Plotting
+ggplot() +
+  geom_rect(region1, 
+            mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
+            fill = 'green', linetype = 1, color = 'black', alpha = 0.5) +
+  geom_line(GPar.front, 
+            mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0),
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), 
+             size = sz) +
+  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing, Generally Acceptable Performance'), 
+       color = 'pH Correction', shape = 'pH Correction') +
+  theme_classic() + theme(legend.position = c(0.9, 0.9), 
+                          legend.box.background = element_rect(color = 'black', linetype = 1))
+ggplot() +
+  geom_rect(rbind(region2, region3), 
+            mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
+            fill = 'green', linetype = 1, color = 'black', alpha = 0.5) +
+  geom_line(GPar.front, 
+            mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0),
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), 
+             size = sz) +
+  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing, Optimal Sub-regions'), 
+       color = 'pH Correction', shape = 'pH Correction') +
+  theme_classic() + theme(legend.position = c(0.9, 0.9), 
+                          legend.box.background = element_rect(color = 'black', linetype = 1))
+
+
+GPar.nat = GPar.nat[,!(names(GPar.nat) %in% c('typ.none'))]
+
+# Need to use the acid/base conditions as numeric variable, not categorical variable for the GP
+typ = rep(0, nrow(GPar.all))
+typ[GPar.all$typ == '+Acid'] = -1
+typ[GPar.all$typ == '+Base'] = +1
+GPar.nat$typ = typ
+
+```
+
+There is some inconsistency between runs associated with slightly different GP models.
+To get an accurate reading, multiple models will be generated, and each tested.
+The mean probability and mean variance will be used as the metrics for importance ranking, as well as for determining suggested ranges.
+The repeated testing should minimize the run-to-run variance in the estimations.
+
+Since multiple models are being generated, not all points need to be used in the model construction.
+The fraction of datapoints to include should be at minimum a quarter of the data points to ensure a sufficiently trained model.
+
+```{r GP Models to test}
+# Generate multiple models for each output variable
+nmod = 5
+mod.flux = list(); mod.ener = list()
+for(i in 1:nmod){
+  nsamp = max(ceiling(nrow(GPar.nat)/(nmod - 2)), ceiling(nrow(GPar.nat)/4))
+  GPar.samp = GPar.nat[sample(x = 1:nrow(GPar.nat), size = nsamp), ]
+  mod = fill.sample.flux(GPar.data = GPar.samp, input.name = c('pka1', 'pka2', 'logA', 'Na.A', 'typ'),
+                             output.name = 'Flux.mol.m2s')
+  mod.flux = append(mod.flux, mod)
+  mod = fill.sample.ener(GPar.data = GPar.samp, 
+                              input.name = c('pka1', 'pka2', 'logA', 'Na.A', 'typ'),
+                              output.name = 'Energy.kJ.mol')
+  mod.ener = append(mod.ener, mod)
+}
+
+mod.sign = fill.sample.sign(GPar.data = GPar.samp, input.name = c('pka1', 'pka2', 'logA', 'Na.A', 'typ'),
+                           output.name = 'Flux.mol.m2s')
+
+rm(nmod, mod, nsamp, GPar.samp)
+
+```
+
+# Importance Rankings
+
+Assessment of the importance ranking of the 5 variables (pka1, pka2, concentration of quinone, concentration of pH correction species, and decision of acid or base)
+
+For the importance ranking, the most importance has the lowest total variance, normalized by the range of the mean probabilities (i.e. high variance with low means will be least important).
+This area is normalized based on the resolution such that the continuous variables can be compared to the categorical variables.
+
+The ranking can vary based on the specific region of interest, so each region (generally acceptable, high flux, and low energy) will be assessed separately.
+Uncertainty estimate of the ranking uses the standard propagation of uncertainty for a function defined by $f(x) = 1/x$ where $x$ has known variance ($s_x$).
+For ease of repeatability, writing a function.
+
+```{r Importance Ranking Function}
+import.rank = function(E.cutof, F.cutof, mod.flux, mod.ener){
+  # Cutoff values should be converted based on the model conversions to log units
+  E.cutof = log10(E.cutof)
+  F.cutof = log10(F.cutof^2)
+  # Constants
+  resolution = 50; MCsamp = 1000
+  pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+  logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  lower = 0.25; upper = 0.75
+  
+  # Dataframe storage
+  post.optim = data.frame(pka1 = seq(from = pka1.rng[1], to = pka1.rng[2], length.out = resolution),
+                          pka2 = seq(from = pka2.rng[1] + pka1.rng[1], to = pka2.rng[2] + pka1.rng[2], 
+                                     length.out = resolution),
+                          logA = seq(from = logA.rng[1], to = logA.rng[2], length.out = resolution),
+                          Na.A = seq(from = Na.A.rng[1] + logA.rng[1], to = Na.A.rng[2] + logA.rng[2], 
+                                     length.out = resolution),
+                          p.pka1 = NaN, p.pka2 = NaN, p.logA = NaN, p.Na.A = NaN, # Probability acceptance median
+                          s.pka1 = NaN, s.pka2 = NaN, s.logA = NaN, s.Na.A = NaN, # variance for importance ranking
+                          sd.pka1 = NaN, sd.pka2 = NaN, sd.logA = NaN, sd.Na.A = NaN) # importance ranking uncertainty
+  
+  # Monte Carlo loop
+  for(i in 1:resolution){
+    # pka1
+    fill.frame = data.frame(pka1 = post.optim$pka1[i],
+                            pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]) + post.optim$pka1[i],
+                            logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                            typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
+    fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); s = c();
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      s[j] = sd(p.accept)
+    }
+    post.optim$p.pka1[i] = mean(p);  post.optim$s.pka1[i] = mean(s); post.optim$sd.pka1[i] = sd(s)
+
+    # pka2
+    # Define the min/max
+    pka1.testrng = c(max(pka1.rng[1], post.optim$pka2[i] - pka2.rng[2]),
+                     min(pka1.rng[2], post.optim$pka2[i] - pka2.rng[1]))
+    
+    fill.frame = data.frame(pka2 = post.optim$pka2[i],
+                            pka1 = runif(n = MCsamp, min = pka1.testrng[1], max = pka1.testrng[2]),
+                            logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                            typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
+    fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); s = c();
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      s[j] = sd(p.accept)
+    }
+    post.optim$p.pka2[i] = mean(p);  post.optim$s.pka2[i] = mean(s); post.optim$sd.pka2[i] = sd(s)
+
+    # log Quinone
+    fill.frame = data.frame(logA = post.optim$logA[i],
+                            pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                            typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
+    fill.frame$pka2 = fill.frame$pka1 + fill.frame$pka2
+    fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); s = c();
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      s[j] = sd(p.accept)
+    }
+    post.optim$p.logA[i] = mean(p);  post.optim$s.logA[i] = mean(s); post.optim$sd.logA[i] = sd(s)
+
+    # Na/A
+    logA.testrng = c(max(logA.rng[1], post.optim$Na.A[i] - Na.A.rng[2]),
+                     min(logA.rng[2], post.optim$Na.A[i] - Na.A.rng[1]))
+  
+    fill.frame = data.frame(Na.A = post.optim$Na.A[i],
+                            pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
+                            logA = runif(n = MCsamp, min = logA.testrng[1], max = logA.testrng[2]),
+                            typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
+    fill.frame$pka2 = fill.frame$pka1 + fill.frame$pka2
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); s = c();
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      s[j] = sd(p.accept)
+    }
+    post.optim$p.Na.A[i] = mean(p);  post.optim$s.Na.A[i] = mean(s); post.optim$sd.Na.A[i] = sd(s)
+  }
+  
+  # Acid/base determination
+  typ = c(-1, +1); post.opt.typ = data.frame()
+  for(i in typ){
+    fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
+                            logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                            typ = -1)
+    fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); s = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept);    s[j] = sd(p.accept)
+    }
+    post.opt.typ = rbind(post.opt.typ, data.frame(typ = i, p = mean(p), s = mean(s), sd = sd(s)))
+  }
+  
+  # Calculating the rankings
+  # Higher variance = other variables are more important (inverse of variance = more important control variable)
+  # Greater range of probabilities = more important
+  import = data.frame(rng = c(diff(range(post.optim$p.pka1)), diff(range(post.optim$p.pka2)),
+                              diff(range(post.optim$p.logA)), diff(range(post.optim$p.Na.A))),
+                      area = c(sum(post.optim$s.pka1), sum(post.optim$s.pka2),
+                               sum(post.optim$s.logA), sum(post.optim$s.Na.A)),
+                      var = c('pka1', 'pka2', 'logA', 'Na.A'),
+                      sd = c(sum(post.optim$sd.pka1), sum(post.optim$sd.pka2),
+                             sum(post.optim$sd.logA), sum(post.optim$sd.Na.A)))
+  import$rank = import$rng/import$area
+  import$uncert = import$rank*import$sd/import$area
+  
+  import.all = data.frame(rng = diff(range(post.opt.typ$p)),
+                          area = sum(post.opt.typ$s), var = 'Base',
+                          sd = sum(post.opt.typ$sd))
+  import.all$rank = import.all$rng/(import.all$area * nrow(post.optim) / nrow(post.opt.typ))
+  import.all$uncert = import.all$rank*import.all$sd/import.all$area
+  import.all = rbind(import, import.all)  
+  return(import.all)
+}
+
+```
+
+```{r Importance Ranking results}
+# Run functions
+import.reg1 = import.rank(E.cutof = region1$max.ener, F.cutof = region1$min.flux,
+                          mod.flux = mod.flux, mod.ener = mod.ener)
+import.reg2 = import.rank(E.cutof = region2$max.ener, F.cutof = region2$min.flux,
+                          mod.flux = mod.flux, mod.ener = mod.ener)
+import.reg3 = import.rank(E.cutof = region3$max.ener, F.cutof = region3$min.flux,
+                          mod.flux = mod.flux, mod.ener = mod.ener)
+
+# Plot results
+ggplot(import.reg1[order(import.reg1$rank, decreasing = TRUE),]) +
+  geom_col(mapping = aes(x = 1:nrow(import.reg1), y = rank/max(rank), fill = var)) +
+  geom_errorbar(mapping = aes(x = 1:nrow(import.reg1), y = rank/max(rank), 
+                              ymin = (rank-uncert)/max(rank), ymax = (rank+uncert)/max(rank)), width = 0.5) +
+  labs(x = '', y = '', color = '', subtitle = 'Generally Acceptable Performance: Feature Importance') +
+  scale_fill_discrete(labels = c('pka1' = expression('p'*italic(K)['a,1']),
+    'pka2' = expression('p'*italic(K)['a,2']), 'logA' = '{Quinone}',
+    'Na.A' = '{NaOH or HCl}', 'Base' = 'Acid/Base'),
+    breaks = import.reg1$var[order(import.reg1$rank, decreasing = TRUE)], name = '') +
+  scale_x_discrete(labels = c()) +
+  scale_y_continuous(breaks = c(0, 1), expand = expansion(mult = c(0, .1)),
+                     labels = c('Least', 'Most'), name = 'Importance') +
+  theme_classic() +
+  theme(legend.position = c(0.9, 0.8))
+
+ggplot(import.reg2[order(import.reg2$rank, decreasing = TRUE),]) +
+  geom_col(mapping = aes(x = 1:nrow(import.reg2), y = rank/max(rank), fill = var)) +
+  geom_errorbar(mapping = aes(x = 1:nrow(import.reg2), y = rank/max(rank), 
+                              ymin = (rank-uncert)/max(rank), ymax = (rank+uncert)/max(rank)), width = 0.5) +
+  labs(x = '', y = '', color = '', subtitle = 'High Flux: Feature Importance') +
+  scale_fill_discrete(labels = c('pka1' = expression('p'*italic(K)['a,1']),
+    'pka2' = expression('p'*italic(K)['a,2']), 'logA' = '{Quinone}',
+    'Na.A' = '{NaOH or HCl}', 'Base' = 'Acid/Base'),
+    breaks = import.reg2$var[order(import.reg2$rank, decreasing = TRUE)], name = '') +
+  scale_x_discrete(labels = c()) +
+  scale_y_continuous(breaks = c(0, 1), expand = expansion(mult = c(0, .1)),
+                     labels = c('Least', 'Most'), name = 'Importance') +
+  theme_classic() +
+  theme(legend.position = c(0.9, 0.8))
+
+ggplot(import.reg3[order(import.reg3$rank, decreasing = TRUE),]) +
+  geom_col(mapping = aes(x = 1:nrow(import.reg3), y = rank/max(rank), fill = var)) +
+  geom_errorbar(mapping = aes(x = 1:nrow(import.reg3), y = rank/max(rank), 
+                              ymin = (rank-uncert)/max(rank), ymax = (rank+uncert)/max(rank)), width = 0.5) +
+  labs(x = '', y = '', color = '', subtitle = 'Low Energy: Feature Importance') +
+  scale_fill_discrete(labels = c('pka1' = expression('p'*italic(K)['a,1']),
+    'pka2' = expression('p'*italic(K)['a,2']), 'logA' = '{Quinone}',
+    'Na.A' = '{NaOH or HCl}', 'Base' = 'Acid/Base'),
+    breaks = import.reg3$var[order(import.reg3$rank, decreasing = TRUE)], name = '') +
+  scale_x_discrete(labels = c()) +
+  scale_y_continuous(breaks = c(0, 1), expand = expansion(mult = c(0, .1)),
+                     labels = c('Least', 'Most'), name = 'Importance') +
+  theme_classic() +
+  theme(legend.position = c(0.9, 0.8))
+
+```
+
+The importance ranking is generally
+* pKa2
+* pKa1
+* Quinone concentration
+* Acid/Base concentration
+* Acid/Base choice
+
+The quinone concentration is slightly more important than the first pKa when favoring high flux.
+
+Importance ranking suggests that the quinone characteristics (pKas and, to a lesser extent, the solubility limit) are more important than the operating condition decisions (concentrations of quinone and pH correction compound, as well as the decision of acid or base) regardless of the selection criteria.
+The acid/base decision has very low importance largely because the difference between acidic and basic conditions is small (about 2% probability difference between picking acid vs base).
+
+
+# Suggested ranges
+
+Since all selection criteria have the same ordering of variables, it is possible to make a function that will output the suggested ranges given the criteria.
+For this investigation, the concern is in determining the optimal conditions for selecting the correct quinone, then the conditions for that specific quinone.
+To ensure that a quinone is likely to exist, a range of pKas and concentrations will be given based on where the peak probability is located.
+
+Preliminary tests of these ranges suggest that, while there is some noise from the Monte Carlo sampling, the optimal regions are continuous, and thus can be described with a lower and upper bound.
+Additionally, the peak value will be reported.
+There will be 2 suggested ranges: a weak and a strong suggestion.
+The weak suggestion sets the cutoff probability lower than that of the strong suggestion, leading to a wider range for finding a feasible compound.
+The strong range sets the cutoff at 75% of the peak, while the weak range sets the cutoff at 50% of the peak.
+Marginals are created assuming less important variables are unknown (can be any value in the range) while the more important variables fit the suggested range.
+The order is assumed to be pKa2 > pKa1 > {quinone} > {NaOH/HCl} for simplicity.
+Since quinone concentration and pKa1 are largely independent, switching this ordering for the high flux case is not expected to have a large impact.
+
+
+```{r Suggested Ranges: Functions}
+suggest.pka2 = function(E.cutof, F.cutof, mod.ener, mod.flux, resolution, MCsamp){
+  # Constants
+  # resolution = 100; MCsamp = 600
+  pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+  logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  
+  # Optimal range for pKa2
+  range.pka2 = data.frame(pka2 = seq(from = pka1.rng[1] + pka2.rng[1], 
+                                     to = pka1.rng[2] + pka2.rng[2], 
+                                     length.out = resolution),
+                          p.pka2 = NaN, p.a = NaN, p.b = NaN)
+  # Sample for each point in the range
+  for(i in 1:resolution){
+    # pka2
+    # With pKa2 held constant, pka1 has a truncated range
+    pka1.rng.test = c(max(c(pka1.rng[1], range.pka2$pka2[i] - pka2.rng[2])),
+                      min(c(pka1.rng[2], range.pka2$pka2[i] - pka2.rng[1])) )
+    fill.frame = data.frame(pka2 = range.pka2$pka2[i],
+                            pka1 = runif(n = MCsamp, min = pka1.rng.test[1], max = pka1.rng.test[2]),
+                            logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                            typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2)))
+    fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); p.a = c(); p.b = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      # Acid and base metrics
+      p.a[j] = mean(p.accept[fill.frame$typ == -1])
+      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+    }
+    range.pka2$p.pka2[i] = mean(p)
+    range.pka2$p.a[i] = mean(p.a)
+    range.pka2$p.b[i] = mean(p.b)
+  }
+  # Suggested ranges
+  pka2.wk = filter(range.pka2, p.pka2 > 0.5*diff(range(p.pka2))+min(p.pka2))
+  pka2.st = filter(range.pka2, p.pka2 > 0.75*diff(range(p.pka2))+min(p.pka2))
+  pka2.rng.wk = range(pka2.wk$pka2)
+  pka2.rng.st = range(pka2.st$pka2)
+  # Peak values for acid and base
+  pka2.pk.wk.a = filter(pka2.wk, p.a == max(p.a))$pka2
+  pka2.pk.wk.b = filter(pka2.wk, p.b == max(p.b))$pka2
+  pka2.pk.st.a = filter(pka2.st, p.a == max(p.a))$pka2
+  pka2.pk.st.b = filter(pka2.st, p.b == max(p.b))$pka2
+
+  # Also include the median as a possible option for the peak
+  return(data.frame(wk = pka2.rng.wk, st = pka2.rng.st, 
+                    pk.wk = c(pka2.pk.wk.a, pka2.pk.wk.b), pk.st = c(pka2.pk.st.a, pka2.pk.st.b)))
+}
+
+suggest.pka1 = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, resolution, MCsamp){
+  # Include suggested ranges for more important variables
+  pka2.rng.wk = range.pka2$wk; pka2.rng.st = range.pka2$st
+  # Set up the marginalization, higher resolution than the single variable marginals for plotting
+  # resolution = 100; MCsamp = 600
+  pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5); logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+
+  # Due to the relationship between pKa1 and pKa2, the range of pKa1 is already partially restricted.
+  range.pka1.st = data.frame(pka1 = seq(from = max(min(pka1.rng), min(pka2.rng.st) - pka2.rng[2]),
+                                        to = min(max(pka1.rng), max(pka2.rng.st) - pka2.rng[1]),
+                                        length.out = resolution),
+                             p.pka1 = NaN, p.a = NaN, p.b = NaN)
+  range.pka1.wk = data.frame(pka1 = seq(from = max(min(pka1.rng), min(pka2.rng.wk) - pka2.rng[2]),
+                                        to = min(max(pka1.rng), max(pka2.rng.wk) - pka2.rng[1]),
+                                        length.out = resolution),
+                             p.pka1 = NaN, p.a = NaN, p.b = NaN)
+
+  for(i in 1:resolution){
+    # Strong suggestion
+    pka2.testrng = c(max(min(pka2.rng.st), range.pka1.st$pka1[i] + min(pka2.rng)),
+                     min(max(pka2.rng.st), range.pka1.st$pka1[i] + max(pka2.rng)))
+
+    fill.frame = data.frame(pka1 = range.pka1.st$pka1[i],
+                            pka2 = runif(n = MCsamp, min = pka2.testrng[1], max = pka2.testrng[2]),
+                            logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                            typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2)))
+    fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); p.a = c(); p.b = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p = mean(p.accept)
+      # Acid and base metrics
+      p.a[j] = mean(p.accept[fill.frame$typ == -1])
+      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+    }
+    range.pka1.st$p.pka1[i] = mean(p)
+    range.pka1.st$p.a[i] = mean(p.a)
+    range.pka1.st$p.b[i] = mean(p.b)
+
+    # Weak suggestion
+    pka2.testrng = c(max(min(pka2.rng.wk), range.pka1.wk$pka1[i] + min(pka2.rng)),
+                     min(max(pka2.rng.wk), range.pka1.wk$pka1[i] + max(pka2.rng)))
+
+    fill.frame = data.frame(pka1 = range.pka1.wk$pka1[i],
+                            pka2 = runif(n = MCsamp, min = pka2.testrng[1], max = pka2.testrng[2]),
+                            logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                            typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2)))
+    fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p.accept = c(); p.a = c(); p.b = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p = mean(p.accept)
+      # Acid and base metrics
+      p.a[j] = mean(p.accept[fill.frame$typ == -1])
+      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+    }
+    range.pka1.wk$p.pka1[i] = mean(p)
+    range.pka1.wk$p.a[i] = mean(p.a)
+    range.pka1.wk$p.b[i] = mean(p.b)
+  }
+  rm(p, p.a, p.b)
+  # Suggestions: find the range so there is less to filter through later
+  pka1.wk = filter(range.pka1.wk, p.pka1 > 0.5*diff(range(p.pka1)) +min(p.pka1))
+  pka1.st = filter(range.pka1.st, p.pka1 > 0.75*diff(range(p.pka1))+min(p.pka1))
+  pka1.rng.wk = range(pka1.wk$pka1)
+  pka1.rng.st = range(pka1.st$pka1)
+  # Peak values.
+  # pka1.pk.wk = filter(range.pka1.wk, pka1 >= range.pka2$pk.wk[1] - max(pka2.rng),
+  #                       pka1 <= range.pka2$pk.wk[1] - min(pka2.rng))
+  # pka1.pk.wk.a = filter(pka1.pk.wk, p.a == max(p.a))$pka1
+  # pka1.pk.wk = filter(range.pka1.wk, pka1 >= range.pka2$pk.wk[2] - max(pka2.rng),
+  #                       pka1 <= range.pka2$pk.wk[2] - min(pka2.rng))
+  # pka1.pk.wk.b = filter(pka1.pk.wk, p.b == max(p.b))$pka1
+  # 
+  # pka1.pk.st = filter(range.pka1.st, pka1 >= range.pka2$pk.st[1] - max(pka2.rng),
+  #                       pka1 <= range.pka2$pk.st[1] - min(pka2.rng))
+  # pka1.pk.st.a = filter(pka1.pk.st, p.a == max(p.a))$pka1
+  # pka1.pk.st = filter(range.pka1.st, pka1 >= range.pka2$pk.st[2] - max(pka2.rng),
+  #                       pka1 <= range.pka2$pk.st[2] - min(pka2.rng))
+  # pka1.pk.st.b = filter(pka1.pk.st, p.b == max(p.b))$pka1
+  pka1.pk.wk.a = filter(pka1.wk, p.a == max(p.a))$pka1
+  pka1.pk.wk.b = filter(pka1.wk, p.b == max(p.b))$pka1
+  
+  pka1.pk.st.a = filter(pka1.st, p.a == max(p.a))$pka1
+  pka1.pk.st.b = filter(pka1.st, p.b == max(p.b))$pka1
+  return(data.frame(wk = pka1.rng.wk, st = pka1.rng.st,
+                    pk.wk = c(pka1.pk.wk.a, pka1.pk.wk.b), pk.st = c(pka1.pk.st.a, pka1.pk.st.b)))
+}
+
+suggest.logA = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.pka1, resolution, MCsamp){
+  # Include suggested ranges for more important variables
+  pka2.rng.wk = range.pka2$wk; pka2.rng.st = range.pka2$st
+  pka1.rng.wk = range.pka1$wk; pka1.rng.st = range.pka1$st
+  # Set up the marginalization, higher resolution than the single variable marginals for plotting
+  # resolution = 100; MCsamp = 600
+  pka2.rng = c(0, 5.5); logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  
+  range.logA = data.frame(logA = seq(from = min(logA.rng), to = max(logA.rng), length.out = resolution),
+                          p.logA.wk = NaN, p.logA.st = NaN, 
+                          p.a.wk = NaN, p.b.wk = NaN, p.a.st = NaN, p.b.st = NaN)
+  
+  # For random smapling, Constrain pka1 first, then pka2
+  for(i in 1:resolution){
+    # Strong suggestion
+    fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.st[1], max = pka1.rng.st[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.st[1], max = pka2.rng.st[2]),
+                            logA = range.logA$logA[i],
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+    # Account for the fact that the maximum pKa2 range is higher than the pKa1 range
+    fill.frame = filter(fill.frame, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+    while(nrow(fill.frame) < MCsamp){
+      fill.add = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.st[1], max = pka1.rng.st[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.st[1], max = pka2.rng.st[2]),
+                            logA = range.logA$logA[i],
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+      fill.add = filter(fill.add, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+      fill.frame = rbind(fill.frame, fill.add)
+    }
+    fill.frame = fill.frame[1:MCsamp, ]
+    fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
+    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); p.a = c(); p.b = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      # Acid and base metrics
+      p.a[j] = mean(p.accept[fill.frame$typ == -1])
+      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+    }
+    range.logA$p.logA.st[i] = mean(p)
+    range.logA$p.a.st[i] = mean(p.a)
+    range.logA$p.b.st[i] = mean(p.b)
+    
+    # Weak suggestion
+    fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.wk[1], max = pka1.rng.wk[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.wk[1], max = pka2.rng.wk[2]),
+                            logA = range.logA$logA[i],
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+    # Account for the fact that the maximum pKa2 range is higher than the pKa1 range
+    fill.frame = filter(fill.frame, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+    while(nrow(fill.frame) < MCsamp){
+      fill.add = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.wk[1], max = pka1.rng.wk[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.wk[1], max = pka2.rng.wk[2]),
+                            logA = range.logA$logA[i],
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+      fill.add = filter(fill.add, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+      fill.frame = rbind(fill.frame, fill.add)
+    }
+    fill.frame = fill.frame[1:MCsamp, ]
+    fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
+    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); p.a = c(); p.b = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      # Acid and base metrics
+      p.a[j] = mean(p.accept[fill.frame$typ == -1])
+      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+    }
+    range.logA$p.logA.wk[i] = mean(p)
+    range.logA$p.a.wk[i] = mean(p.a)
+    range.logA$p.b.wk[i] = mean(p.b)
+  }
+  # Suggestions
+  logA.wk = filter(range.logA, p.logA.wk > 0.5*diff(range(p.logA.wk)) +min(p.logA.wk))
+  logA.st = filter(range.logA, p.logA.st > 0.75*diff(range(p.logA.st))+min(p.logA.st))
+  logA.rng.wk = range(logA.wk$logA)
+  logA.rng.st = range(logA.st$logA)
+  # Peaks
+  logA.pk.wk.a = filter(logA.wk, p.a.wk == max(p.a.wk))$logA
+  logA.pk.wk.b = filter(logA.wk, p.b.wk == max(p.b.wk))$logA
+  logA.pk.st.a = filter(logA.st, p.a.st == max(p.a.st))$logA
+  logA.pk.st.b = filter(logA.st, p.b.st == max(p.b.st))$logA
+  
+  return(data.frame(wk = logA.rng.wk, st = logA.rng.st, 
+                    pk.wk = c(logA.pk.wk.a, logA.pk.wk.b), pk.st = c(logA.pk.st.a, logA.pk.st.b)))
+}
+
+suggest.Na.A = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.pka1, range.logA, resolution, MCsamp){
+  # Include suggested ranges for more important variables
+  pka2.rng.wk = range.pka2$wk; pka2.rng.st = range.pka2$st
+  pka1.rng.wk = range.pka1$wk; pka1.rng.st = range.pka1$st
+  logA.rng.wk = range.logA$wk; logA.rng.st = range.logA$st
+  # Set up the marginalization, higher resolution than the single variable marginals for plotting
+  # resolution = 100; MCsamp = 600
+  pka2.rng = c(0, 5.5); logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+
+  range.Na.A = data.frame(Na.A.wk = seq(from = min(Na.A.rng) + min(logA.rng.wk),
+                                        to = max(Na.A.rng) + max(logA.rng.wk), length.out = resolution),
+                          Na.A.st = seq(from = min(Na.A.rng) + min(logA.rng.st),
+                                        to = max(Na.A.rng) + max(logA.rng.st), length.out = resolution),
+                          p.Na.A.wk = NaN, p.Na.A.st = NaN,
+                          p.Na.A.a.wk = NaN, p.Na.A.a.st = NaN,
+                          p.Na.A.b.wk = NaN, p.Na.A.b.st = NaN)
+
+  # For random sampling, Constrain pka1 first, then pka2, then logA
+  for(i in 1:resolution){
+    # Strong suggestion
+    logA.rng.test = c(max(logA.rng[1], range.Na.A$Na.A.st[i] - Na.A.rng[2]),
+                      min(logA.rng[2], range.Na.A$Na.A.st[i] - Na.A.rng[1]) )
+    fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.st[1], max = pka1.rng.st[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.st[1], max = pka2.rng.st[2]),
+                            logA = runif(n = MCsamp, min = min(logA.rng.test), max = max(logA.rng.test)),
+                            Na.A = range.Na.A$Na.A.st[i])
+    # Account for the fact that the maximum pKa2 range is higher than the pKa1 range
+    fill.frame = filter(fill.frame, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+    while(nrow(fill.frame) < MCsamp){
+      fill.add = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.st[1], max = pka1.rng.st[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.st[1], max = pka2.rng.st[2]),
+                            logA = runif(n = MCsamp, min = min(logA.rng.test), max = max(logA.rng.test)),
+                            Na.A = range.Na.A$Na.A.st[i])
+      fill.add = filter(fill.add, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+      fill.frame = rbind(fill.frame, fill.add)
+    }
+    fill.frame = fill.frame[1:MCsamp, ]
+    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); p.a = c(); p.b = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      # Acid and base metrics
+      p.a[j] = mean(p.accept[fill.frame$typ == -1])
+      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+    }
+    range.Na.A$p.Na.A.st[i] = mean(p)
+    range.Na.A$p.Na.A.a.st[i] = mean(p.a)
+    range.Na.A$p.Na.A.b.st[i] = mean(p.b)
+    # Weak suggestion
+    logA.rng.test = c(max(logA.rng[1], range.Na.A$Na.A.wk[i] - Na.A.rng[2]),
+                      min(logA.rng[2], range.Na.A$Na.A.wk[i] - Na.A.rng[1]) )
+    fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.wk[1], max = pka1.rng.wk[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.wk[1], max = pka2.rng.wk[2]),
+                            logA = runif(n = MCsamp, min = min(logA.rng.test), max = max(logA.rng.test)),
+                            Na.A = range.Na.A$Na.A.wk[i])
+    # Account for the fact that the maximum pKa2 range is higher than the pKa1 range
+    fill.frame = filter(fill.frame, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+    while(nrow(fill.frame) < MCsamp){
+      fill.add = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng.wk[1], max = pka1.rng.wk[2]),
+                            pka2 = runif(n = MCsamp, min = pka2.rng.wk[1], max = pka2.rng.wk[2]),
+                            logA = runif(n = MCsamp, min = min(logA.rng.test), max = max(logA.rng.test)),
+                            Na.A = range.Na.A$Na.A.wk[i])
+      fill.add = filter(fill.add, pka2 - pka1 < pka2.rng[2], pka2 - pka1 > pka2.rng[1])
+      fill.frame = rbind(fill.frame, fill.add)
+    }
+    fill.frame = fill.frame[1:MCsamp, ]
+    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
+    set.flux = sample(1:length(mod.flux), length(mod.flux))
+    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    p = c(); p.a = c(); p.b = c()
+    for(j in 1:length(set.flux)){
+      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      # If the flux is negative, then the probability of accepting the flux criteria is 0
+      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
+      p.accept[res.sign$mean < 0] = 0
+      p[j] = mean(p.accept)
+      # Acid and base metrics
+      p.a[j] = mean(p.accept[fill.frame$typ == -1])
+      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+    }
+    range.Na.A$p.Na.A.wk[i] = mean(p)
+    range.Na.A$p.Na.A.a.wk[i] = mean(p.a)
+    range.Na.A$p.Na.A.b.wk[i] = mean(p.b)
+  }
+  # Suggested ranges
+  Na.A.wk = filter(range.Na.A, p.Na.A.wk > 0.5*diff(range(p.Na.A.wk)) +min(p.Na.A.wk))
+  Na.A.st = filter(range.Na.A, p.Na.A.st > 0.75*diff(range(p.Na.A.st))+min(p.Na.A.st))
+  Na.A.rng.wk = range(Na.A.wk$Na.A.wk)
+  Na.A.rng.st = range(Na.A.st$Na.A.st)
+  # Peaks
+  Na.A.pk.wk = filter(Na.A.wk, p.Na.A.wk == max(p.Na.A.wk))$Na.A.wk
+  Na.A.pk.st = filter(Na.A.st, p.Na.A.st == max(p.Na.A.st))$Na.A.st
+  
+  # Peak values
+  Na.A.pk.wk.a = filter(Na.A.wk, p.Na.A.a.wk == max(p.Na.A.a.wk))$Na.A.wk
+  Na.A.pk.wk.b = filter(Na.A.wk, p.Na.A.b.wk == max(p.Na.A.b.wk))$Na.A.wk
+  Na.A.pk.st.a = filter(Na.A.st, p.Na.A.a.st == max(p.Na.A.a.st))$Na.A.st
+  Na.A.pk.st.b = filter(Na.A.st, p.Na.A.b.st == max(p.Na.A.b.st))$Na.A.st
+
+  # Na.A.pk.wk = filter(range.Na.A, Na.A.wk >= range.logA$pk.wk[1] + min(Na.A.rng),
+  #                       Na.A.wk <= range.logA$pk.wk[1] + max(Na.A.rng))
+  # Na.A.pk.wk.a = filter(Na.A.pk.wk, p.Na.A.a.wk == max(p.Na.A.a.wk))$Na.A.wk
+  # Na.A.pk.wk = filter(range.Na.A, Na.A.wk >= range.logA$pk.wk[2] + min(Na.A.rng),
+  #                       Na.A.wk <= range.logA$pk.wk[2] + max(Na.A.rng))
+  # Na.A.pk.wk.b = filter(Na.A.pk.wk, p.Na.A.b.wk == max(p.Na.A.b.wk))$Na.A.wk
+  # 
+  # Na.A.pk.st = filter(range.Na.A, Na.A.st >= range.logA$pk.st[1] + min(Na.A.rng),
+  #                       Na.A.st <= range.logA$pk.st[1] + max(Na.A.rng))
+  # Na.A.pk.st.a = filter(Na.A.pk.st, p.Na.A.a.st == max(p.Na.A.a.st))$Na.A.st
+  # Na.A.pk.st = filter(range.Na.A, Na.A.st >= range.logA$pk.st[2] + min(Na.A.rng),
+  #                       Na.A.st <= range.logA$pk.st[2] + max(Na.A.rng))
+  # Na.A.pk.st.b = filter(Na.A.pk.st, p.Na.A.b.st == max(p.Na.A.b.st))$Na.A.st
+
+  return(data.frame(wk = Na.A.rng.wk, st = Na.A.rng.st,
+                    pk.wk = c(Na.A.pk.wk.a, Na.A.pk.wk.b), pk.st = c(Na.A.pk.st.a, Na.A.pk.st.b)))
+}
+
+
+suggest.ranges = function(E.cut, F.cut, mod.ener, mod.flux){
+  # Monte Carlo sample resolution
+  resolution = 75; MCsamp = 1000
+  # Convert cutoffs to log units
+  E.cut = log10(E.cut)
+  F.cut = log10(F.cut^2)
+  region.pka2 = suggest.pka2(E.cutof = E.cut, F.cutof = F.cut, 
+               mod.ener = mod.ener, mod.flux = mod.flux,
+               resolution = resolution, MCsamp = MCsamp)
+  region.pka1 = suggest.pka1(E.cutof = E.cut, F.cutof = F.cut,
+               mod.ener = mod.ener, mod.flux = mod.flux,
+               range.pka2 = region.pka2,
+               resolution = resolution, MCsamp = MCsamp)
+  region.logA = suggest.logA(E.cutof = E.cut, F.cutof = F.cut,
+               mod.ener = mod.ener, mod.flux = mod.flux,
+               range.pka2 = region.pka2, range.pka1 = region.pka1,
+               resolution = resolution, MCsamp = MCsamp)
+  region.Na.A = suggest.Na.A(E.cutof = E.cut, F.cutof = F.cut,
+               mod.ener = mod.ener, mod.flux = mod.flux,
+               range.pka2 = region.pka2, range.pka1 = region.pka1, range.logA = region.logA,
+               resolution = resolution, MCsamp = MCsamp)
+  return(list(pka2 = region.pka2, pka1 = region.pka1, logA = region.logA, Na.A = region.Na.A))
+}
+```
+
+```{r Suggested Ranges}
+region1.ranges = suggest.ranges(E.cut = region1$max.ener, F.cut = region1$min.flux, 
+                                mod.ener = mod.ener, mod.flux = mod.flux)
+region2.ranges = suggest.ranges(E.cut = region2$max.ener, F.cut = region2$min.flux, 
+                                mod.ener = mod.ener, mod.flux = mod.flux)
+region3.ranges = suggest.ranges(E.cut = region3$max.ener, F.cut = region3$min.flux, 
+                                mod.ener = mod.ener, mod.flux = mod.flux)
+
+# Save ranges
+write.csv(x = region1.ranges, file = 'AcceptRanges.csv')
+write.csv(x = region2.ranges, file = 'MaxFlxRanges.csv')
+write.csv(x = region3.ranges, file = 'MinEngRanges.csv')
+
+```
+
+```{r Reporting Ranges}
+# Load ranges from csv
+region1.ranges = read.csv(file = 'AcceptRanges.csv')
+region2.ranges = read.csv(file = 'MaxFlxRanges.csv')
+region3.ranges = read.csv(file = 'MinEngRanges.csv')
+
+sz = 4
+g1 = ggplot(data.frame(wk = c(region1.ranges$pka2.wk,    region2.ranges$pka2.wk,    region3.ranges$pka2.wk),
+                       st = c(region1.ranges$pka2.st,    region2.ranges$pka2.st,    region3.ranges$pka2.st),
+                    pk.wk = c(region1.ranges$pka2.pk.wk, region2.ranges$pka2.pk.wk, region3.ranges$pka2.pk.wk),
+                    pk.st = c(region1.ranges$pka2.pk.st, region2.ranges$pka2.pk.st, region3.ranges$pka2.pk.st),
+                   pk.typ = c('+Acid', '+Base'),
+                   labels = c(rep('Acceptable', 2), rep('Max Flux', 2), rep('Min Energy', 2))) ) +
+  # Weak
+  geom_line(mapping = aes(x = labels, y = wk, color = 'wk'), size = sz) +
+  geom_point(mapping = aes(x = labels, y = pk.wk, color = 'wk', shape = pk.typ), size = sz+2) +
+  # Strong
+  geom_line(mapping = aes(x = labels, y = st, color = 'st'), size = sz/2) +
+  geom_point(mapping = aes(x = labels, y = pk.st, color = 'st', shape = pk.typ), size = sz) +
+  labs(x = '', y = expression('p'*italic(K)['a,2']), shape = '') +
+  scale_color_manual(values = c('wk' = 'red', 'st' = 'blue'),
+                     labels = c('wk' = 'Weak Suggestion', 'st' = 'Strong Suggestion'),
+                     name = '')
+g2 = ggplot(data.frame(wk = c(region1.ranges$pka1.wk,    region2.ranges$pka1.wk,    region3.ranges$pka1.wk),
+                       st = c(region1.ranges$pka1.st,    region2.ranges$pka1.st,    region3.ranges$pka1.st),
+                    pk.wk = c(region1.ranges$pka1.pk.wk, region2.ranges$pka1.pk.wk, region3.ranges$pka1.pk.wk),
+                    pk.st = c(region1.ranges$pka1.pk.st, region2.ranges$pka1.pk.st, region3.ranges$pka1.pk.st),
+                   pk.typ = c('+Acid', '+Base'),
+                   labels = c(rep('Acceptable', 2), rep('Max Flux', 2), rep('Min Energy', 2))) ) +
+  # Weak
+  geom_line(mapping = aes(x = labels, y = wk, color = 'wk'), size = sz) +
+  geom_point(mapping = aes(x = labels, y = pk.wk, color = 'wk', shape = pk.typ), size = sz+2) +
+  # Strong
+  geom_line(mapping = aes(x = labels, y = st, color = 'st'), size = sz/2) +
+  geom_point(mapping = aes(x = labels, y = pk.st, color = 'st', shape = pk.typ), size = sz) +
+  labs(x = '', y = expression('p'*italic(K)['a,1']), shape = '') +
+  scale_color_manual(values = c('wk' = 'red', 'st' = 'blue'),
+                     labels = c('wk' = 'Weak Suggestion', 'st' = 'Strong Suggestion'),
+                     name = '')
+# g1 + guides(color = FALSE) + g2
+
+g3 = ggplot(data.frame(wk = c(region1.ranges$logA.wk,    region2.ranges$logA.wk,    region3.ranges$logA.wk),
+                       st = c(region1.ranges$logA.st,    region2.ranges$logA.st,    region3.ranges$logA.st),
+                    pk.wk = c(region1.ranges$logA.pk.wk, region2.ranges$logA.pk.wk, region3.ranges$logA.pk.wk),
+                    pk.st = c(region1.ranges$logA.pk.st, region2.ranges$logA.pk.st, region3.ranges$logA.pk.st),
+                   pk.typ = c('+Acid', '+Base'),
+                   labels = c(rep('Acceptable', 2), rep('Max Flux', 2), rep('Min Energy', 2))) ) +
+  # Weak
+  geom_line(mapping = aes(x = labels, y = 10^wk, color = 'wk'), size = sz) +
+  geom_point(mapping = aes(x = labels, y = 10^pk.wk, color = 'wk', shape = pk.typ), size = sz+2) +
+  # Strong
+  geom_line(mapping = aes(x = labels, y = 10^st, color = 'st'), size = sz/2) +
+  geom_point(mapping = aes(x = labels, y = 10^pk.st, color = 'st', shape = pk.typ), size = sz) +
+  labs(x = '', y = '{Quinone}', shape = '') + #scale_y_log10() +
+  scale_color_manual(values = c('wk' = 'red', 'st' = 'blue'),
+                     labels = c('wk' = 'Weak Suggestion', 'st' = 'Strong Suggestion'),
+                     name = '')
+g4 = ggplot(data.frame(wk = c(region1.ranges$Na.A.wk,    region2.ranges$Na.A.wk,    region3.ranges$Na.A.wk),
+                       st = c(region1.ranges$Na.A.st,    region2.ranges$Na.A.st,    region3.ranges$Na.A.st),
+                    pk.wk = c(region1.ranges$Na.A.pk.wk, region2.ranges$Na.A.pk.wk, region3.ranges$Na.A.pk.wk),
+                    pk.st = c(region1.ranges$Na.A.pk.st, region2.ranges$Na.A.pk.st, region3.ranges$Na.A.pk.st),
+                   pk.typ = c('+Acid', '+Base'),
+                   labels = c(rep('Acceptable', 2), rep('Max Flux', 2), rep('Min Energy', 2))) ) +
+  # Weak
+  geom_line(mapping = aes(x = labels, y = 10^wk, color = 'wk'), size = sz) +
+  geom_point(mapping = aes(x = labels, y = 10^pk.wk, color = 'wk', shape = pk.typ), size = sz+2) +
+  # Strong
+  geom_line(mapping = aes(x = labels, y = 10^st, color = 'st'), size = sz/2) +
+  geom_point(mapping = aes(x = labels, y = 10^pk.st, color = 'st', shape = pk.typ), size = sz) +
+  labs(x = '', y = '{Acid}', shape = '') + scale_y_log10() +
+  scale_color_manual(values = c('wk' = 'red', 'st' = 'blue'),
+                     labels = c('wk' = 'Weak Suggestion', 'st' = 'Strong Suggestion'),
+                     name = '')
+# g3 + guides(color = FALSE) + g4
+
+g1 + guides(color = FALSE, shape = FALSE) +
+  g2 + guides(color = FALSE, shape = FALSE) +
+  g3 + guides(color = FALSE, shape = FALSE) + g4
+
+# Compare to the densities
+# GPar.nat
+g1 = ggplot() +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < 100, Flux.mol.m2s > 0), 
+               mapping = aes(x = pka2, color = '0'), linetype = 2) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region1$max.ener, Flux.mol.m2s > region1$min.flux), 
+               mapping = aes(x = pka2, color = '1')) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region2$max.ener, Flux.mol.m2s > region2$min.flux), 
+               mapping = aes(x = pka2, color = '2')) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region3$max.ener, Flux.mol.m2s > region3$min.flux), 
+               mapping = aes(x = pka2, color = '3')) +
+  scale_color_manual(values = c('0' = 'black', '1' = 'red', '2' = 'blue', '3' = 'green2'),
+                     labels = c('0' = 'Dataset', '1' = 'Acceptable', '2' = 'Max Flux', '3' = 'Min Energy')) +
+  labs(x = expression('p'*italic(K)['a,2']), y = 'Sample Density')
+g2 = ggplot() +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < 100, Flux.mol.m2s > 0), 
+               mapping = aes(x = pka1, color = '0'), linetype = 2) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region1$max.ener, Flux.mol.m2s > region1$min.flux), 
+               mapping = aes(x = pka1, color = '1')) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region2$max.ener, Flux.mol.m2s > region2$min.flux), 
+               mapping = aes(x = pka1, color = '2')) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region3$max.ener, Flux.mol.m2s > region3$min.flux), 
+               mapping = aes(x = pka1, color = '3')) +
+  scale_color_manual(values = c('0' = 'black', '1' = 'red', '2' = 'blue', '3' = 'green2'),
+                     labels = c('0' = 'Dataset', '1' = 'Acceptable', '2' = 'Max Flux', '3' = 'Min Energy')) +
+  labs(x = expression('p'*italic(K)['a,1']), y = 'Sample Density')
+g3 = ggplot() +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < 100, Flux.mol.m2s > 0), 
+               mapping = aes(x = 10^logA, color = '0'), linetype = 2) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region1$max.ener, Flux.mol.m2s > region1$min.flux), 
+               mapping = aes(x = 10^logA, color = '1')) +
+  # Omitting the max flux condition because it is skewed entirely to high concentrations
+  # and obscures the other of the results
+  # geom_density(filter(GPar.nat, Energy.kJ.mol < region2$max.ener, Flux.mol.m2s > region2$min.flux), 
+  #              mapping = aes(x = 10^logA, color = '2')) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region3$max.ener, Flux.mol.m2s > region3$min.flux), 
+               mapping = aes(x = 10^logA, color = '3')) +
+  scale_color_manual(values = c('0' = 'black', '1' = 'red', '2' = 'blue', '3' = 'green2'),
+                     labels = c('0' = 'Dataset', '1' = 'Acceptable', '2' = 'Max Flux', '3' = 'Min Energy')) +
+  scale_x_log10() + labs(x = '{Quinone}', y = 'Sample Density')
+
+g4 = ggplot() +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < 100, Flux.mol.m2s > 0),
+               mapping = aes(x = 10^Na.A, color = '0'), linetype = 2) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region1$max.ener, Flux.mol.m2s > region1$min.flux), 
+               mapping = aes(x = 10^Na.A, color = '1')) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region2$max.ener, Flux.mol.m2s > region2$min.flux),
+               mapping = aes(x = 10^Na.A, color = '2')) +
+  geom_density(filter(GPar.nat, Energy.kJ.mol < region3$max.ener, Flux.mol.m2s > region3$min.flux),
+               mapping = aes(x = 10^Na.A, color = '3')) +
+  scale_color_manual(values = c('0' = 'black', '1' = 'red', '2' = 'blue', '3' = 'green2'),
+                     labels = c('0' = 'Dataset', '1' = 'Acceptable', '2' = 'Max Flux', '3' = 'Min Energy'),
+                     name = '') +
+  scale_x_log10() +  labs(x = '{Acid}', y = 'Sample Density')
+g1 + guides(color = FALSE) + g2 + guides(color = FALSE) + g3 + guides(color = FALSE) + g4
+
+rm(g1, g2, g3, g4)
+
+```
+
+Confirming that the peak points suggested by the marginals fall within the specified regions
+
+```{r Check peak points: Calculation}
+region1.ranges = read.csv(file = 'AcceptRanges.csv')
+region2.ranges = read.csv(file = 'MaxFlxRanges.csv')
+region3.ranges = read.csv(file = 'MinEngRanges.csv')
+
+region1.pk = data.frame(pka1 = c(region1.ranges$pka1.pk.wk, region1.ranges$pka1.pk.st), 
+                        pka2 = c(region1.ranges$pka2.pk.wk, region1.ranges$pka2.pk.st), 
+                        logA = c(region1.ranges$logA.pk.wk, region1.ranges$logA.pk.st), 
+                        Na.A = c(region1.ranges$Na.A.pk.wk, region1.ranges$Na.A.pk.st), 
+                         typ = c(-1, 1), reg = '1')
+region2.pk = data.frame(pka1 = c(region2.ranges$pka1.pk.wk, region2.ranges$pka1.pk.st), 
+                        pka2 = c(region2.ranges$pka2.pk.wk, region2.ranges$pka2.pk.st), 
+                        logA = c(region2.ranges$logA.pk.wk, region2.ranges$logA.pk.st), 
+                        Na.A = c(region2.ranges$Na.A.pk.wk, region2.ranges$Na.A.pk.st), 
+                         typ = c(-1, 1), reg = '2')
+region3.pk = data.frame(pka1 = c(region3.ranges$pka1.pk.wk, region3.ranges$pka1.pk.st), 
+                        pka2 = c(region3.ranges$pka2.pk.wk, region3.ranges$pka2.pk.st), 
+                        logA = c(region3.ranges$logA.pk.wk, region3.ranges$logA.pk.st), 
+                        Na.A = c(region3.ranges$Na.A.pk.wk, region3.ranges$Na.A.pk.st), 
+                         typ = c(-1, 1), reg = '3')
+region.pk = rbind(region1.pk, region2.pk, region3.pk)
+# Some points have pka differences exceeding 5.5. Set them to the minimum pka1 given the more important pka2
+region.pk$pka1[abs(region.pk$pka1 - region.pk$pka2) > 5.5] = 
+  region.pk$pka2[abs(region.pk$pka1 - region.pk$pka2) > 5.5] - 5.5
+res = PCET.obj.flu(inputs = as.matrix(region.pk[,c(1:5)]))
+region.pk$Energy.kJ.mol = res[1:nrow(region.pk)]
+region.pk$Flux.mol.m2s  = res[(nrow(region.pk)+1):length(res)]
+rm(res)
+
+```
+
+```{r Check peak points: Plot}
+sz = 2
+ggplot() +
+  geom_rect(region1, 
+            mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
+            fill = 'green', linetype = 1, color = 'black', alpha = 0.25) +
+  geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = as.factor(typ), shape = as.factor(typ)), 
+             size = sz, alpha = 0.5) +
+  geom_point(filter(region.pk, Energy.kJ.mol < 150, Flux.mol.m2s > 0, reg == '1'), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'navy',
+             shape = 8, size = sz*2) +
+  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing'), color = 'pH Correction', shape = 'pH Correction') +
+  theme_classic() + theme(legend.position = c(0.9, 0.9), 
+                          legend.box.background = element_rect(color = 'black', linetype = 1)) +
+  # scale_x_log10() + scale_y_log10() +
+  guides(fill = FALSE) + scale_color_discrete(labels = c('Acid', 'Base')) + scale_shape_discrete(labels = c('Acid', 'Base'))
+
+ggplot() +
+  geom_rect(region2,
+            mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
+            fill = 'green', linetype = 1, color = 'black', alpha = 0.25) +
+  geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = as.factor(typ), shape = as.factor(typ)), 
+             size = sz, alpha = 0.5) +
+  geom_point(filter(region.pk, Energy.kJ.mol < 100, Flux.mol.m2s > 0, reg == '2'), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'navy',
+             shape = 8, size = sz*2) +
+  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing'), color = 'pH Correction', shape = 'pH Correction') +
+  theme_classic() + theme(legend.position = c(0.9, 0.9), 
+                          legend.box.background = element_rect(color = 'black', linetype = 1)) +
+  # scale_x_log10() + scale_y_log10() +
+  guides(fill = FALSE) + scale_color_discrete(labels = c('Acid', 'Base')) + scale_shape_discrete(labels = c('Acid', 'Base'))
+
+ggplot() +
+  geom_rect(region3,
+            mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
+            fill = 'green', linetype = 1, color = 'black', alpha = 0.25) +
+  geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = as.factor(typ), shape = as.factor(typ)), 
+             size = sz, alpha = 0.5) +
+  geom_point(filter(region.pk, Energy.kJ.mol < 100, Flux.mol.m2s > 0, reg == '3'), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'navy',
+             shape = 8, size = sz*2) +
+  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing'), color = 'pH Correction', shape = 'pH Correction') +
+  theme_classic() + theme(legend.position = c(0.9, 0.9), 
+                          legend.box.background = element_rect(color = 'black', linetype = 1)) +
+  # scale_x_log10() + scale_y_log10() +
+  guides(fill = FALSE) + scale_color_discrete(labels = c('Acid', 'Base')) + scale_shape_discrete(labels = c('Acid', 'Base'))
+
+region.pk
+```
+
+
+# Points of interest
+Specific points of interest are:
+
+* Peak performance according to the 1D conditional marginals
+* Poor performance according to those marginals
+
+* Point near the maximum flux
+* Point near the concavity in the Pareto front
+* Point near the minimum energy demand
+
+New function to output all relevant process parameters (xA, DIC, pH, pCO2, electrode potential) over the course of the capture cycle.
+
+
+```{r Process Tracking: Function}
+PCET.cycle = function(pka1, pka2, logA, Na.A, acid){
+  # Set up algorithm constants
+  z = 2; R = 8.314; T = 298; F = 96485; resolution = 201;
+  pCO2.in = 0.15; pCO2.out = 1
+  xA.lim = c(.025, 0.975)
+  
+  # Convert from search space natural variable units to typical units for calculations
+  beta1 = 0; beta2 = 0;
+  k1 = 10^-pka1; k2 = 10^-pka2
+  A.tot = 10^logA; Na = acid*10^Na.A
+
+  # Start with end of absorbing step: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                         At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                           A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # start.soln
+  
+  # Check that the condition will pump CO2 (pressure of fully oxidized state is > outlet)
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  
+  # 1 -> 2: Electrochemical oxidation (xA decrease to endpoint), constant DIC
+  soln12 = data.frame(DIC = start.soln$DIC, xA = seq(from = start.soln$xA[1], to = min(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = start.soln$pH[1], xA.next = soln12$xA[1], DIC = soln12$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(soln12$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = soln12$xA[i], DIC = soln12$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  soln12$pH = loop; 
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = soln12$xA[1], pH = soln12$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = start.soln$p.CO2)
+  for(i in 2:length(soln12$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = soln12$xA[i], pH = soln12$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  soln12$p.CO2 = loop
+  soln12$stage = "1->2"
+  soln12$q = abs(soln12$xA - soln12$xA[1])*A.tot*z*F # Coulombs
+  
+  # 2 -> 3: Outgassing (pCO2 decreases until outlet), constant xA
+  soln23 = data.frame(xA = soln12$xA[resolution], p.CO2 = seq(from = soln12$p.CO2[resolution], to = pCO2.out, length.out = resolution))
+  # Solve pH with multiple cores
+  soln23$pH = mcmapply(pH.xA.pCO2.A.k.beta.Na, xA = soln23$xA, P = soln23$p.CO2, 
+                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  soln23$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = soln23$xA, pCO2 = soln23$p.CO2, pH = soln23$pH, 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  soln23$stage = "2->3"
+  soln23$q = soln12$q[resolution]
+  
+  # 3 -> 4: Electrochemical reduction (xA increase to endpoint), constant DIC
+  soln34 = data.frame(DIC = soln23$DIC[resolution], xA = seq(from = soln23$xA[1], to = max(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = soln23$pH[resolution], xA.next = soln34$xA[1], DIC = soln34$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(soln12$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = soln34$xA[i], DIC = soln34$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  soln34$pH = loop; 
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = soln34$xA[1], pH = soln34$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:length(soln34$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = soln34$xA[i], pH = soln34$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  soln34$p.CO2 = loop
+  soln34$stage = "3->4"
+  soln34$q = abs(soln34$xA - soln34$xA[1])*A.tot*z*F # Coulombs
+  
+  # 4 -> 1: Absorbing (pCO2 increase until inlet), constant xA
+  soln41 = data.frame(xA = soln34$xA[resolution], p.CO2 = seq(from = soln34$p.CO2[resolution], to = pCO2.in, length.out = resolution))
+  # Solve pH with multiple cores
+  soln41$pH = mcmapply(pH.xA.pCO2.A.k.beta.Na, xA = soln41$xA, P = soln41$p.CO2, 
+                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  soln41$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = soln41$xA, pCO2 = soln41$p.CO2, pH = soln41$pH, 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  soln41$stage = "4->1"
+  soln41$q = soln34$q[resolution]
+  
+  return(rbind(soln12, soln23, soln34, soln41))
+}
+
+PCET.electrode = function(soln.path, pka1, pka2){
+  # Separate electrode processes
+  E.anode = filter(soln.path, stage == "1->2")
+  E.cathode = filter(soln.path, stage == "3->4")
+  
+  # Constants
+  z = 2; T = 298; R = 8.314; F = 96485;
+  k1 = 10^-pka1; k2 = 10^-pka2
+  beta1 = 0; beta2 = 0
+  # Equilibrium potential: Deviation from standard reduction potential
+  E.anode$H = 10^-E.anode$pH
+  E.anode$E = R*T/(z*F) * log( (1 - E.anode$xA)/E.anode$xA * 
+                                   ((1 + beta1*E.anode$p.CO2 + beta2*E.anode$p.CO2^2)*k1*k2 + k1*E.anode$H + E.anode$H^2)/(k1*k2))
+  E.cathode$H = 10^-E.cathode$pH
+  E.cathode$E = R*T/(z*F) * log( (1 - E.cathode$xA)/E.cathode$xA * 
+                                   ((1 + beta1*E.cathode$p.CO2 + beta2*E.cathode$p.CO2^2)*k1*k2 + k1*E.cathode$H + E.cathode$H^2)/(k1*k2))
+  
+  # Repeat the end points for plotting purposes
+  E.cell = rbind(E.anode, E.cathode)
+  degas = filter(E.cell, xA == min(xA)); degas$stage = '2->3'
+  E.cell = rbind(E.cathode, E.anode)
+  catch = filter(E.cell, xA == max(xA)); catch$stage = '4->1'
+  return(rbind(E.anode, degas, E.cathode, catch))
+    
+  # Total energy
+  # E.cell = data.frame(q = E.anode$q, V = E.anode$E - E.cathode$E, xA = E.anode$xA)
+  # Energy.tot = (E.cell$q[resolution]-E.cell$q[1])/resolution * (E.cell$V[1] + E.cell$V[resolution] + 2*sum(E.cell$V[2:(resolution-1)]))/2
+  # Energy.norm = Energy.tot/(E.anode$DIC[1] - E.cathode$DIC[1])
+}
+
+
+```
+
+
+Specific points of interest are:
+
+* Point near the maximum flux
+  * pka1 = 12.7, pka2 = 16, A = 10^-0.5, Acid = 10^-6
+* Point near the concavity in the Pareto front
+  * pka1 = 5.7, pka2 = 11, A = 10^-0.5, Acid = 10^-7
+* Point near the minimum energy demand
+  * pka1 = 4.9, pka2 = 9.2, A = 10^-0.7, Acid = 10^-2
+
+* Peak performance according to the 1D conditional marginals
+  * pka1 = 8, pka2 = 10.5, A = 10^-1, Acid = 10^-4
+* Poor performance according to those marginals, exchanging one of the variables
+  * pka1 = 5, pka2 = 8, A = 10^-2, Acid = 10^0
+(pka2 set at 8 because quinones almost always have pka1 <= pka2, and the marginal suggests it is lowest when they are similar. Similarly, pka1 is set to 5 instead of 4 because the maximum difference between the two is about 5.5)
+
+```{r Process Tracking: Points of interest}
+# Load data
+GPar.all = read.csv(file = 'GPar_AcidBase_data.csv')
+GPar.front = read.csv(file = 'GPar_AcidBase_fnt.csv')
+# Remove unneeded variables
+GPar.all = GPar.all[,!(names(GPar.all) %in% c('X', 'X.1'))]
+GPar.front = GPar.front[,!(names(GPar.front) %in% c('X', 'X.1'))]
+
+# Cutoff levels
+E.cutof = log10(40); #kJ/mol C, log units
+F.cutof = 0.1*max(GPar.all$Flux.mol.m2s)
+
+# Natural variables conversion
+GPar.nat = GPar.all
+GPar.nat$pka2 = GPar.nat$pka1 + GPar.nat$pka2
+GPar.nat$Na.A = GPar.nat$logA + GPar.nat$Na.A
+
+# For acid/base, low additions (<10^-7) are effectively no additions
+GPar.nat$typ.none = GPar.nat$typ
+GPar.nat$typ.none[GPar.nat$Na.A < -7] = 'None'
+
+sz = 2
+# ggplot(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0)) +
+#   geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+#   geom_point(mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), size = sz) +
+#   labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+#        subtitle = expression('CO'[2]*' Capture by PCET-based pH swing'), color = 'pH Correction', shape = 'pH Correction') +
+#   theme_classic() + theme(legend.position = c(0.9, 0.9), 
+#                           legend.box.background = element_rect(color = 'black', linetype = 1))
+
+# Target points based on the Pareto front
+test.sys = data.frame(pka1 = c(12.7,  7.35,  4.9),
+                      pka2 = c(16,   11.25,  9.2),
+                      logA = c(0.5,   0.5, -0.7),
+                      Na =    c(-6,   -1, -6),
+                      acid = c(-1,   -1, -1),
+                      label = c('Global High Flux', 'Local High Flux', 'Low Energy') )
+# # Target points based on the marginals - best, worst, and 1-variable exchanges
+exch.sys = data.frame(pka1 = rep(6.6, 5), pka2 = rep(12.1, 5), logA = rep(0.4, 5),
+                      Na = rep(-2.4, 5), acid = rep(-1, 5))
+poor = c(5, 8, -2, 0)
+for(i in 1:length(poor)){
+  exch.sys[i,i] = poor[i]
+}
+rm(poor)
+exch.sys$label = c('Bad pka1', 'Bad pka2', 'Bad {Quinone}', 'Bad {pH Correction}', 'Peak Prediction')
+
+test.sys = rbind(test.sys, exch.sys)
+rm(exch.sys)
+
+res = PCET.obj.flu(inputs = as.matrix(test.sys[,c('pka1', 'pka2', 'logA', 'Na', 'acid')]))
+test.sys$Energy.kJ.mol = res[1:nrow(test.sys)]
+test.sys$Flux.mol.m2s = res[(nrow(test.sys)+1):length(res)]
+
+ggplot() +
+  geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), size = sz) +
+  geom_point(data = filter(test.sys,Energy.kJ.mol < 150, Flux.mol.m2s > 0), 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, fill = label), 
+             shape = 1, size = 3, stroke = 2) +
+  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing'), color = 'pH Correction', shape = 'pH Correction') +
+  theme_classic() + theme(legend.position = c(0.9, 0.9), 
+                          legend.box.background = element_rect(color = 'black', linetype = 1)) +
+  guides(fill = FALSE)
+
+
+```
+
+
+```{r Plot Functions}
+plt.demo.E = function(test.sys, i){
+  # Calculate system processes
+  test.data = PCET.cycle(pka1 = test.sys$pka1[i], pka2 = test.sys$pka2[i],
+                         logA = test.sys$logA[i], Na.A = test.sys$Na[i], 
+                         acid = test.sys$acid[i])
+  # Electrode conditions
+  E.test = PCET.electrode(soln.path = test.data, pka1 = 12.7, pka2 = 16)
+  # Plots
+  col = 'gray'
+  if(mean(filter(E.test, stage == '1->2')$E) < mean(filter(E.test, stage == '3->4')$E)){
+    col = 'lightcoral'
+  }
+  g = ggplot(E.test) +
+    geom_polygon(mapping = aes(x = xA, y = E), fill = col, alpha = 0.5) +
+    geom_path(mapping = aes(x = xA, y = E, color = stage), arrow = arrow(length = unit(0.5, "cm")) ) +
+    labs(x = '% Reduced Quinone', y = expression('Electrode Potential (V vs E'^0*')'), subtitle = test.sys$label[i]) +
+    scale_color_discrete(labels = c('1->2' = 'Oxidative Acidification',
+                                    '2->3' = expression('CO'[2]*' Degassing'),
+                                    '3->4' = 'Reductive Regeneration',
+                                    '4->1' = expression('CO'[2]*' Capture')),
+                         name = '')
+  return(g)  
+}
+
+plt.demo.state = function(test.sys, i){
+  # Calculate system processes
+  test.data = PCET.cycle(pka1 = test.sys$pka1[i], pka2 = test.sys$pka2[i],
+                         logA = test.sys$logA[i], Na.A = test.sys$Na[i], 
+                         acid = test.sys$acid[i])
+  # Plots
+  g1 = ggplot(test.data) +
+    geom_path(mapping = aes(x = xA, y = pH, color = stage), arrow = arrow(length = unit(0.5, "cm"))) +
+    # pH plots: include the buffer regimes of the quinones
+    geom_hline(yintercept = c(test.sys$pka1[i], test.sys$pka2[i]), color = 'gray', linetype = 2) +
+    labs(x = '% Reduced Quinone', y = 'Solution pH', subtitle = test.sys$label[i]) +
+    scale_color_discrete(labels = c('1->2' = 'Oxidative Acidification',
+                                    '2->3' = expression('CO'[2]*' Degassing'),
+                                    '3->4' = 'Reductive Regeneration',
+                                    '4->1' = expression('CO'[2]*' Capture')),
+                         name = '') +
+    guides(color = FALSE)
+  g2 = ggplot(test.data) +
+    geom_hline(yintercept = c(1, 0.15), linetype = 2, color = 'gray') +
+    geom_path(mapping = aes(x = xA, y = p.CO2, color = stage), arrow = arrow(length = unit(0.5, "cm"))) +
+    labs(x = '% Reduced Quinone', y = expression('Partial Pressure CO'[2]*' (atm)')) +
+    scale_y_log10() +
+    scale_color_discrete(labels = c('1->2' = 'Oxidative Acidification',
+                                    '2->3' = expression('CO'[2]*' Degassing'),
+                                    '3->4' = 'Reductive Regeneration',
+                                    '4->1' = expression('CO'[2]*' Capture')),
+                         name = '') +
+    guides(color = FALSE)
+  
+  g3 = ggplot(test.data) +
+    geom_path(mapping = aes(x = DIC, y = pH, color = stage), arrow = arrow(length = unit(0.5, "cm"))) +
+    geom_hline(yintercept = c(test.sys$pka1[i], test.sys$pka2[i]), color = 'gray', linetype = 2) +
+    labs(x = 'Total Inorganic Carbon (M)', y = 'Solution pH') +
+    scale_color_discrete(labels = c('1->2' = 'Oxidative Acidification',
+                                    '2->3' = expression('CO'[2]*' Degassing'),
+                                    '3->4' = 'Reductive Regeneration',
+                                    '4->1' = expression('CO'[2]*' Capture')),
+                         name = '') +
+    guides(color = FALSE)
+  
+  g4 = ggplot(test.data) +
+    geom_hline(yintercept = c(1, 0.15), linetype = 2, color = 'gray') +
+    geom_path(mapping = aes(x = DIC, y = p.CO2, color = stage), arrow = arrow(length = unit(0.5, "cm"))) +
+    labs(x = 'Total Inorganic Carbon (M)', y = expression('Partial Pressure CO'[2]*' (atm)')) +
+    scale_y_log10() +
+    scale_color_discrete(labels = c('1->2' = 'Oxidative Acidification',
+                                    '2->3' = expression('CO'[2]*' Degassing'),
+                                    '3->4' = 'Reductive Regeneration',
+                                    '4->1' = expression('CO'[2]*' Capture')),
+                         name = '')
+  
+  g = (g1 + g3) / (g2 + g4)
+  return(g)
+}
+
+```
+
+```{r Process Plots}
+plt.demo.state(test.sys = test.sys, i = 1)
+plt.demo.state(test.sys = test.sys, i = 2)
+plt.demo.state(test.sys = test.sys, i = 3)
+plt.demo.state(test.sys = test.sys, i = 4)
+plt.demo.state(test.sys = test.sys, i = 5)
+plt.demo.state(test.sys = test.sys, i = 6)
+plt.demo.state(test.sys = test.sys, i = 7)
+plt.demo.state(test.sys = test.sys, i = 8)
+
+```
+
+```{r Electrode Potentials}
+plt.demo.E(test.sys = test.sys, i = 1)
+plt.demo.E(test.sys = test.sys, i = 2)
+plt.demo.E(test.sys = test.sys, i = 3)
+plt.demo.E(test.sys = test.sys, i = 4)
+plt.demo.E(test.sys = test.sys, i = 5)
+plt.demo.E(test.sys = test.sys, i = 6)
+plt.demo.E(test.sys = test.sys, i = 7)
+plt.demo.E(test.sys = test.sys, i = 8)
+
+```
+
+Electrode potentials track with the solution pH, so these figures are not absolutely necessary
+
+
+
+# Compare to known data
+
+A small set of quinone pKas was used to constrain the search space.
+This same dataset can be assessed for the likelihood that any compound will be viable given only the pKa values.
+
+#```{r Known compounds assessment}
+quinone.data$p.accept = NaN
+lower = 0.25; upper = 0.75
+
+for(i in 1:nrow(quinone.data)){
+  # pKas
+  fill.frame = data.frame(pka1 = quinone.data$Pka.1[i],
+                          pka2 = quinone.data$Pka.2[i],
+                          logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
+                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
+                          typ = -1)
+  set.flux = sample(1:length(mod.flux), length(mod.flux))
+  set.ener = sample(1:length(mod.ener), length(mod.ener))
+  p = c(); h = c(); l = c()
+  for(j in 1:length(set.flux)){
+    res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+    res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+    p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+      pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+    p[j] = mean(p.accept)
+  }
+  quinone.data$p.accept[i] = mean(p)
+}
+
+# Show most promising candidates in order from most to least likely to work
+quinone.data[order(quinone.data$p.accept, decreasing = TRUE), !(names(quinone.data) %in% c('QuinoneCode', 'E0.1', 'E0.2'))]
+
+p.cutof = quinone.data$p.accept*0.7
+range(filter(quinone.data, p.accept > p.cutof)$Pka.1)
+range(filter(quinone.data, p.accept > p.cutof)$Pka.2)
+
+# Plot densities weighted by the acceptance probabilities
+g1 = ggplot() +
+  # Data
+  # geom_density(data = quinone.data, mapping = aes(x = Pka.1, weight = p.accept), color = 'red') +
+  geom_density(data = filter(quinone.data, p.accept > p.cutof), 
+               mapping = aes(x = Pka.1), color = 'red', linetype = 2) +
+  # Optimal ranges
+  geom_vline(xintercept = pka1.rng.st, color = 'darkred', linetype = 'dotted', alpha = 0.5) +
+  labs(x = expression('p'*italic(K)['a,1']), y = 'Likelihood Weighted Density', subtitle = 'Viable Known Quinones',
+       color = '')
+
+g2 = ggplot() +
+  # Data
+  # geom_density(data = quinone.data, mapping = aes(x = Pka.2, weight = p.accept), color = 'blue') +
+  geom_density(data = filter(quinone.data, p.accept > p.cutof),
+               mapping = aes(x = Pka.2), color = 'blue', linetype = 2) +
+  # Optimal ranges
+  geom_vline(xintercept = pka2.rng.st, color = 'darkblue', linetype = 'dotted', alpha = 0.5) +
+  labs(x = expression('p'*italic(K)['a,2']), y = 'Likelihood Weighted Density', subtitle = 'Viable Known Quinones',
+       color = '')
+g1 / g2
+rm(g1, g2)
+```
+
+Based solely on pKa information available, 19 quinones have a moderate likelihood of having low energy demands (probability of acceptance about > 30% - near the peak of the P[Optimal | known pKa1, optimal set pKa2]).
+
+These 19 quinones have the following characteristics:
+* pKa2: 10.10 ~ 12.19 compared to the calculated 9.38 ~ 15.91
+* pKa1: 4.77  ~ 9.48  compared to the calculated 6.70 ~ 10.49
+
+Apart from the single quinone with a low first pKa, all fit within the calculated ranges for an optimal quinone.
+
+The top candidates appear to have strong electron withdrawing groups (primarily oxygen-containing functionalities separated from the aromatic ring), while the less likely candidates have electron donating groups. 
+However, this is not a strict rule - for instance, the most promising candidate contains only alcohols (electron donating groups).
