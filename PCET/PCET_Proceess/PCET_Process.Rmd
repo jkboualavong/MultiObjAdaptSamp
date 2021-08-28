@@ -626,9 +626,9 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
 
     # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
     soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
-    # Flux: delC * kL * E, assume kL = 0.01 cm/s
+    # Flux: delC * kL * E, assume kL = 0.1 cm/s
     # Unit conversion: L to cm3, cm2 to m2
-    flux = soln41$delC*soln41$E*0.01 * (1/1e3) * (100^2)
+    flux = soln41$delC*soln41$E*0.1 * (1/1e3) * (100^2)
     # return(soln41)
     return(signif(flux, 5)) # Highest driving force at outlet
     # return(soln41)
@@ -686,48 +686,6 @@ PCET.obj.flu = function(inputs){
 ```
 
 ```{r GP Model Generation}
-fill.sample.sign = function(GPar.data, input.name, output.name){
-  # Calculate the GP model to use for the direction of the flux.
-  # Since magnitude is determined using log values, it obscures the direction information 
-  # and incorrectly suggests optimal performance if the flux is very high in the opposite direction.
-  # This model does not need to be particularly accurate, only that it gives the correct direction.
-  # Using the km function, but applies checks on the system to make sure that 
-  # the model uncertainty matches expectations based on GP, ie. it did not
-  # fail to converge.
-  
-  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
-  # of the standard deviation are of the same order of magnitude. This is easiest
-  # checked if the difference between the 10th and 90th percentile
-  # is larger than the difference between the 25th and 75th.
-  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
-  while(log10(pt90/pt10) <= log10(pt75/pt25)){
-    mod.out = km(design = GPar.data[, input.name], response = 1e3*GPar.data[, output.name],
-                 # Result is more accurate with log units, but need to account for negative values
-                 # covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
-                 control = list(trace = FALSE, # Turn off tracking to simplify output
-                                pop.size = 50,
-                                max.generations = 5), # Increase robustness
-                 nugget = 5e-2)
-    
-    # Randomly sample from the search space.
-    pt = 500; i = 1
-    lims = range(GPar.data[,input.name[i]])
-    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
-    for(i in 2:length(input.name)){
-      lims = range(GPar.data[,input.name[i]])
-      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
-    }
-    names(samp) = input.name
-    
-    # Find model output to find the percentile ranks for this iteration
-    res = predict(object = mod.out, newdata = samp, type = 'UK')
-    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
-    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
-  }
-  return(mod.out)
-}
-
 fill.sample.flux = function(GPar.data, input.name, output.name){
   # Calculate the GP model to use. 
   # Using the km function, but applies checks on the system to make sure that 
@@ -738,16 +696,23 @@ fill.sample.flux = function(GPar.data, input.name, output.name){
   # of the standard deviation are of the same order of magnitude. This is easiest
   # checked if the difference between the 10th and 90th percentile
   # is larger than the difference between the 25th and 75th.
+  
+  # The flux has an issue where the negative fluxes have a much higher maximum
+  # order of magnitude (-10 vs 1e-3), leading to skewed model results.
+  # Adjusting the negative order of magnitude such that they have the same order of magnitude
+  resp = GPar.data[, output.name]
+  resp[resp < 0] = resp[resp < 0]*abs(max(resp)/min(resp))
+  nug = 0.1*min(abs(resp))
   pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
   while(log10(pt90/pt10) <= log10(pt75/pt25)){
-    mod.out = km(design = GPar.data[, input.name], response = (GPar.data[, output.name]),
+    mod.out = km(design = GPar.data[, input.name], response = resp,
                  # Result is more accurate with log units, but need to account for negative values
                  # covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
+                 # optim.method = 'gen', # Genetic algorithm optimization
                  control = list(trace = FALSE, # Turn off tracking to simplify output
                                 pop.size = 50,
                                 max.generations = 20), # Increase robustness
-                 nugget = 5e-2)
+                 nugget = nug)
     
     # Randomly sample 1000 points from the search space.
     pt = 1000; i = 1
@@ -845,11 +810,14 @@ Plotting of the combined dataset.
 For the purposes of initial interpretation, any acid or base concentration below 10^-7 will be considered to be no addition, as this quantity is very small, particularly compared to the amount of quinone (10^-2 or greater).
 
 The selection criteria for a viable result:
-* energy demand < 40 kJ/mol C to be competitive with temperature-swing processes
-* flux > 1/10th of the maximum flux to be as fast as possible
+* energy demand < 33 kJ/mol C to be competitive with temperature-swing processes
+* flux > 1/10th of the flux of MEA capture processes (calculated to be ~2.2 mmol/m2*s)
 
-The Pareto front has a slight concavity at around 0.22 mmol/m2*s where the energy demand increases but the flux remains constant.
+The Pareto front has a slight concavity at around 2.2 mmol/m2*s where the energy demand increases but the flux remains constant.
 This line delineates two regions of interest: a set of options for low energy demands at viable fluxes and a set of options for high flux at viable energy demands.
+
+Partial data cleaning is needed: there are samples where the flux is very strongly negative (less than -10 mol/m2s), which skews the results.
+Adjust the results so that the negative values do not exceed more than 1 order of magnitude as the positive values.
 
 ```{r Optimal Capture Marginals: Setup}
 # Load dataset
@@ -878,41 +846,59 @@ ggplot(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0)) +
                           legend.box.background = element_rect(color = 'black', linetype = 1))
 
 # Regions of interest
-# Region 1: acceptable results: < 40 kJ/mol, > 10% of the maximum flux
-reg.full = data.frame(min.flux = 0.1*max(GPar.front$Flux.mol.m2s),
+# Region 1: acceptable results: based on MEA
+reg.full = data.frame(min.flux = 0.22e-3,
                      max.flux = max(GPar.front$Flux.mol.m2s),
-                     min.ener = min(GPar.front$Energy.kJ.mol), max.ener = 40)
-# Region 2: the right-hand side of high flux but moderate energy, i.e. flux > 0.23 mmol/m2s
-reg.flux = data.frame(min.flux = 0.22e-3, max.flux = max(GPar.front$Flux.mol.m2s),
+                     min.ener = min(GPar.front$Energy.kJ.mol), max.ener = 33)
+# Region 2: the right-hand side of high flux but moderate energy, i.e. flux > 2.2 mmol/m2s. Increase the energy above 45 to capture the Pareto front there
+reg.flux = data.frame(min.flux = 2e-3, max.flux = max(GPar.front$Flux.mol.m2s),
                      min.ener = min(GPar.front$Energy.kJ.mol),
-                     max.ener = 40)
+                     max.ener = 45)
 # Region 3: the bottom section of low energy but moderate flux
-reg.ener = data.frame(min.flux = 0.1*max(GPar.front$Flux.mol.m2s),
+reg.ener = data.frame(min.flux = 0.22e-3,
                      max.flux = max(GPar.front$Flux.mol.m2s), 
                      min.ener = min(GPar.front$Energy.kJ.mol),
-                     max.ener = mean(range(filter(GPar.front, Flux.mol.m2s < 0.23e-3)$Energy.kJ.mol)))
+                     max.ener = mean(range(filter(GPar.front, Flux.mol.m2s < 2.4e-3)$Energy.kJ.mol)))
 # Plotting
+# ggplot() +
+#   geom_rect(reg.full, 
+#             mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
+#             fill = 'lawngreen', linetype = 1, color = 'black', alpha = 0.5) +
+#   geom_line(GPar.front, 
+#             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+#   geom_point(filter(GPar.nat, Energy.kJ.mol < 100, Flux.mol.m2s > 0),
+#              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), 
+#              size = sz) +
+#   labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+#        subtitle = expression('CO'[2]*' Capture by PCET-based pH swing, Generally Acceptable Performance'), 
+#        color = 'pH Correction', shape = 'pH Correction') +
+#   theme_classic() + theme(legend.position = c(0.9, 0.9), 
+#                           legend.box.background = element_rect(color = 'black', linetype = 1))
+# ggplot() +
+#   geom_rect(rbind(reg.flux, reg.ener), 
+#             mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
+#             fill = 'lawngreen', linetype = 1, color = 'black', alpha = 0.5) +
+#   geom_line(GPar.front, 
+#             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
+#   geom_point(filter(GPar.nat, Energy.kJ.mol < 100, Flux.mol.m2s > 0),
+#              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), 
+#              size = sz) +
+#   labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
+#        subtitle = expression('CO'[2]*' Capture by PCET-based pH swing, Optimal Sub-regions'), 
+#        color = 'pH Correction', shape = 'pH Correction') +
+#   theme_classic() + theme(legend.position = c(0.9, 0.9), 
+#                           legend.box.background = element_rect(color = 'black', linetype = 1))
+
 ggplot() +
   geom_rect(reg.full, 
             mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
             fill = 'lawngreen', linetype = 1, color = 'black', alpha = 0.5) +
-  geom_line(GPar.front, 
-            mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
-  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0),
-             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), 
-             size = sz) +
-  labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
-       subtitle = expression('CO'[2]*' Capture by PCET-based pH swing, Generally Acceptable Performance'), 
-       color = 'pH Correction', shape = 'pH Correction') +
-  theme_classic() + theme(legend.position = c(0.9, 0.9), 
-                          legend.box.background = element_rect(color = 'black', linetype = 1))
-ggplot() +
   geom_rect(rbind(reg.flux, reg.ener), 
             mapping = aes(xmin = min.flux*1e3, xmax = max.flux*1e3, ymin = min.ener, ymax = max.ener),
-            fill = 'lawngreen', linetype = 1, color = 'black', alpha = 0.5) +
+            fill = 'sienna2', linetype = 1, color = 'black', alpha = 0.5) +
   geom_line(GPar.front, 
             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
-  geom_point(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0),
+  geom_point(filter(GPar.nat, Energy.kJ.mol < 100, Flux.mol.m2s > 0),
              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = typ.none, shape = typ.none), 
              size = sz) +
   labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
@@ -921,17 +907,15 @@ ggplot() +
   theme_classic() + theme(legend.position = c(0.9, 0.9), 
                           legend.box.background = element_rect(color = 'black', linetype = 1))
 
-
 GPar.nat = GPar.nat[,!(names(GPar.nat) %in% c('typ.none'))]
 
 # Need to use the acid/base conditions as numeric variable, not categorical variable for the GP
-typ = rep(0, nrow(GPar.all))
-typ[GPar.all$typ == '+Acid'] = -1
-typ[GPar.all$typ == '+Base'] = +1
+typ = rep(0, nrow(GPar.nat))
+typ[GPar.nat$typ == '+Acid'] = -1
+typ[GPar.nat$typ == '+Base'] = +1
 GPar.nat$typ = typ
 
 ```
-
 # GP Model setup
 
 There is some inconsistency between runs associated with slightly different GP models.
@@ -960,7 +944,7 @@ for(i in 1:nmod){
   mod = fill.sample.flux(GPar.data = GPar.samp, input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
                              output.name = 'Flux.mol.m2s')
   mod.flux.b = append(mod.flux.b, mod)
-  mod = fill.sample.ener(GPar.data = GPar.samp, 
+  mod = fill.sample.ener(GPar.data = GPar.samp,
                               input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
                               output.name = 'Energy.kJ.mol')
   mod.ener.b = append(mod.ener.b, mod)
@@ -971,7 +955,7 @@ for(i in 1:nmod){
   mod = fill.sample.flux(GPar.data = GPar.samp, input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
                              output.name = 'Flux.mol.m2s')
   mod.flux.a = append(mod.flux.a, mod)
-  mod = fill.sample.ener(GPar.data = GPar.samp, 
+  mod = fill.sample.ener(GPar.data = GPar.samp,
                               input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
                               output.name = 'Energy.kJ.mol')
   mod.ener.a = append(mod.ener.a, mod)
@@ -980,7 +964,6 @@ for(i in 1:nmod){
 rm(nmod, mod, nsamp, GPar.samp)
 
 ```
-
 
 # Importance Rankings
 
@@ -1001,7 +984,7 @@ marginals1D = function(E.cutof, F.cutof, mod.flux.a, mod.ener.a, mod.flux.b, mod
   # Constants
   resolution = 50; MCsamp = 1000
   pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
-  logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
 
   # Dataframe storage
   post.optim = data.frame(pka1 = seq(from = pka1.rng[1], to = pka1.rng[2], length.out = resolution),
@@ -1275,16 +1258,16 @@ ggplot() +
   geom_path(data = margin.reg1$var, mapping = aes(x = pka1, y = h.pka1, color = 'Full'), linetype = 2) +
   geom_path(data = margin.reg1$var, mapping = aes(x = pka1, y = p.pka1, color = 'Full')) +
   # High flux region
-  geom_path(data = margin.reg2$var, mapping = aes(x = pka1, y = l.pka1, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = pka1, y = h.pka1, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = pka1, y = p.pka1, color = 'Flux')) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = pka1, y = l.pka1*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = pka1, y = h.pka1*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = pka1, y = p.pka1*2, color = 'Flux')) +
   # Low Energy region
   geom_path(data = margin.reg3$var, mapping = aes(x = pka1, y = l.pka1, color = 'Ener'), linetype = 2) +
   geom_path(data = margin.reg3$var, mapping = aes(x = pka1, y = h.pka1, color = 'Ener'), linetype = 2) +
   geom_path(data = margin.reg3$var, mapping = aes(x = pka1, y = p.pka1, color = 'Ener')) +
   labs(x = expression('p'*italic(K)['a,1']), y = 'Probability', color = '') +
   scale_color_manual(name = '',
-                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux', 'Ener' = 'Low Energy'),
+                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux (*2)', 'Ener' = 'Low Energy'),
                      values = c('Full' = 'black', 'Flux' = 'red', 'Ener' = 'blue'))
 
 ggplot() +
@@ -1293,53 +1276,55 @@ ggplot() +
   geom_path(data = margin.reg1$var, mapping = aes(x = pka2, y = h.pka2, color = 'Full'), linetype = 2) +
   geom_path(data = margin.reg1$var, mapping = aes(x = pka2, y = p.pka2, color = 'Full')) +
   # High flux region
-  geom_path(data = margin.reg2$var, mapping = aes(x = pka2, y = l.pka2, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = pka2, y = h.pka2, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = pka2, y = p.pka2, color = 'Flux')) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = pka2, y = l.pka2*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = pka2, y = h.pka2*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = pka2, y = p.pka2*2, color = 'Flux')) +
   # Low Energy region
   geom_path(data = margin.reg3$var, mapping = aes(x = pka2, y = l.pka2, color = 'Ener'), linetype = 2) +
   geom_path(data = margin.reg3$var, mapping = aes(x = pka2, y = h.pka2, color = 'Ener'), linetype = 2) +
   geom_path(data = margin.reg3$var, mapping = aes(x = pka2, y = p.pka2, color = 'Ener')) +
   labs(x = expression('p'*italic(K)['a,2']), y = 'Probability', color = '') +
   scale_color_manual(name = '',
-                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux', 'Ener' = 'Low Energy'),
+                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux (*2)', 'Ener' = 'Low Energy'),
                      values = c('Full' = 'black', 'Flux' = 'red', 'Ener' = 'blue'))
 
 ggplot() +
   # Full region
-  geom_path(data = margin.reg1$var, mapping = aes(x = logA, y = l.logA, color = 'Full'), linetype = 2) +
-  geom_path(data = margin.reg1$var, mapping = aes(x = logA, y = h.logA, color = 'Full'), linetype = 2) +
-  geom_path(data = margin.reg1$var, mapping = aes(x = logA, y = p.logA, color = 'Full')) +
+  geom_path(data = margin.reg1$var, mapping = aes(x = 10^logA, y = l.logA, color = 'Full'), linetype = 2) +
+  geom_path(data = margin.reg1$var, mapping = aes(x = 10^logA, y = h.logA, color = 'Full'), linetype = 2) +
+  geom_path(data = margin.reg1$var, mapping = aes(x = 10^logA, y = p.logA, color = 'Full')) +
   # High flux region
-  geom_path(data = margin.reg2$var, mapping = aes(x = logA, y = l.logA, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = logA, y = h.logA, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = logA, y = p.logA, color = 'Flux')) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = 10^logA, y = l.logA*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = 10^logA, y = h.logA*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = 10^logA, y = p.logA*2, color = 'Flux')) +
   # Low Energy region
-  geom_path(data = margin.reg3$var, mapping = aes(x = logA, y = l.logA, color = 'Ener'), linetype = 2) +
-  geom_path(data = margin.reg3$var, mapping = aes(x = logA, y = h.logA, color = 'Ener'), linetype = 2) +
-  geom_path(data = margin.reg3$var, mapping = aes(x = logA, y = p.logA, color = 'Ener')) +
+  geom_path(data = margin.reg3$var, mapping = aes(x = 10^logA, y = l.logA, color = 'Ener'), linetype = 2) +
+  geom_path(data = margin.reg3$var, mapping = aes(x = 10^logA, y = h.logA, color = 'Ener'), linetype = 2) +
+  geom_path(data = margin.reg3$var, mapping = aes(x = 10^logA, y = p.logA, color = 'Ener')) +
   labs(x = expression('log'[10]*' {Quinone}'), y = 'Probability', color = '') +
   scale_color_manual(name = '',
-                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux', 'Ener' = 'Low Energy'),
-                     values = c('Full' = 'black', 'Flux' = 'red', 'Ener' = 'blue'))
+                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux (*2)', 'Ener' = 'Low Energy'),
+                     values = c('Full' = 'black', 'Flux' = 'red', 'Ener' = 'blue')) +
+  scale_x_log10()
 
 ggplot() +
   # Full region
-  geom_path(data = margin.reg1$var, mapping = aes(x = Na.A, y = l.Na.A, color = 'Full'), linetype = 2) +
-  geom_path(data = margin.reg1$var, mapping = aes(x = Na.A, y = h.Na.A, color = 'Full'), linetype = 2) +
-  geom_path(data = margin.reg1$var, mapping = aes(x = Na.A, y = p.Na.A, color = 'Full')) +
+  geom_path(data = margin.reg1$var, mapping = aes(x = 10^Na.A, y = l.Na.A, color = 'Full'), linetype = 2) +
+  geom_path(data = margin.reg1$var, mapping = aes(x = 10^Na.A, y = h.Na.A, color = 'Full'), linetype = 2) +
+  geom_path(data = margin.reg1$var, mapping = aes(x = 10^Na.A, y = p.Na.A, color = 'Full')) +
   # High flux region
-  geom_path(data = margin.reg2$var, mapping = aes(x = Na.A, y = l.Na.A, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = Na.A, y = h.Na.A, color = 'Flux'), linetype = 2) +
-  geom_path(data = margin.reg2$var, mapping = aes(x = Na.A, y = p.Na.A, color = 'Flux')) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = 10^Na.A, y = l.Na.A*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = 10^Na.A, y = h.Na.A*2, color = 'Flux'), linetype = 2) +
+  geom_path(data = margin.reg2$var, mapping = aes(x = 10^Na.A, y = p.Na.A*2, color = 'Flux')) +
   # Low Energy region
-  geom_path(data = margin.reg3$var, mapping = aes(x = Na.A, y = l.Na.A, color = 'Ener'), linetype = 2) +
-  geom_path(data = margin.reg3$var, mapping = aes(x = Na.A, y = h.Na.A, color = 'Ener'), linetype = 2) +
-  geom_path(data = margin.reg3$var, mapping = aes(x = Na.A, y = p.Na.A, color = 'Ener')) +
+  geom_path(data = margin.reg3$var, mapping = aes(x = 10^Na.A, y = l.Na.A, color = 'Ener'), linetype = 2) +
+  geom_path(data = margin.reg3$var, mapping = aes(x = 10^Na.A, y = h.Na.A, color = 'Ener'), linetype = 2) +
+  geom_path(data = margin.reg3$var, mapping = aes(x = 10^Na.A, y = p.Na.A, color = 'Ener')) +
   labs(x = expression('log'[10]*' {Acid or Base}'), y = 'Probability', color = '') +
   scale_color_manual(name = '',
-                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux', 'Ener' = 'Low Energy'),
-                     values = c('Full' = 'black', 'Flux' = 'red', 'Ener' = 'blue'))
+                     labels = c('Full' = 'Viable', 'Flux' = 'High Flux (*2)', 'Ener' = 'Low Energy'),
+                     values = c('Full' = 'black', 'Flux' = 'red', 'Ener' = 'blue')) +
+  scale_x_log10()
 
 # Acid/base: side-by-side
 acid.base = data.frame(typ = c('Acid', 'Base'),
@@ -1411,10 +1396,10 @@ For low energy conditions, the importance ranking is generally
 * Quinone concentration
 * Acid/Base choice
 
+For the high flux condition, the quinone concentration is substantially more important, but the other of the other variables is the same.
+
 Importance ranking suggests that the quinone characteristics (pKas and, to a lesser extent, the solubility limit) are more important than the operating condition decisions (precise concentrations of quinone and pH correction compound, as well as the decision of acid or base) regardless of the selection criteria.
 The acid/base decision has very low importance largely because the difference between acidic and basic conditions is small (about 2% probability difference between picking acid vs base).
-
-#### ----
 
 # Suggested ranges
 
@@ -1435,11 +1420,11 @@ Since quinone concentration and pKa1 are largely independent, switching this ord
 
 
 ```{r Suggested Ranges: Functions}
-suggest.pka2 = function(E.cutof, F.cutof, mod.ener, mod.flux, resolution, MCsamp){
+suggest.pka2 = function(E.cutof, F.cutof, mod.ener.a, mod.flux.a, mod.ener.b, mod.flux.b, resolution, MCsamp){
   # Constants
   # resolution = 100; MCsamp = 600
   pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
-  logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
   
   # Optimal range for pKa2
   range.pka2 = data.frame(pka2 = seq(from = pka1.rng[1] + pka2.rng[1], 
@@ -1455,26 +1440,26 @@ suggest.pka2 = function(E.cutof, F.cutof, mod.ener, mod.flux, resolution, MCsamp
     fill.frame = data.frame(pka2 = range.pka2$pka2[i],
                             pka1 = runif(n = MCsamp, min = pka1.rng.test[1], max = pka1.rng.test[2]),
                             logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                            typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2)))
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
     fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
-    set.flux = sample(1:length(mod.flux), length(mod.flux))
-    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+    set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
     p = c(); p.a = c(); p.b = c()
     for(j in 1:length(set.flux)){
-      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      # Acid
+      res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
       p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
         pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-      # If the flux is negative, then the probability of accepting the flux criteria is 0
-      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
-      p.accept[res.sign$mean < 0] = 0
-      p[j] = mean(p.accept)
-      # Acid and base metrics
-      p.a[j] = mean(p.accept[fill.frame$typ == -1])
-      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+      p.a[j] = mean(p.accept)
+      # Base
+      res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      p.b[j] = mean(p.accept)
     }
-    range.pka2$p.pka2[i] = mean(p)
+    range.pka2$p.pka2[i] = mean(c(p.a, p.b))
     range.pka2$p.a[i] = mean(p.a)
     range.pka2$p.b[i] = mean(p.b)
   }
@@ -1500,12 +1485,12 @@ suggest.pka2 = function(E.cutof, F.cutof, mod.ener, mod.flux, resolution, MCsamp
                     lo.wk = c(pka2.lo.wk.a, pka2.lo.wk.b), lo.st = c(pka2.lo.st.a, pka2.lo.st.b)))
 }
 
-suggest.pka1 = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, resolution, MCsamp){
+suggest.pka1 = function(E.cutof, F.cutof, mod.ener.a, mod.flux.a, mod.ener.b, mod.flux.b, range.pka2, resolution, MCsamp){
   # Include suggested ranges for more important variables
   pka2.rng.wk = range.pka2$wk; pka2.rng.st = range.pka2$st
   # Set up the marginalization, higher resolution than the single variable marginals for plotting
   # resolution = 100; MCsamp = 600
-  pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5); logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5); logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
 
   # Due to the relationship between pKa1 and pKa2, the range of pKa1 is already partially restricted.
   range.pka1.st = data.frame(pka1 = seq(from = max(min(pka1.rng), min(pka2.rng.st) - pka2.rng[2]),
@@ -1525,26 +1510,26 @@ suggest.pka1 = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, resolu
     fill.frame = data.frame(pka1 = range.pka1.st$pka1[i],
                             pka2 = runif(n = MCsamp, min = pka2.testrng[1], max = pka2.testrng[2]),
                             logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                            typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2)))
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
     fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
-    set.flux = sample(1:length(mod.flux), length(mod.flux))
-    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+    set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
     p = c(); p.a = c(); p.b = c()
     for(j in 1:length(set.flux)){
-      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      # Acid
+      res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
       p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
         pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-      # If the flux is negative, then the probability of accepting the flux criteria is 0
-      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
-      p.accept[res.sign$mean < 0] = 0
-      p = mean(p.accept)
-      # Acid and base metrics
-      p.a[j] = mean(p.accept[fill.frame$typ == -1])
-      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+      p.a[j] = mean(p.accept)
+      # Base
+      res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      p.b[j] = mean(p.accept)
     }
-    range.pka1.st$p.pka1[i] = mean(p)
+    range.pka1.st$p.pka1[i] = mean(c(p.a, p.b))
     range.pka1.st$p.a[i] = mean(p.a)
     range.pka1.st$p.b[i] = mean(p.b)
 
@@ -1555,26 +1540,26 @@ suggest.pka1 = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, resolu
     fill.frame = data.frame(pka1 = range.pka1.wk$pka1[i],
                             pka2 = runif(n = MCsamp, min = pka2.testrng[1], max = pka2.testrng[2]),
                             logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                            typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2)))
+                            Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
     fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
-    set.flux = sample(1:length(mod.flux), length(mod.flux))
-    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+    set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
     p.accept = c(); p.a = c(); p.b = c()
     for(j in 1:length(set.flux)){
-      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      # Acid
+      res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
       p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
         pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-      # If the flux is negative, then the probability of accepting the flux criteria is 0
-      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
-      p.accept[res.sign$mean < 0] = 0
-      p = mean(p.accept)
-      # Acid and base metrics
-      p.a[j] = mean(p.accept[fill.frame$typ == -1])
-      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+      p.a[j] = mean(p.accept)
+      # Base
+      res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      p.b[j] = mean(p.accept)
     }
-    range.pka1.wk$p.pka1[i] = mean(p)
+    range.pka1.wk$p.pka1[i] = mean(c(p.a, p.b))
     range.pka1.wk$p.a[i] = mean(p.a)
     range.pka1.wk$p.b[i] = mean(p.b)
   }
@@ -1600,13 +1585,14 @@ suggest.pka1 = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, resolu
                     lo.wk = c(pka1.lo.wk.a, pka1.lo.wk.b), lo.st = c(pka1.lo.st.a, pka1.lo.st.b)))
 }
 
-suggest.logA = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.pka1, resolution, MCsamp){
+suggest.logA = function(E.cutof, F.cutof, mod.ener.a, mod.flux.a, mod.ener.b, mod.flux.b, 
+                        range.pka2, range.pka1, resolution, MCsamp){
   # Include suggested ranges for more important variables
   pka2.rng.wk = range.pka2$wk; pka2.rng.st = range.pka2$st
   pka1.rng.wk = range.pka1$wk; pka1.rng.st = range.pka1$st
   # Set up the marginalization, higher resolution than the single variable marginals for plotting
   # resolution = 100; MCsamp = 600
-  pka2.rng = c(0, 5.5); logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  pka2.rng = c(0, 5.5); logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
   
   range.logA = data.frame(logA = seq(from = min(logA.rng), to = max(logA.rng), length.out = resolution),
                           p.logA.wk = NaN, p.logA.st = NaN, 
@@ -1631,24 +1617,24 @@ suggest.logA = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.
     }
     fill.frame = fill.frame[1:MCsamp, ]
     fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
-    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
-    set.flux = sample(1:length(mod.flux), length(mod.flux))
-    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+    set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
     p = c(); p.a = c(); p.b = c()
     for(j in 1:length(set.flux)){
-      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      # Acid
+      res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
       p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
         pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-      # If the flux is negative, then the probability of accepting the flux criteria is 0
-      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
-      p.accept[res.sign$mean < 0] = 0
-      p[j] = mean(p.accept)
-      # Acid and base metrics
-      p.a[j] = mean(p.accept[fill.frame$typ == -1])
-      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+      p.a[j] = mean(p.accept)
+      # Base
+      res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      p.b[j] = mean(p.accept)
     }
-    range.logA$p.logA.st[i] = mean(p)
+    range.logA$p.logA.st[i] = mean(c(p.a, p.b))
     range.logA$p.a.st[i] = mean(p.a)
     range.logA$p.b.st[i] = mean(p.b)
     
@@ -1669,24 +1655,24 @@ suggest.logA = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.
     }
     fill.frame = fill.frame[1:MCsamp, ]
     fill.frame$Na.A = fill.frame$Na.A + fill.frame$logA
-    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
-    set.flux = sample(1:length(mod.flux), length(mod.flux))
-    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+    set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
     p = c(); p.a = c(); p.b = c()
     for(j in 1:length(set.flux)){
-      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      # Acid
+      res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
       p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
         pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-      # If the flux is negative, then the probability of accepting the flux criteria is 0
-      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
-      p.accept[res.sign$mean < 0] = 0
-      p[j] = mean(p.accept)
-      # Acid and base metrics
-      p.a[j] = mean(p.accept[fill.frame$typ == -1])
-      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+      p.a[j] = mean(p.accept)
+      # Base
+      res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      p.b[j] = mean(p.accept)
     }
-    range.logA$p.logA.wk[i] = mean(p)
+    range.logA$p.logA.wk[i] = mean(c(p.a, p.b))
     range.logA$p.a.wk[i] = mean(p.a)
     range.logA$p.b.wk[i] = mean(p.b)
   }
@@ -1711,14 +1697,15 @@ suggest.logA = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.
                     lo.wk = c(logA.lo.wk.a, logA.lo.wk.b), lo.st = c(logA.lo.st.a, logA.lo.st.b)))
 }
 
-suggest.Na.A = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.pka1, range.logA, resolution, MCsamp){
+suggest.Na.A = function(E.cutof, F.cutof, mod.ener.a, mod.flux.a, mod.ener.b, mod.flux.b, 
+                        range.pka2, range.pka1, range.logA, resolution, MCsamp){
   # Include suggested ranges for more important variables
   pka2.rng.wk = range.pka2$wk; pka2.rng.st = range.pka2$st
   pka1.rng.wk = range.pka1$wk; pka1.rng.st = range.pka1$st
   logA.rng.wk = range.logA$wk; logA.rng.st = range.logA$st
   # Set up the marginalization, higher resolution than the single variable marginals for plotting
   # resolution = 100; MCsamp = 600
-  pka2.rng = c(0, 5.5); logA.rng = c(-1.6, 0.5); Na.A.rng = c(-7, 0.7)
+  pka2.rng = c(0, 5.5); logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
 
   range.Na.A = data.frame(Na.A.wk = seq(from = min(Na.A.rng) + min(logA.rng.wk),
                                         to = max(Na.A.rng) + max(logA.rng.wk), length.out = resolution),
@@ -1748,24 +1735,24 @@ suggest.Na.A = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.
       fill.frame = rbind(fill.frame, fill.add)
     }
     fill.frame = fill.frame[1:MCsamp, ]
-    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
-    set.flux = sample(1:length(mod.flux), length(mod.flux))
-    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+    set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
     p = c(); p.a = c(); p.b = c()
     for(j in 1:length(set.flux)){
-      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      # Acid
+      res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
       p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
         pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-      # If the flux is negative, then the probability of accepting the flux criteria is 0
-      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
-      p.accept[res.sign$mean < 0] = 0
-      p[j] = mean(p.accept)
-      # Acid and base metrics
-      p.a[j] = mean(p.accept[fill.frame$typ == -1])
-      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+      p.a[j] = mean(p.accept)
+      # Base
+      res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      p.b[j] = mean(p.accept)
     }
-    range.Na.A$p.Na.A.st[i] = mean(p)
+    range.Na.A$p.Na.A.st[i] = mean(c(p.a, p.b))
     range.Na.A$p.Na.A.a.st[i] = mean(p.a)
     range.Na.A$p.Na.A.b.st[i] = mean(p.b)
     # Weak suggestion
@@ -1786,24 +1773,24 @@ suggest.Na.A = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.
       fill.frame = rbind(fill.frame, fill.add)
     }
     fill.frame = fill.frame[1:MCsamp, ]
-    fill.frame$typ = c(rep(-1, MCsamp/2), rep(1, MCsamp/2))
-    set.flux = sample(1:length(mod.flux), length(mod.flux))
-    set.ener = sample(1:length(mod.ener), length(mod.ener))
+    set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+    set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
     p = c(); p.a = c(); p.b = c()
     for(j in 1:length(set.flux)){
-      res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-      res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      # Acid
+      res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
       p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
         pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-      # If the flux is negative, then the probability of accepting the flux criteria is 0
-      res.sign = predict(object = mod.sign,                newdata = fill.frame, type = 'UK')
-      p.accept[res.sign$mean < 0] = 0
-      p[j] = mean(p.accept)
-      # Acid and base metrics
-      p.a[j] = mean(p.accept[fill.frame$typ == -1])
-      p.b[j] = mean(p.accept[fill.frame$typ == +1])
+      p.a[j] = mean(p.accept)
+      # Base
+      res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+      res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+      p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+        pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+      p.b[j] = mean(p.accept)
     }
-    range.Na.A$p.Na.A.wk[i] = mean(p)
+    range.Na.A$p.Na.A.wk[i] = mean(c(p.a, p.b))
     range.Na.A$p.Na.A.a.wk[i] = mean(p.a)
     range.Na.A$p.Na.A.b.wk[i] = mean(p.b)
   }
@@ -1830,25 +1817,29 @@ suggest.Na.A = function(E.cutof, F.cutof, mod.ener, mod.flux, range.pka2, range.
 }
 
 
-suggest.ranges = function(E.cut, F.cut, mod.ener, mod.flux){
+suggest.ranges = function(E.cut, F.cut, mod.ener.a, mod.flux.a, mod.ener.b, mod.flux.b){
   # Monte Carlo sample resolution
-  resolution = 75; MCsamp = 1000
-  # Convert cutoffs to log units
+  resolution = 75; MCsamp = 500
+  # Convert energy cutoffs to log units
   E.cut = log10(E.cut)
-  F.cut = log10(F.cut^2)
+
   region.pka2 = suggest.pka2(E.cutof = E.cut, F.cutof = F.cut, 
-               mod.ener = mod.ener, mod.flux = mod.flux,
+               mod.ener.a = mod.ener.a, mod.flux.a = mod.flux.a,
+               mod.ener.b = mod.ener.b, mod.flux.b = mod.flux.b,
                resolution = resolution, MCsamp = MCsamp)
   region.pka1 = suggest.pka1(E.cutof = E.cut, F.cutof = F.cut,
-               mod.ener = mod.ener, mod.flux = mod.flux,
+               mod.ener.a = mod.ener.a, mod.flux.a = mod.flux.a,
+               mod.ener.b = mod.ener.b, mod.flux.b = mod.flux.b,
                range.pka2 = region.pka2,
                resolution = resolution, MCsamp = MCsamp)
   region.logA = suggest.logA(E.cutof = E.cut, F.cutof = F.cut,
-               mod.ener = mod.ener, mod.flux = mod.flux,
+               mod.ener.a = mod.ener.a, mod.flux.a = mod.flux.a,
+               mod.ener.b = mod.ener.b, mod.flux.b = mod.flux.b,
                range.pka2 = region.pka2, range.pka1 = region.pka1,
                resolution = resolution, MCsamp = MCsamp)
   region.Na.A = suggest.Na.A(E.cutof = E.cut, F.cutof = F.cut,
-               mod.ener = mod.ener, mod.flux = mod.flux,
+               mod.ener.a = mod.ener.a, mod.flux.a = mod.flux.a,
+               mod.ener.b = mod.ener.b, mod.flux.b = mod.flux.b,
                range.pka2 = region.pka2, range.pka1 = region.pka1, range.logA = region.logA,
                resolution = resolution, MCsamp = MCsamp)
   return(list(pka2 = region.pka2, pka1 = region.pka1, logA = region.logA, Na.A = region.Na.A))
@@ -1857,11 +1848,14 @@ suggest.ranges = function(E.cut, F.cut, mod.ener, mod.flux){
 
 ```{r Suggested Ranges}
 reg.full.ranges = suggest.ranges(E.cut = reg.full$max.ener, F.cut = reg.full$min.flux, 
-                                mod.ener = mod.ener, mod.flux = mod.flux)
+                                mod.ener.a = mod.ener.a, mod.flux.a = mod.flux.a,
+                                mod.ener.b = mod.ener.b, mod.flux.b = mod.flux.b)
 reg.flux.ranges = suggest.ranges(E.cut = reg.flux$max.ener, F.cut = reg.flux$min.flux, 
-                                mod.ener = mod.ener, mod.flux = mod.flux)
+                                mod.ener.a = mod.ener.a, mod.flux.a = mod.flux.a,
+                                mod.ener.b = mod.ener.b, mod.flux.b = mod.flux.b)
 reg.ener.ranges = suggest.ranges(E.cut = reg.ener$max.ener, F.cut = reg.ener$min.flux, 
-                                mod.ener = mod.ener, mod.flux = mod.flux)
+                                mod.ener.a = mod.ener.a, mod.flux.a = mod.flux.a,
+                                mod.ener.b = mod.ener.b, mod.flux.b = mod.flux.b)
 
 # Save ranges
 write.csv(x = reg.full.ranges, file = 'AcceptRanges.csv')
@@ -2277,20 +2271,20 @@ GPar.nat$typ.none = GPar.nat$typ
 GPar.nat$typ.none[GPar.nat$Na.A < -7] = 'None'
 
 # Target points based on the Pareto front
-test.sys = data.frame(pka1 = c(12.7,  7.35,  4.9),
-                      pka2 = c(16,   11.25,  9.2),
-                      logA = c(0.5,   0.5, -0.7),
-                      Na =    c(-6,   -1, -6),
-                      acid = c(-1,   -1, -1),
+test.sys = data.frame(pka1 = c(region.pk$pka1[7],  7.35,   region.pk$pka1[12]),
+                      pka2 = c(region.pk$pka2[7],   11.25, region.pk$pka2[12]),
+                      logA = c(region.pk$logA[7],   0.5,   region.pk$logA[12]),
+                      Na.A = c(region.pk$Na.A[7],   -1,    region.pk$Na.A[12]),
+                      acid = c(region.pk$typ[7],   -1,     region.pk$typ[12]),
                       label = c('Global High Flux', 'Local High Flux', 'Low Energy') )
 # # Target points based on the marginals - best, worst, and 1-variable exchanges
-exch.sys = data.frame(pka1 = rep(reg.full.ranges$pka1.pk.st[1], 5), 
-                      pka2 = rep(reg.full.ranges$pka2.pk.st[1], 5), 
-                      logA = rep(reg.full.ranges$logA.pk.st[1], 5),
-                      Na = rep(reg.full.ranges$Na.A.pk.st[1], 5), acid = rep(1, 5))
-poor = c(reg.full.ranges$pka1.lo.st[1], reg.full.ranges$pka2.lo.st[1], 
-         reg.full.ranges$logA.lo.st[1], reg.full.ranges$Na.A.lo.st[1])
-wt = 0 # Weighted average so it does not move too far for plotting purposes. Set to 0 as a check
+exch.sys = data.frame(pka1 = rep(reg.full.ranges$pka1.pk.st[2], 5), 
+                      pka2 = rep(reg.full.ranges$pka2.pk.st[2], 5), 
+                      logA = rep(reg.full.ranges$logA.pk.st[2], 5),
+                      Na.A = rep(reg.full.ranges$Na.A.pk.st[2], 5), acid = rep(1, 5))
+poor = c(reg.full.ranges$pka1.lo.st[2], reg.full.ranges$pka2.lo.st[2], 
+         reg.full.ranges$logA.lo.st[2], reg.full.ranges$Na.A.lo.st[2])
+wt = 0.5 # Weighted average so it does not move too far; interested in relatively small perturbations
 for(i in 1:length(poor)){
   exch.sys[i,i] = wt*exch.sys[i,i] + (1-wt)*poor[i]
 }
@@ -2301,7 +2295,7 @@ exch.sys$label = c('Bad pka1', 'Bad pka2', 'Bad {Quinone}', 'Bad {pH Correction}
 test.sys = rbind(test.sys, exch.sys)
 rm(exch.sys)
 
-res = PCET.obj.flu(inputs = as.matrix(test.sys[,c('pka1', 'pka2', 'logA', 'Na', 'acid')]))
+res = PCET.obj.flu(inputs = as.matrix(test.sys[,c('pka1', 'pka2', 'logA', 'Na.A', 'acid')]))
 test.sys$Energy.kJ.mol = res[1:nrow(test.sys)]
 test.sys$Flux.mol.m2s = res[(nrow(test.sys)+1):length(res)]
 # Normalized distance due to the single variable change
@@ -2314,31 +2308,47 @@ test.sys
 # For plotting purposes
 test.sys$Energy.kJ.mol[test.sys$Energy.kJ.mol > 100] = 100
 test.sys$Flux.mol.m2s[test.sys$Flux.mol.m2s < 0] = 0
+typ = rep('+Acid', nrow(test.sys))
+typ[test.sys$typ == 1] = '+Base'
+test.sys$typ = typ
+test.sys
+
+# Update GPar.front with the predicted points
+front = data.frame(x1 = c(GPar.front$Energy.kJ.mol, test.sys$Energy.kJ.mol),
+                   x2 = -c(GPar.front$Flux.mol.m2s, test.sys$Flux.mol.m2s))
+test = as.matrix(front)
+# For the Pareto front determination, need both to minimize
+par.front = t(nondominated_points(points = t(test)))
+par.front[,2] = -par.front[,2]
+# Identify the conditions leading to the Pareto front
+GPar.front = filter(rbind(GPar.front[, names(GPar.front) %in% names(test.sys)], 
+                          test.sys[, names(test.sys) %in% names(GPar.front)]),
+                    Energy.kJ.mol %in% par.front[,1], Flux.mol.m2s %in% par.front[,2])
 
 # Good points
 ggplot() +
   # Data and guide lines
   geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
-  geom_hline(yintercept = 40, color = 'black', linetype = 2) +
+  geom_hline(yintercept = 33, color = 'black', linetype = 2) +
   geom_vline(xintercept = 0.1*max(GPar.front$Flux.mol.m2s)*1e3, color = 'black', linetype = 2) +
   geom_point(filter(GPar.nat, Energy.kJ.mol < 50, Flux.mol.m2s > 0), 
              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), size = sz, color = 'black', alpha = 0.5) +
   # Good points of interest
-  geom_point(data = filter(test.sys, Energy.kJ.mol < 50, Flux.mol.m2s > 0)[c(1:3, 8),], 
-             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = label), 
-             shape = 19, size = 3, stroke = 2) +
+  geom_point(data = filter(test.sys)[c(1, 3, 8),], 
+  # geom_point(data = filter(test.sys)[c(1:3, 8),], 
+             mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = label, shape = label), 
+             size = 3) +
   labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
        subtitle = expression('CO'[2]*' Capture by PCET-based pH swing'), 
-       color = 'Example Cases') +
+       color = 'Model Prediction', shape = 'Model Prediction') +
   theme_classic() + theme(#legend.position = c(0.9, 0.9), 
-                          legend.box.background = element_rect(color = 'black', linetype = 1)) +
-  guides(shape = FALSE)
+                          legend.box.background = element_rect(color = 'black', linetype = 1))
 
 # Bad points relative to peak probability
 g.points = ggplot() +
   # Data and guide lines
   geom_line(GPar.front, mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), color = 'black') +
-  geom_hline(yintercept = 40, color = 'black', linetype = 2) +
+  geom_hline(yintercept = 33, color = 'black', linetype = 2) +
   geom_vline(xintercept = 0.1*max(GPar.front$Flux.mol.m2s)*1e3, color = 'black', linetype = 2) +
   geom_point(filter(GPar.nat, Energy.kJ.mol < 50, Flux.mol.m2s > 0), 
              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), size = sz, color = 'black', alpha = 0.25) +
@@ -2482,33 +2492,39 @@ plt.demo.E(test.sys = test.sys, i = 8)
 
 Electrode potentials track with the solution pH due to the pH dependence of the Nernst potential.
 
-
-
 # Compare to known data
 
 A small set of quinone pKas was used to constrain the search space.
 This same dataset can be assessed for the likelihood that any compound will be viable given only the pKa values.
 
-#```{r Known compounds assessment}
+```{r Known compounds assessment}
 quinone.data$p.accept = NaN
 lower = 0.25; upper = 0.75
+MCsamp = 600
+logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
+F.cutof = reg.full$min.flux
+E.cutof = reg.full$max.ener
 
 for(i in 1:nrow(quinone.data)){
   # pKas
   fill.frame = data.frame(pka1 = quinone.data$Pka.1[i],
                           pka2 = quinone.data$Pka.2[i],
                           logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                          typ = -1)
-  set.flux = sample(1:length(mod.flux), length(mod.flux))
-  set.ener = sample(1:length(mod.ener), length(mod.ener))
-  p = c(); h = c(); l = c()
+                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]))
+  set.flux = sample(1:length(mod.flux.a), length(mod.flux.a))
+  set.ener = sample(1:length(mod.ener.a), length(mod.ener.a))
+  p = rep(NA, 2*length(mod.flux.a))
   for(j in 1:length(set.flux)){
-    res.flux = predict(object = mod.flux[[set.flux[j]]], newdata = fill.frame, type = 'UK')
-    res.ener = predict(object = mod.ener[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+    res.flux = predict(object = mod.flux.a[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+    res.ener = predict(object = mod.ener.a[[set.ener[j]]], newdata = fill.frame, type = 'UK')
     p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
       pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
     p[j] = mean(p.accept)
+    res.flux = predict(object = mod.flux.b[[set.flux[j]]], newdata = fill.frame, type = 'UK')
+    res.ener = predict(object = mod.ener.b[[set.ener[j]]], newdata = fill.frame, type = 'UK')
+    p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
+      pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
+    p[j+length(mod.flux.a)] = mean(p.accept)
   }
   quinone.data$p.accept[i] = mean(p)
 }
@@ -2527,7 +2543,7 @@ g1 = ggplot() +
   geom_density(data = filter(quinone.data, p.accept > p.cutof), 
                mapping = aes(x = Pka.1), color = 'red', linetype = 2) +
   # Optimal ranges
-  geom_vline(xintercept = pka1.rng.st, color = 'darkred', linetype = 'dotted', alpha = 0.5) +
+  # geom_vline(xintercept = pka1.rng.st, color = 'darkred', linetype = 'dotted', alpha = 0.5) +
   labs(x = expression('p'*italic(K)['a,1']), y = 'Likelihood Weighted Density', subtitle = 'Viable Known Quinones',
        color = '')
 
@@ -2537,7 +2553,7 @@ g2 = ggplot() +
   geom_density(data = filter(quinone.data, p.accept > p.cutof),
                mapping = aes(x = Pka.2), color = 'blue', linetype = 2) +
   # Optimal ranges
-  geom_vline(xintercept = pka2.rng.st, color = 'darkblue', linetype = 'dotted', alpha = 0.5) +
+  # geom_vline(xintercept = pka2.rng.st, color = 'darkblue', linetype = 'dotted', alpha = 0.5) +
   labs(x = expression('p'*italic(K)['a,2']), y = 'Likelihood Weighted Density', subtitle = 'Viable Known Quinones',
        color = '')
 g1 / g2
@@ -2554,3 +2570,64 @@ Apart from the single quinone with a low first pKa, all fit within the calculate
 
 The top candidates appear to have strong electron withdrawing groups (primarily oxygen-containing functionalities separated from the aromatic ring), while the less likely candidates have electron donating groups. 
 However, this is not a strict rule - for instance, the most promising candidate contains only alcohols (electron donating groups).
+
+Breakdown into function groups
+
+```{r}
+groups = unique(c(quinone.data$R2, quinone.data$R3, quinone.data$R5, quinone.data$R6))
+# Not concerned with the hydrogen case
+groups = groups[-c(groups %in% 'H')]
+groups
+
+# Classifying the groups according to donoating/withdrawing and relative strength (using the standard ladder)
+type = c('Donating', 'Donating', 'Donating', 'Donating', 'Donating', 'Donating', 'Donating', 'Donating',
+                    'Donating', 'Withdrawing', 'Withdrawing', 'Withdrawing', '?', '?', 'Withdrawing', 'Withdrawing',
+                    'Withdrawing', 'Withdrawing', 'Withdrawing', 'Withdrawing', 'Withdrawing', 'Withdrawing')
+str = c(2, 3, 3, 6, 9, 8, 3, 7, 6, -1, -1, -1, NA, NA, -2, -4, -7, -8, -5, -8, -12, -3)
+
+# Find average probability if any substitutions are that functional group
+group.dist = data.frame()
+for(i in 1:length(groups)){
+  subst = groups[i]
+  # Probability of being viable
+  p.viable = c(filter(quinone.data, R2 == subst)$p.accept, filter(quinone.data, R3 == subst)$p.accept,
+               filter(quinone.data, R5 == subst)$p.accept, filter(quinone.data, R6 == subst)$p.accept)
+  # Standard reduction potentials
+  e1 = c(filter(quinone.data, R2 == subst)$E0.1, filter(quinone.data, R3 == subst)$E0.1,
+         filter(quinone.data, R5 == subst)$E0.1, filter(quinone.data, R6 == subst)$E0.1)
+  e2 = c(filter(quinone.data, R2 == subst)$E0.2, filter(quinone.data, R3 == subst)$E0.2,
+         filter(quinone.data, R5 == subst)$E0.2, filter(quinone.data, R6 == subst)$E0.2)
+  
+  group.dist = rbind(group.dist, 
+                     data.frame(group = subst, probs = p.viable,
+                                E01 = e1, E02 = e2,
+                                type = type[i], str = str[i]) )
+}
+# group.dist
+ggplot(filter(group.dist, is.na(str) == FALSE)) +
+  geom_violin(mapping = aes(x = type, y = probs)) +
+  labs(x = 'Substituent Effect', y = 'Probability of Viability')
+
+ggplot(filter(group.dist, is.na(str) == FALSE)) +
+  geom_violin(mapping = aes(x = as.factor(str), y = probs, fill = type, color = type), alpha = 0.5, weight = 20) +
+  labs(title = 'Substituent Effect', y = 'Probability of Viability', x = '', fill = '', color = '') +
+  scale_x_discrete(breaks = c(-12, 9),
+                   labels = c('More Withdrawing', 'More Donating')) +
+  scale_color_manual(values = c('red', 'blue')) +
+  scale_fill_manual(values = c('red', 'blue')) +
+  coord_flip()
+
+
+ggplot(filter(group.dist, is.na(str) == FALSE)) +
+  geom_violin(mapping = aes(x = as.factor(str), y = E01, fill = 'e1'), alpha = 0.5) +
+  geom_violin(mapping = aes(x = as.factor(str), y = E02, fill = 'e2'), alpha = 0.5) +
+  labs(title = 'Substituent Effect', y = 'Standard Reduction Potential', x = '') +
+  scale_x_discrete(breaks = c(-12, 9),
+                   labels = c('More Withdrawing', 'More Donating')) +
+  scale_fill_manual(name = 'Electron', 
+                     labels = c('e1' = 'First', 'e2' = 'Second'),
+                     values = c('e1' = 'red', 'e2' = 'blue')) +
+  coord_flip()
+
+```
+

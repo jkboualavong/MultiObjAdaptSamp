@@ -45,129 +45,11 @@ library(GA)
 ## Parameter space
 Data for restricting the quinone features is based on results from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
 
-Remove points that are not likely to be stable within the electrochemcial window of water. For the process:
-Q + 2e- + 2H+ <-> QH2
-We can roughly assume that the reduction reaction is competing with hydrogen evolution
-2H+ + 2e- <-> H2
-and the oxidation reaction is competing with oxygen evolution
-2H2O + 4OH- <-> O2 + 4e-
-
-Both of these reactions are pH dependent, so the cutoff values are not obvious. 
-At the extreme, the reduction potential of hydrogen evolution will be at its highest (most likely to compete with the quinone reduction) at the lowest pH, which would typically be at the pH where carbonic acid makes up > 90% of the CO2 speciation (pH = 5.33).
-Similarly, the reduction potential of oxygen evolution will be at its lowest at the highest pH, which would be just above the hydroquinone's buffer region (the higher of its pKas + 1).
-
-Practically, the quinone electrochemistry has much faster kinetics than either gas evolution reaction in the absence of a specific water-splitting catalyst, so a tolerance of about 200 mV will be added to accommodate.
-
-```{r}
-# Load data and correlation plot package
-quinone.data = read.csv(file = 'HuynhData.csv', skip = 1)
-
-# Filter the data to only those whose reaction would be stable in water
-## Hydrogen evolution
-h2.evo = -59.2*1e-3 * 5.33
-quinone.data = filter(quinone.data, E0.2 > h2.evo)
-
-## Cutoff value for oxygen evolution
-o2.evo = 1.229 + -59.2*1e-3*quinone.data$Pka.2+1
-quinone.data = filter(quinone.data, E0.1 < o2.evo)
-
-quinone.data
-
-# Correlation plot between the E0 and pka values
-cor.mat = matrix(data = rep(0, 16), nrow = 4)
-for(i in seq(from = 6, to = 9, by = 1)){
-  for(j in seq(from = i, to = 9, by = 1)){
-    cor.mat[i-5,j-5] = cor(x = quinone.data[,i], y = quinone.data[,j])
-  }
-}
-cor.mat
-
-g1 = ggplot(quinone.data) +
-  geom_point(mapping = aes(y = E0.1, x = E0.2)) +
-  labs(subtitle = paste('r = ', round(cor.mat[1,2], 3))) 
-g2 = ggplot(quinone.data) +
-  geom_point(mapping = aes(y = E0.1, x = Pka.1)) +
-  labs(subtitle = paste('r = ', round(cor.mat[1,3], 3)))
-g3 = ggplot(quinone.data) +
-  geom_point(mapping = aes(y = E0.1, x = Pka.2)) +
-  labs(subtitle = paste('r = ', round(cor.mat[1,4], 3)))
-g4 = ggplot(quinone.data) +
-  geom_point(mapping = aes(y = E0.2, x = Pka.1)) +
-  labs(subtitle = paste('r = ', round(cor.mat[2,3], 3)))
-g5 = ggplot(quinone.data) +
-  geom_point(mapping = aes(y = E0.2, x = Pka.2)) +
-  labs(subtitle = paste('r = ', round(cor.mat[2,4], 3)))
-g6 = ggplot(quinone.data) +
-  geom_point(mapping = aes(y = Pka.1, x = Pka.2)) +
-  labs(subtitle = paste('r = ', round(cor.mat[3,4], 3)))
-
-(g1 + g2 + g3) / (plot_spacer() + g4 + g5) / (plot_spacer() + plot_spacer() + g6)
-rm(g1, g2, g3, g4, g5, g6)
-rm(h2.evo, i, j, o2.evo, cor.mat)
-```
-
-While all four variables are strongly co-correlated, this is largely irrelevant because the thermodynamic and kinetic analyses do not rely on the reduction potential besides assuming that gas evolution does not occur.
-There is a Bronsted-like relationship between the reduction potential and the reaction rate of the deprotonated hydroquinone nucleophilically attacking the CO2 [Simpson & Durand 1990, doi: 10.1016/0013-4686(90)85012-C], but this is not likely to be the dominant mechanism because the reaction with OH- is approximately 10 to 100 times faster in water.
-To determine which pKa will be the free variable and which will be represented by an error term of the linear regression, the relative normalized standard deviations of the errors were compared. 
-
-```{r}
-print('pka2 as free variable, pKa1 as the solved variable')
-mod1 = lm(Pka.1 ~ Pka.2, data = quinone.data)
-sd(mod1$residuals[abs(mod1$residuals) < 10]) / diff(range(quinone.data$Pka.1))
-  
-print('pka1 as free variable, pKa2 as the solved variable')
-mod2 = lm(Pka.2 ~ Pka.1, data = quinone.data)
-sd(mod2$residuals[abs(mod2$residuals) < 10]) / diff(range(quinone.data$Pka.2))
-
-x = c(unname(mod1$residuals), unname(mod2$residuals))
-var = c(rep('pka1', length(mod1$residuals)), rep('pka2', length(mod1$residuals)))
-ggplot(data.frame(x, var)) +
-  geom_density(mapping = aes(x = x, color = var)) +
-  scale_color_manual(labels = c('pka1' = 'pka1 = f(pka2)', 'pka2' = 'pka2 = f(pka1)'),
-                     values = c('pka1' = 'red', 'pka2' = 'blue'), name = '') +
-  labs(x = 'Residual', y = 'Probability Density')
-
-# Determine the value for the standard deviation that should be used to encompass 98% of the search space
-q1 = quantile(mod2$residuals, probs = c(0.01))
-q2 = quantile(mod2$residuals, probs = c(0.99))
-# Plot the data and the search space
-fit.ln = data.frame(Pka.1 = seq(from = -8.33, to = 13.41, length.out = 3))
-fit.ln$Pka.2 = predict(object = mod2, newdata = fit.ln)
-ggplot() +
-  geom_point(quinone.data, mapping = aes(x = Pka.1, y = Pka.2), color = 'blue', alpha = 0.5) +
-  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.2), color = 'black', linetype = 1) +
-  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.2+q2), color = 'black', linetype = 2) +
-  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.2+q1), color = 'black', linetype = 2) +
-  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.1), color = 'red', linetype = 2) +
-  geom_line(fit.ln, mapping = aes(x = Pka.1, y = Pka.1+q2), color = 'red', linetype = 2) +
-  labs(title = expression('Known Quinone p'*italic(K)*''[a]*'s'),
-       y = expression('p'*italic(K)*''['a,2']),
-       x = expression('p'*italic(K)*''['a,1']))
-q1
-q2
-rm(fit.ln, x, var)
-
-```
-
-The variance alone show very little difference between the choice, which pKa1 being the free variable having a slightly better response.
-This is confirmed by the distribution of the residuals (omitting the single outlier), which shows that having pKa1 as the free variable gives a distribution closer to a normal distribution.
-Therefore, the range of pKas is:
-
-pKa1: -8.33 to 13.41
-pKa2 = f(pKa1) + error
-
-While the error for pKa2 is nearly Gaussian in shape, the mathematical description works better if it is sampled from a uniform distribution. From the data, 98% of the data is captured within an error of -3.9 to +5.5.
-
-This range of pKas has 2 problems:
-* An issue seems to arise when the second pKa is lower than the first, however, despite some actual measurements violating that criteria (red dotted line). 
-All points that do violate that restriction are within measurement error with one exception, so that could be the cause.
-* The pH of the process is not likely to extend below 3 because the primary acid in question is carbonic acid. This means that pKa values below 2 are effectively the same and do not need to be sampled further. Therefore, the lower bound for pKa1 can be increased to reduce the search space.
-
-The refined search space is:
-
 pKa1: 0 to 13.41
 pKa2 = pKa1 + error
 error ~ unif(0, 5.5)
+
+The concentrations of quinone are assumed to be a minimum of 10 mM (approximately solubility of BQ from experiments) and 3 M (based on tiron, which has a solubility of about 1 M [Huang 2019])
 
 ## Objective Functions
 
@@ -643,7 +525,7 @@ Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
     }
     E = E.guess
   }
-  #### Need to include order of magnitude for reaction rate with sorbent - use acid anhydride formation rate constants as estimates?
+
   return(E)
 }
 
@@ -668,9 +550,9 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
 
     # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
     soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
-    # Flux: delC * kL * E, assume kL = 0.01 cm/s
+    # Flux: delC * kL * E, assume kL = 0.1 cm/s
     # Unit conversion: L to cm3, cm2 to m2
-    flux = soln41$delC*soln41$E*0.01 * (1/1e3) * (100^2)
+    flux = soln41$delC*soln41$E*0.1 * (1/1e3) * (100^2)
     # return(soln41)
     return(signif(flux, 5)) # Highest driving force at outlet
     # return(soln41)
@@ -852,16 +734,23 @@ fill.sample.mod = function(GPar.data, input.name, output.name){
   # of the standard deviation are of the same order of magnitude. This is easiest
   # checked if the difference between the 10th and 90th percentile
   # is larger than the difference between the 25th and 75th.
+  
+  # The flux has an issue where the negative fluxes have a much higher maximum
+  # order of magnitude (-10 vs 1e-3), leading to skewed model results.
+  # Adjusting the negative order of magnitude such that they have the same order of magnitude
+  resp = GPar.data[, output.name]
+  resp[resp < 0] = resp[resp < 0]*abs(max(resp)/min(resp))
+  nug = 0.1*min(abs(resp))
   pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
-  nug = min(abs(GPar.data[, output.name]))*1e-2 # Uncertainty should be smaller than the values
   while(log10(pt90/pt10) <= log10(pt75/pt25)){
-    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
-                 covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
+    mod.out = km(design = GPar.data[, input.name], response = resp,
+                 # Result is more accurate with log units, but need to account for negative values
+                 # covtyp = 'gauss', # Gaussian uncertainty
+                 # optim.method = 'gen', # Genetic algorithm optimization
                  control = list(trace = FALSE, # Turn off tracking to simplify output
-                                pop.size = 50), # Increase robustness
-                 nugget = min(c(1e-6, nug)), # Avoid eigenvalues of 0
-                 )
+                                pop.size = 50,
+                                max.generations = 20), # Increase robustness
+                 nugget = nug)
     
     # Randomly sample 1000 points from the search space.
     pt = 1000; i = 1
@@ -965,14 +854,14 @@ write.csv(GPar.all, file = 'GPar_90Cap_data.csv')
 # Plot the results to show refinement
 GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
 ggplot(filter(GPar.all, Energy.kJ.mol < 100)) +
-  geom_point(mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = (order > 200))) +
+  geom_point(mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = (order > 100))) +
   facet_wrap(~(Flux.mol.m2s > 0), scales = 'free_x') +
   labs(x = 'CO2 flux at 90% capture (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
   scale_color_manual(labels = c('Initial', 'Refinement'), values = c('red', 'blue'), name = '')
 
 # Show on a log scale (separating the positive and negative fluxes) to see how low the magnitude of the flux can be
 ggplot(filter(GPar.all, Energy.kJ.mol < 100)) +
-  geom_point(mapping = aes(x = abs(Flux.mol.m2s), y = Energy.kJ.mol, color = (order > 200))) +
+  geom_point(mapping = aes(x = abs(Flux.mol.m2s), y = Energy.kJ.mol, color = (order > 100))) +
   facet_wrap(~(Flux.mol.m2s > 0), scales = 'free_x') +
   scale_x_log10() +
   labs(x = 'CO2 flux at 90% capture (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
@@ -1314,7 +1203,7 @@ test[,2] = -test[,2]
 par.front = t(nondominated_points(points = t(test)))
 par.front[,2] = -par.front[,2]
 ggplot() +
-  geom_vline(xintercept = 0.1*max(GPar.front$Flux.mol.m2s), color = 'black', linetype = 3) +
+  geom_vline(xintercept = 0.22e-3, linetype = 2) +
   geom_point(filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
   # New front
@@ -1365,8 +1254,8 @@ fill.sample.ener = function(GPar.data, input.name, output.name){
   pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
   while(log10(pt90/pt10) <= log10(pt75/pt25)){
     mod.out = km(design = GPar.data[, input.name], response = log10(GPar.data[, output.name]), 
-                 covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
+                 # covtyp = 'gauss', # Gaussian uncertainty
+                 # optim.method = 'gen', # Genetic algorithm optimization
                  control = list(trace = FALSE), # Turn off tracking to simplify output
                                 # pop.size = 50), # Increase robustness
                  nugget = 5e-2, # Avoid eigenvalues of 0
@@ -1411,8 +1300,9 @@ fill.sample.obj.opt = function(x, model.flux, model.ener){
   # Probability distribution fits a Gaussian distribution.
   # Want the probability that the energy is below 40 kJ/mol C, 
   # flux is faster than 10% of the maximum (which still meets the energy criteria)
-  E.cutof = log10(40); #kJ/mol C, log scale to account for multiple order of magnitude span
-  F.cutof = 0.1*max(filter(GPar.all, Energy.kJ.mol < 40)$Flux.mol.m2s)
+  E.cutof = log10(33); #kJ/mol C, log scale to account for multiple order of magnitude span
+  # F.cutof = 0.1*max(filter(GPar.all, Energy.kJ.mol < 40)$Flux.mol.m2s)
+  F.cutof = 0.22e-3
 
   prob = c(1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd) *
              pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
@@ -1512,12 +1402,12 @@ GPar.front = read.csv(file = 'GPar_fnt_data_90CapOpt.csv')
 
 ggplot() +
   # Bounds
-  geom_hline(yintercept =  40, linetype = 2) +
-  geom_vline(xintercept = max(filter(GPar.all, Energy.kJ.mol < 40)$Flux.mol.m2s)*0.1, linetype = 2) +
+  geom_hline(yintercept =  33, linetype = 2) +
+  geom_vline(xintercept = 0.22e-3, linetype = 2) +
   # Data
-  geom_point(data = filter(GPar.all, Flux.mol.m2s > -0.1, Energy.kJ.mol < 100, order <= 300), 
+  geom_point(data = filter(GPar.all, Flux.mol.m2s > -0.1, Energy.kJ.mol < 100, order <= 200), 
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
-  geom_point(data = filter(GPar.all, Flux.mol.m2s > -0.1, Energy.kJ.mol < 100, order > 300), 
+  geom_point(data = filter(GPar.all, Flux.mol.m2s > -0.1, Energy.kJ.mol < 100, order > 200), 
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'cyan') +
   facet_grid(.~Flux.mol.m2s > 0, scales = 'free_x') +
   geom_point(data = GPar.front, mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
@@ -1526,12 +1416,12 @@ ggplot() +
 
 ggplot() +
   # Bounds
-  geom_hline(yintercept =  40, linetype = 2) +
-  geom_vline(xintercept = max(filter(GPar.all, Energy.kJ.mol < 40)$Flux.mol.m2s)*0.1, linetype = 2) +
+  geom_hline(yintercept =  33, linetype = 2) +
+  geom_vline(xintercept = 0.22e-3, linetype = 2) +
   # Data
-  geom_point(data = filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100, order <= 300), 
+  geom_point(data = filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100, order <= 200), 
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
-  geom_point(data = filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100, order > 300), 
+  geom_point(data = filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100, order > 200), 
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'cyan') +
   geom_point(data = GPar.front, mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
   geom_line(data = GPar.front, mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol), color = 'red') +
@@ -1539,7 +1429,7 @@ ggplot() +
 
 ```
 
-The Pareto front is very similar to that of base addition.
+The Pareto front is very similar to that of base addition, suggesting that the distinction between adding an acid or a base is inconsequential to peak performance.
 As a result, it can be said that the addition of base or acid is irrelevant.
 
 # Post-refinement marginals
@@ -1550,8 +1440,8 @@ This is not necessary when doing feature importance or assessing the marginals.
 Since the natural forms of the variables are easier to interpret, the feature importance and marginals will use the natural variables, i.e. not the difference between the pKas and the ratio of NaOH to quinone.
 
 ```{r Optimal Capture Marginals Natural GP Model: 2D}
-E.cutof = log10(40); #kJ/mol C, log units
-F.cutof = 0.1*max(GPar.all$Flux.mol.m2s)
+E.cutof = log10(33); #kJ/mol C, log units
+F.cutof = 0.22e-3
 
 # Natural variables conversion
 GPar.nat = GPar.all
@@ -1697,8 +1587,9 @@ The 2D marginal highlights two key features:
 
 ```{r Optimal Capture Marginals Natural variables: 1D}
 # Define the cutoff values
-E.cutof = log10(40); #kJ/mol C, log units
-F.cutof = 0.1*max(GPar.all$Flux.mol.m2s)
+E.cutof = log10(33); #kJ/mol C, log units
+# F.cutof = 0.1*max(GPar.all$Flux.mol.m2s)
+F.cutof = 0.22e-3
 
 # Set up the marginalization
 resolution = 50; MCsamp = 2000
@@ -1834,18 +1725,44 @@ pKa values that are too low cannot meet the desired criteria regardless of the c
 The local peak in the quinone concentration still exists at around 30 mM, but the higher concentrations are just as viable under acid addition.
 This may suggest that the more basic quinones are extending the operating pHs too high, and acid addition can compensate.
 
+```{r Natural Variables: Importance Ranking}
+import = data.frame(rank = c(diff(range(post.optim$p.pka1))/sum(post.optim$s.pka1),
+  diff(range(post.optim$p.pka2))/sum(post.optim$s.pka2),
+  diff(range(post.optim$p.logA))/sum(post.optim$s.logA),
+  diff(range(post.optim$p.Na.A))/sum(post.optim$s.Na.A)),
+  var = c('pka1', 'pka2', 'logA', 'Na.A'))
+
+ggplot(import[order(import$rank, decreasing = TRUE),]) +
+  geom_col(mapping = aes(x = 1:4, y = rank/max(rank), fill = var)) +
+  labs(x = '', y = '', color = '', subtitle = 'Feature Importance') +
+  scale_fill_discrete(labels = c('pka1' = expression('p'*italic(K)['a,1']),
+                                  'pka2' = expression('p'*italic(K)['a,2']), 
+                                  'logA' = '{Quinone}',
+                                  'Na.A' = '{NaOH}'),
+                      breaks = import$var[order(import$rank, decreasing = TRUE)],
+                      name = '') +
+  scale_x_discrete(labels = c()) +
+  scale_y_continuous(breaks = c(0, 1),
+                     expand = expansion(mult = c(0, .1)),
+                     labels = c('Least', 'Most'), name = 'Importance') +
+  theme_classic() +
+  theme(legend.position = c(0.9, 0.8))
+
+```
+
+
 # Sub-regions of interest
 
 Applying the refinement process to further refine information about high fluxes and low energy regions independently.
 
-The high flux region is fluxes above 0.22 mmol/m^2*s, while the low energy region is below 20 kJ/mol:
+The high flux region is fluxes above 2.2 mmol/m^2*s, while the low energy region is below 20 kJ/mol:
 
 ```{r Refinement Subregions}
 GPar.all = read.csv(file = 'GPar_90CapOpt_data.csv')
 GPar.front = read.csv(file = 'GPar_fnt_data_90CapOpt.csv')
 
-region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 0.22e-3,
-                     ener.max = 40, ener.min = min(GPar.front$Energy.kJ.mol)
+region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 2.2e-3,
+                     ener.max = 45, ener.min = min(GPar.front$Energy.kJ.mol)
                      )
 
 region.ener = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 0.1*max(GPar.front$Flux.mol.m2s),
@@ -1899,8 +1816,8 @@ fill.sample.sub.flux = function(x, model.flux, model.ener){
   # Probability distribution fits a Gaussian distribution.
   # Want the probability that the energy is below 40 kJ/mol C, 
   # flux is faster than 10% of the maximum (which still meets the energy criteria)
-  E.cutof = log10(40); #kJ/mol C, log scale to account for multiple order of magnitude span
-  F.cutof = 0.22e-3 # mol/m2s, flux at which there is a concavity in the Pareto front
+  E.cutof = log10(45); #kJ/mol C, log scale to account for multiple order of magnitude span
+  F.cutof = 2.2e-3 # mol/m2s, flux at which there is a concavity in the Pareto front
 
   prob = c(1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd) *
              pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
@@ -1933,9 +1850,10 @@ fill.sample.sub.ener = function(x, model.flux, model.ener){
   # Probability distribution fits a Gaussian distribution.
   # Want the probability that the energy is below 40 kJ/mol C, 
   # flux is faster than 10% of the maximum (which still meets the energy criteria)
-  E.cutof = log10(15); # approximately halfway between the minimum energy and the top of the concavity in the Pareto front
-  F.cutof = 0.1*max(GPar.front$Flux.mol.m2s)
-
+  E.cutof = log10(20); # approximately halfway between the minimum energy and the top of the concavity in the Pareto front
+  # F.cutof = 0.1*max(GPar.front$Flux.mol.m2s)
+  F.cutof = 0.22e-3
+  
   prob = c(1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd) *
              pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
            )
@@ -2053,8 +1971,8 @@ write.csv(GPar.front, file = 'GPar_fnt_data_SubRef.csv')
 GPar.all = read.csv(file = 'GPar_SubRef_data.csv')
 GPar.front = read.csv(file = 'GPar_fnt_data_SubRef.csv')
 
-region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 0.22e-3,
-                     ener.max = 40, ener.min = min(GPar.front$Energy.kJ.mol)
+region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 2.2e-3,
+                     ener.max = 45, ener.min = min(GPar.front$Energy.kJ.mol)
                      )
 
 region.ener = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 0.1*max(GPar.front$Flux.mol.m2s),
@@ -2084,271 +2002,4 @@ ggplot() +
 
 ```
 
-----------------------------------------
-Move this section to the PCET combined notebook
-
-
-The dataset shows that acidic conditions tend to outperform basic conditions with higher fluxes and lower energy demands, and both generally outperform negligible pH correction (additional acid or base less than 0.1 uM).
-
-#```{r Optimal Capture Marginals: Setup}
-# Load dataset
-GPar.all = read.csv(file = 'GPar_AcidBase_data.csv')
-
-# Cutoff levels
-E.cutof = log10(40); #kJ/mol C, log units
-F.cutof = 0.1*max(GPar.all$Flux.mol.m2s)
-
-# Natural variables conversion
-GPar.nat = GPar.all
-GPar.nat$pka2 = GPar.nat$pka1 + GPar.nat$pka2
-GPar.nat$Na.A = GPar.nat$logA + GPar.nat$Na.A
-# Need to use the acid/base conditions as numeric variable, not categorical variable for the GP
-typ = rep(0, nrow(GPar.all))
-typ[GPar.all$typ == '+Acid'] = -1
-typ[GPar.all$typ == '+Base'] = +1
-GPar.nat$typ = typ
-
-# Models
-mod.flux = fill.sample.mod(GPar.data = GPar.nat, input.name = c('pka1', 'pka2', 'logA', 'Na.A', 'typ'),
-                           output.name = 'Flux.mol.m2s')
-mod.ener = fill.sample.ener(GPar.data = GPar.nat, 
-                            input.name = c('pka1', 'pka2', 'logA', 'Na.A', 'typ'),
-                            output.name = 'Energy.kJ.mol')
-
-```
-
-
-#```{r Optimal Capture Marginals Acid+Base Natural variables: 1D}
-# Define the cutoff values
-E.cutof = log10(40); #kJ/mol C, log units
-F.cutof = 0.1*max(GPar.all$Flux.mol.m2s)
-
-# Set up the marginalization
-resolution = 50; MCsamp = 2000
-pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
-logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
-
-# Set the ranges
-post.optim = data.frame(pka1 = seq(from = pka1.rng[1], to = pka1.rng[2], length.out = resolution),
-                        pka2 = seq(from = pka2.rng[1] + pka1.rng[1], to = pka2.rng[2] + pka1.rng[2], 
-                                   length.out = resolution),
-                        logA = seq(from = logA.rng[1], to = logA.rng[2], length.out = resolution),
-                        Na.A = seq(from = Na.A.rng[1] + logA.rng[1], to = Na.A.rng[2] + logA.rng[2], 
-                                   length.out = resolution),
-                        p.pka1 = NaN, p.pka2 = NaN, p.logA = NaN, p.Na.A = NaN, # Probability acceptance median
-                        s.pka1 = NaN, s.pka2 = NaN, s.logA = NaN, s.Na.A = NaN, # variance for importance ranking
-                        l.pka1 = NaN, l.pka2 = NaN, l.logA = NaN, l.Na.A = NaN, # lower bound
-                        h.pka1 = NaN, h.pka2 = NaN, h.logA = NaN, h.Na.A = NaN) # upper bound
-lower = 0.25; upper = 0.75
-
-for(i in 1:resolution){
-  # pka1
-  fill.frame = data.frame(pka1 = post.optim$pka1[i],
-                          pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]) + post.optim$pka1[i],
-                          logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                          typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
-  fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
-  res.flux = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
-  res.ener = predict(object = mod.ener, newdata = fill.frame, type = 'UK')
-  fill.frame$p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
-    pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-  post.optim$p.pka1[i] = mean(fill.frame$p.accept)
-  post.optim$s.pka1[i] = sd(fill.frame$p.accept)
-  post.optim$h.pka1[i] = quantile(fill.frame$p.accept, probs = upper)
-  post.optim$l.pka1[i] = quantile(fill.frame$p.accept, probs = lower)
-
-  # pka2
-  # Define the min/max
-  pka1.testrng = c(max(pka1.rng[1], post.optim$pka2[i] - pka2.rng[2]),
-                   min(pka1.rng[2], post.optim$pka2[i] - pka2.rng[1]))
-  
-  fill.frame = data.frame(pka2 = post.optim$pka2[i],
-                          pka1 = runif(n = MCsamp, min = pka1.testrng[1], max = pka1.testrng[2]),
-                          logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                          typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
-  fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
-  res.flux = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
-  res.ener = predict(object = mod.ener, newdata = fill.frame, type = 'UK')
-  fill.frame$p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
-    pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-  post.optim$p.pka2[i] = mean(fill.frame$p.accept)
-  post.optim$s.pka2[i] = sd(fill.frame$p.accept)
-  post.optim$h.pka2[i] = quantile(fill.frame$p.accept, probs = upper)
-  post.optim$l.pka2[i] = quantile(fill.frame$p.accept, probs = lower)
-  
-  # log Quinone
-  fill.frame = data.frame(logA = post.optim$logA[i],
-                          pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
-                          pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
-                          Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                          typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
-  fill.frame$pka2 = fill.frame$pka1 + fill.frame$pka2
-  fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
-  res.flux = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
-  res.ener = predict(object = mod.ener, newdata = fill.frame, type = 'UK')
-  fill.frame$p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
-    pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-  post.optim$p.logA[i] = mean(fill.frame$p.accept)
-  post.optim$s.logA[i] = sd(fill.frame$p.accept)
-  post.optim$h.logA[i] = quantile(fill.frame$p.accept, probs = upper)
-  post.optim$l.logA[i] = quantile(fill.frame$p.accept, probs = lower)
-  
-  # Na/A
-  logA.testrng = c(max(logA.rng[1], post.optim$Na.A[i] - Na.A.rng[2]),
-                   min(logA.rng[2], post.optim$Na.A[i] - Na.A.rng[1]))
-
-  fill.frame = data.frame(Na.A = post.optim$Na.A[i],
-                          pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
-                          pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
-                          logA = runif(n = MCsamp, min = logA.testrng[1], max = logA.testrng[2]),
-                          typ = c(rep(-1, MCsamp/2), rep(+1, MCsamp/2)))
-  fill.frame$pka2 = fill.frame$pka1 + fill.frame$pka2
-  res.flux = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
-  res.ener = predict(object = mod.ener, newdata = fill.frame, type = 'UK')
-  fill.frame$p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
-    pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-  post.optim$p.Na.A[i] = mean(fill.frame$p.accept)
-  post.optim$s.Na.A[i] = sd(fill.frame$p.accept)
-  post.optim$h.Na.A[i] = quantile(fill.frame$p.accept, probs = upper)
-  post.optim$l.Na.A[i] = quantile(fill.frame$p.accept, probs = lower)
-}
-
-# Account for acid/base as a free variable for metrics. Using this to determine if acid or base conditions should be used.
-fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
-                        pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
-                        logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                        Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                        typ = -1)
-fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
-res.flux = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
-res.ener = predict(object = mod.ener, newdata = fill.frame, type = 'UK')
-fill.frame$p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
-  pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-post.opt.typ = data.frame(typ = -1, p = mean(fill.frame$p.accept),
-                          s = sd(fill.frame$p.accept),
-                          h = quantile(fill.frame$p.accept, probs = upper),
-                          l = quantile(fill.frame$p.accept, probs = lower))
-
-fill.frame = data.frame(pka1 = runif(n = MCsamp, min = pka1.rng[1], max = pka1.rng[2]),
-                        pka2 = runif(n = MCsamp, min = pka2.rng[1], max = pka2.rng[2]),
-                        logA = runif(n = MCsamp, min = logA.rng[1], max = logA.rng[2]),
-                        Na.A = runif(n = MCsamp, min = Na.A.rng[1], max = Na.A.rng[2]),
-                        typ = +1)
-fill.frame$Na.A = fill.frame$logA + fill.frame$Na.A
-res.flux = predict(object = mod.flux, newdata = fill.frame, type = 'UK')
-res.ener = predict(object = mod.ener, newdata = fill.frame, type = 'UK')
-fill.frame$p.accept = (1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd)) *
-  pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
-post.opt.typ = rbind(post.opt.typ, 
-                     data.frame(typ = +1, p = mean(fill.frame$p.accept),
-                          s = sd(fill.frame$p.accept),
-                          h = quantile(fill.frame$p.accept, probs = upper),
-                          l = quantile(fill.frame$p.accept, probs = lower)))
-
-
-```
-
-
-#```{r Optimal Capture Marginals Acid+Base Natural variables: 1D Plots}
-# Acid vs basic conditions
-ggplot(post.opt.typ)+
-  geom_col(mapping = aes(x = typ, y = p, fill = as.factor(typ))) +
-  geom_errorbar(mapping = aes(x = typ, y = p, ymin = l, ymax = h), width = 0.75) +
-  scale_x_continuous(breaks = c(-1, 1), labels = c('Acid', 'Base')) +
-  labs(x = '', y = 'P[Optimal]') +
-  guides(fill = FALSE)
-
-# Function variables
-g1 = ggplot(post.optim) +
-  geom_line(mapping = aes(x = pka1, y = p.pka1)) +
-  geom_line(mapping = aes(x = pka1, y = h.pka1), linetype = 2) +
-  geom_line(mapping = aes(x = pka1, y = l.pka1), linetype = 2) +
-  labs(x = 'pka1', y = 'P[Optimal]') +
-  scale_y_continuous(limits = c(0, ceiling(max(post.optim$h.pka1)*10)/10) ) +
-  scale_x_continuous(limits = c(min(post.optim$pka1), max(post.optim$pka2)))
-g2 = ggplot(post.optim) +
-  geom_line(mapping = aes(x = pka2, y = p.pka2)) +
-  geom_line(mapping = aes(x = pka2, y = h.pka2), linetype = 2) +
-  geom_line(mapping = aes(x = pka2, y = l.pka2), linetype = 2) +
-  labs(x = 'pka2', y = 'P[Optimal]') +
-  scale_y_continuous(limits = c(0, ceiling(max(post.optim$h.pka2)*10)/10) ) +
-  scale_x_continuous(limits = c(min(post.optim$pka1), max(post.optim$pka2)))
-(g1 / g2)
-
-g3 = ggplot(post.optim) +
-  geom_line(mapping = aes(x = 10^logA, y = p.logA)) +
-  geom_line(mapping = aes(x = 10^logA, y = h.logA), linetype = 2) +
-  geom_line(mapping = aes(x = 10^logA, y = l.logA), linetype = 2) +
-  labs(x = '[Quinone]', y = 'P[Optimal]') +
-  scale_x_log10() +
-  scale_y_continuous(limits = c(0, ceiling(max(post.optim$h.logA)*10)/10) )
-g4 = ggplot(post.optim) +
-  geom_line(mapping = aes(x = 10^Na.A, y = p.Na.A)) +
-  geom_line(mapping = aes(x = 10^Na.A, y = h.Na.A), linetype = 2) +
-  geom_line(mapping = aes(x = 10^Na.A, y = l.Na.A), linetype = 2) +
-  labs(x = '[Additional Acid]', y = 'P[Optimal]') +
-  scale_x_log10() +
-  scale_y_continuous(limits = c(0, ceiling(max(post.optim$h.Na.A)*10)/10) )
-(g3 / g4)
-
-```
-
-For the importance ranking, the most importance has the lowest total variance, normalized by the range of the mean probabilities (i.e. high variance with low means will be least important).
-
-Comparing the probabilities of adding acid vs base, it appears that adding acid consistently shows a higher probability of being optimal. Further analysis will assume acid addition for simplicity.
-Since it is a categorical variable, it is difficult to compare its importance; a rough estimate of this comparison can be made by finding the expectation value of the variance instead of the total variance.
-
-
-#```{r Acid+Base Natural Variables: Importance Ranking}
-import = data.frame(rank = c(diff(range(post.optim$p.pka1))/sum(post.optim$s.pka1),
-  diff(range(post.optim$p.pka2))/sum(post.optim$s.pka2),
-  diff(range(post.optim$p.logA))/sum(post.optim$s.logA),
-  diff(range(post.optim$p.Na.A))/sum(post.optim$s.Na.A)),
-  var = c('pka1', 'pka2', 'logA', 'Na.A'))
-
-ggplot(import[order(import$rank, decreasing = TRUE),]) +
-  geom_col(mapping = aes(x = 1:4, y = rank/max(rank), fill = var)) +
-  labs(x = '', y = '', color = '', subtitle = 'Feature Importance') +
-  scale_fill_discrete(labels = c('pka1' = expression('p'*italic(K)['a,1']),
-                                  'pka2' = expression('p'*italic(K)['a,2']), 
-                                  'logA' = '{Quinone}',
-                                  'Na.A' = '{NaOH}'),
-                      breaks = import$var[order(import$rank, decreasing = TRUE)],
-                      name = '') +
-  scale_x_discrete(labels = c()) +
-  scale_y_continuous(breaks = c(0, 1),
-                     expand = expansion(mult = c(0, .1)),
-                     labels = c('Least', 'Most'), name = 'Importance') +
-  theme_classic() +
-  theme(legend.position = c(0.9, 0.8))
-
-# Attempt to normalize the area estimates to allow for a comparison to the acid/base addition decision
-
-import.all = data.frame(rank = c(diff(range(post.opt.typ$p)) / mean(post.opt.typ$s),
-                                 import$rank*resolution/2),
-                        var = c('Base', import$var))
-ggplot(import.all[order(import.all$rank, decreasing = TRUE),]) +
-  geom_col(mapping = aes(x = 1:nrow(import.all), y = rank/max(rank), fill = var)) +
-  labs(x = '', y = '', color = '', subtitle = 'Feature Importance') +
-  scale_fill_discrete(labels = c('pka1' = expression('p'*italic(K)['a,1']),
-                                 'pka2' = expression('p'*italic(K)['a,2']), 
-                                 'logA' = '{Quinone}',
-                                 'Na.A' = '{NaOH}',
-                                 'Base' = 'Acid/Base'),
-                      breaks = import.all$var[order(import.all$rank, decreasing = TRUE)],
-                      name = '') +
-  scale_x_discrete(labels = c()) +
-  scale_y_continuous(breaks = c(0, 1),
-                     expand = expansion(mult = c(0, .1)),
-                     labels = c('Least', 'Most'), name = 'Importance') +
-  theme_classic() +
-  theme(legend.position = c(0.9, 0.8))
-
-```
-
-Importance ranking suggests that the quinone characteristics (pKas and, to a lesser extent, the solubility limit) are more important than the operating condition decisions (concentrations of quinone and pH correction compound, as well as the decision of acid or base).
-The acid/base decision has very low importance largely because the difference between acidic and basic conditions is small (about 2% probability difference).
-Since the difference is so small, I will simply perform the remaining conditions on the suggested ranges assuming acidic conditions; it can be assumed that basic conditions will have roughly the same parameters.
 
