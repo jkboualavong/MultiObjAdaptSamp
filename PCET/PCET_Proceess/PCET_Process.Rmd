@@ -2631,3 +2631,10 @@ ggplot(filter(group.dist, is.na(str) == FALSE)) +
 
 ```
 
+```{r}
+# Store substituent effect calculation results
+write.csv(quinone.data, 'QuinoneProbs.csv')
+write.csv(group.dist, 'SubstEffect.csv')
+
+```
+

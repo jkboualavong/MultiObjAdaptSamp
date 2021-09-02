@@ -32,7 +32,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 Clear the workspace and define the functions.
 
-```{r Load Packages}
+```{r Load Packages, message=FALSE, warning=FALSE}
 # Setup
 rm(list = ls())
 # Visualization
@@ -101,8 +101,11 @@ n.dist = function(f1.norm, f2.norm, GPar.front){
   if(f2.norm < 0){f2.norm = 0}
   ratio = atan(f2.norm/f1.norm)
   
-  # Check if the angle is the same as a point on the Pareto front
-  if(any(abs(ratio - GPar.front$theta) < 1e-5)){
+  if(f1.norm <= 0 & f2.norm <= 0){
+    # If the point dominates the Pareto front in both regards, it's distance is 0
+    Par.x = 0; Par.y = 0
+  }else if(any(abs(ratio - GPar.front$theta) < 1e-5)){
+    # Check if the angle is the same as a point on the Pareto front
     pos = which.min(abs(ratio - GPar.front$theta))
     Par.x = GPar.front$f1.norm[pos]
     Par.y = GPar.front$f2.norm[pos]
@@ -144,8 +147,8 @@ fill.sample.mod = function(GPar.data, input.name, output.name){
   pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
   while(log10(pt90/pt10) <= log10(pt75/pt25)){
     mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
-                 covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
+                 # covtyp = 'gauss', # Gaussian uncertainty
+                 # optim.method = 'gen', # Genetic algorithm optimization
                  control = list(trace = FALSE, # Turn off tracking to simplify output
                                 pop.size = 50, # Increase robustness
                                 max.generations = 400), # Some convergence issues
@@ -177,7 +180,9 @@ fill.sample.mod = function(GPar.data, input.name, output.name){
 
 Comparison of the boundaries to show how changing the acceptance criteria changes the shape of the near-Pareto set. Showcases the robustness to different selection criteria, indicating flexibility in the design objectives.
 
-```{r GP: Comparison of Acceptance Criteria}
+
+```{r Datasets, eval=FALSE}
+if (!interactive()) {
 ## Loading
 # Load datasets for obtaining the refined probability functions
 data.delta = read.csv('../Ex_ZDT4/GPar_Accept_Delta1.csv')
@@ -189,90 +194,73 @@ data.paret$rad = sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2)
 # Compare to the estimate of the Pareto frontier
 GPar.front = read.csv(file = '../Ex_ZDT4/GPar_fnt_start.csv')
 
-##
-# Grid of the relevant region to visualize and interpret. 
-# No relevant information is gained outside of (0.4, 0.6) for x2 and x3
-lower = c(0, 0, 0); upper = c(1,1, 1); grid.sz = 100
-fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = grid.sz), 
-                        x2 = seq(from = lower[2], to = upper[2], length.out = grid.sz/20+1),
-                        x3 = seq(from = lower[3], to = upper[3], length.out = grid.sz/20+1))
-fine.grid = fine.grid[,1:3]
-names(fine.grid) = c('x1', 'x2', 'x3')
+# Include a dataset of random points after finding the pareto front
+nsamp = max(nrow(data.delta), nrow(data.cutof), nrow(data.radan)) - nrow(data.paret)
+data.rando = data.frame(x1 = runif(n = nsamp, min = 0, max = 1),
+                        x2 = runif(n = nsamp, min = 0, max = 1),
+                        x3 = runif(n = nsamp, min = 0, max = 1))
+res = ZDT4.mod(x = as.matrix(data.rando))
+data.rando$f1 = res[,1]; data.rando$f2 = res[,2]
+# Fill in the remaining calculations: normalized outputs, distance, theta, order
+data.rando = n.obj(GPar.data = data.rando, GPar.front = GPar.front)
+cl <- makeCluster(3)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(data.rando)) %dopar%
+  n.dist(f1.norm = data.rando$f1.norm[row], f2.norm = data.rando$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+data.rando$dist = unlist(dist)
+data.rando$rad = sqrt(data.rando$f1.norm^2 + data.rando$f2.norm^2)
+data.rando$theta = atan(data.rando$f2.norm/data.rando$f1.norm)*180/pi*10/9
+data.rando$order = seq(from = max(data.paret$order) + 1, to = max(data.paret$order) + nsamp, by = 1)
+data.rando = rbind(data.paret[, names(data.paret) %in% names(data.rando)], data.rando)
 
-# Calculate the actual results
-res = ZDT4.mod(x = as.matrix(fine.grid))
-fine.grid$f1 = res[,1]; fine.grid$f2 = res[,2]
-fine.grid = n.obj(GPar.data = fine.grid, GPar.front = GPar.front)
-fine.grid$dist = NaN
-for(row in 1:nrow(fine.grid)){
-  fine.grid$dist[row] = n.dist(f1.norm = fine.grid$f1.norm[row], 
-                               f2.norm = fine.grid$f2.norm[row], 
-                               GPar.front = GPar.front)
+# Store the random data
+write.csv(data.rando, file = 'GPar_Random.csv')
+rm(dist)
 }
-fine.grid$ang = atan(fine.grid$f2.norm/fine.grid$f1.norm)*180/pi*10/9
-fine.grid$rad = sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2)
+```
 
+Reload datasets so that the fine grid and random sample datasets do not need to be re-calculated
+```{r GP: Generate models}
+# Load datasets prior to refinement
+data.delta = read.csv('../Ex_ZDT4/GPar_Accept_Delta1.csv')
+data.cutof = read.csv('../Ex_ZDT4/GPar_Accept_Threshold.csv')
+data.radan = read.csv('../Ex_ZDT4/GPar_Accept_Radius.csv')
+data.paret = read.csv('../Ex_ZDT4/GPar_all_start.csv')
+data.paret$rad = sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2)
+data.rando = read.csv(file = 'GPar_Random.csv')
+
+# Load the estimate of the Pareto frontier
+GPar.front = read.csv(file = '../Ex_ZDT4/GPar_fnt_start.csv')
+
+inputs = c('x1', 'x2', 'x3')
 ##
 # Normalized distance
-fine.grid$delta = 0
-fine.grid$delta[fine.grid$dist <= 2] = 1
-
-mod.dist.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'dist')
-res = predict(object = mod.dist.pre, newdata = fine.grid[,c('x1', 'x2', 'x3')], type = "UK")
-fine.grid$prob.delta.pre = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
-
-mod.dist.post = fill.sample.mod(GPar.data = data.delta, input.name = c('x1', 'x2', 'x3'), output.name = 'dist')
-res = predict(object = mod.dist.post, newdata = fine.grid[,c('x1', 'x2', 'x3')], type = "UK")
-fine.grid$prob.delta.post = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+mod.dist.paret = fill.sample.mod(GPar.data = data.paret, input.name = inputs, output.name = 'dist')
+mod.dist.adapt = fill.sample.mod(GPar.data = data.delta, input.name = inputs, output.name = 'dist')
+mod.dist.rando = fill.sample.mod(GPar.data = data.rando, input.name = inputs, output.name = 'dist')
 
 ##
 # Threshold cutoff
-fine.grid$cutof = 0
-fine.grid$cutof[fine.grid$f1.norm <= 2 & fine.grid$f2.norm <= 2] = 1
-
-mod.f1.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'f1.norm')
-mod.f2.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'f2.norm')
-res1 = predict(object = mod.f1.pre, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-res2 = predict(object = mod.f2.pre, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.cutof.pre = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
-  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-
-mod.f1.post = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2', 'x3'), output.name = 'f1.norm')
-mod.f2.post = fill.sample.mod(GPar.data = data.cutof, input.name = c('x1', 'x2', 'x3'), output.name = 'f2.norm')
-res1 = predict(object = mod.f1.post, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-res2 = predict(object = mod.f2.post, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.cutof.post = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
-  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+mod.f1.paret = fill.sample.mod(GPar.data = data.paret, input.name = inputs, output.name = 'f1.norm')
+mod.f2.paret = fill.sample.mod(GPar.data = data.paret, input.name = inputs, output.name = 'f2.norm')
+mod.f1.adapt = fill.sample.mod(GPar.data = data.cutof, input.name = inputs, output.name = 'f1.norm')
+mod.f2.adapt = fill.sample.mod(GPar.data = data.cutof, input.name = inputs, output.name = 'f2.norm')
+mod.f1.rando = fill.sample.mod(GPar.data = data.rando, input.name = inputs, output.name = 'f1.norm')
+mod.f2.rando = fill.sample.mod(GPar.data = data.rando, input.name = inputs, output.name = 'f2.norm')
 
 ##
 # Radius-angle
-fine.grid$radan = 0
-fine.grid$radan[fine.grid$rad <= 2 & fine.grid$ang > 20] = 1
-
-mod.rad.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'rad')
-mod.ang.pre = fill.sample.mod(GPar.data = data.paret, input.name = c('x1', 'x2', 'x3'), output.name = 'theta')
-res1 = predict(object = mod.rad.pre, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-res2 = predict(object = mod.ang.pre, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.radan.pre = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
-  (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-
-mod.rad.post = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2', 'x3'), output.name = 'rad')
-mod.ang.post = fill.sample.mod(GPar.data = data.radan, input.name = c('x1', 'x2', 'x3'), output.name = 'theta')
-res1 = predict(object = mod.rad.post, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-res2 = predict(object = mod.ang.post, newdata = data.frame(x1 = fine.grid$x1, 
-                        x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-fine.grid$prob.radan.post = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
-  (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+mod.rad.paret = fill.sample.mod(GPar.data = data.paret, input.name = inputs, output.name = 'rad')
+mod.ang.paret = fill.sample.mod(GPar.data = data.paret, input.name = inputs, output.name = 'theta')
+mod.rad.adapt = fill.sample.mod(GPar.data = data.radan, input.name = inputs, output.name = 'rad')
+mod.ang.adapt = fill.sample.mod(GPar.data = data.radan, input.name = inputs, output.name = 'theta')
+mod.rad.rando = fill.sample.mod(GPar.data = data.rando, input.name = inputs, output.name = 'rad')
+mod.ang.rando = fill.sample.mod(GPar.data = data.rando, input.name = inputs, output.name = 'theta')
 
 ```
 
+## Error rate
 The error rate in the GP model estimate should account for the built-in uncertainty in the model. 
 The probability that the model gives the wrong result given the (x1, x2, x3) coordinates is the probability that it accepts the point when it should reject it, or vice versa.
 Since all (x1, x2, x3) are equally likely in this mathematical function, the error rate of the GP model is the average of these probabilities.
@@ -343,11 +331,18 @@ error.test.screen = function(mod.dist, mod.f1, mod.f2, mod.rad, mod.ang, nsamp, 
   # Average error rate
   err.rate = mean(p.err)
   # Uncertainty in the error rate = sqrt(p*(1-p)/N)
-  # err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
+  err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
   # Uncertainty as a quantile: 0.025-0.975
-  err.rate.err = unname(quantile(x = err.rate, prob = c(0.025, 0.975)))
+  # err.rate.err = unname(quantile(x = err.rate, prob = c(0.025, 0.975)))
+  # Type 1 error = P[should reject | accepted] = P[should reject but accepted] P[should reject] / P[accepted]
+  typ1 = sum(p.acc[err.samp$delta == 0])*nrow(filter(err.samp, delta == 0))/nrow(err.samp)^2/mean(p.acc)
+  typ1.err = sqrt(typ1*(1 - typ1)/nrow(err.samp))
+  # Type 2 error = P[should accept | rejected] = P[should accept but rejected] P[should accept] / P[rejected]
+  typ2 = sum(1 - p.acc[err.samp$delta == 1])*nrow(filter(err.samp, delta == 1))/nrow(err.samp)^2/mean(1 - p.acc)
+  typ2.err = sqrt(typ2*(1 - typ2)/nrow(err.samp))
   # Store
-  delta = c(err.rate, err.rate.err) 
+  delta = c(err.rate, typ1, typ2)
+  delta.s = c(err.rate.err, typ1.err, typ2.err)
   
   ## Model estimate: normalized cutoff
   res1 = predict(object = mod.f1, newdata = err.samp[,c('x1', 'x2', 'x3')], type = 'UK')
@@ -361,10 +356,17 @@ error.test.screen = function(mod.dist, mod.f1, mod.f2, mod.rad, mod.ang, nsamp, 
   # Average error rate
   err.rate = mean(p.err)
   # Uncertainty in the error rate = sqrt(p*(1-p)/N)
-  # err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
-  err.rate.err = unname(quantile(x = err.rate, prob = c(0.025, 0.975)))
+  err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
+  # err.rate.err = unname(quantile(x = err.rate, prob = c(0.025, 0.975)))
+  # Type 1 error = P[should reject | accepted] = P[should reject but accepted] P[should reject] / P[accepted]
+  typ1 = sum(p.acc[err.samp$cutof == 0])*nrow(filter(err.samp, cutof == 0))/nrow(err.samp)^2/mean(p.acc)
+  typ1.err = sqrt(typ1*(1 - typ1)/nrow(err.samp))
+  # Type 2 error = P[should accept | rejected] = P[should accept but rejected] P[should accept] / P[rejected]
+  typ2 = sum(1 - p.acc[err.samp$cutof == 1])*nrow(filter(err.samp, cutof == 1))/nrow(err.samp)^2/mean(1 - p.acc)
+  typ2.err = sqrt(typ2*(1 - typ2)/nrow(err.samp))
   # Store
-  cutof = c(err.rate, err.rate.err) 
+  cutof = c(err.rate, typ1, typ2)
+  cutof.s = c(err.rate.err, typ1.err, typ2.err)
   
   # Model estimate
   res1 = predict(object = mod.rad, newdata = err.samp[,c('x1', 'x2', 'x3')], type = 'UK')
@@ -378,45 +380,335 @@ error.test.screen = function(mod.dist, mod.f1, mod.f2, mod.rad, mod.ang, nsamp, 
   # Average error rate
   err.rate = mean(p.err)
   # Uncertainty in the error rate = sqrt(p*(1-p)/N)
-  # err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
-  err.rate.err = unname(quantile(x = err.rate, prob = c(0.025, 0.975)))
+  err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
+  # err.rate.err = unname(quantile(x = err.rate, prob = c(0.025, 0.975)))
+  # Type 1 error = P[should reject | accepted] = P[should reject but accepted] P[should reject] / P[accepted]
+  typ1 = sum(p.acc[err.samp$radan == 0])*nrow(filter(err.samp, radan == 0))/nrow(err.samp)^2/mean(p.acc)
+  typ1.err = sqrt(typ1*(1 - typ1)/nrow(err.samp))
+  # Type 2 error = P[should accept | rejected] = P[should accept but rejected] P[should accept] / P[rejected]
+  typ2 = sum(1 - p.acc[err.samp$radan == 1])*nrow(filter(err.samp, radan == 1))/nrow(err.samp)^2/mean(1 - p.acc)
+  typ2.err = sqrt(typ2*(1 - typ2)/nrow(err.samp))
   # Store
-  radan = c(err.rate, err.rate.err)
+  radan = c(err.rate, typ1, typ2)
+  radan.s = c(err.rate.err, typ1.err, typ2.err)
   
-  return(c(delta, cutof, radan))
+  return(data.frame(prob = c(delta, cutof, radan), err = c(delta.s, cutof.s, radan.s),
+                    class = c(rep('Pareto Distance', 3), rep('Threshold Cutoff', 3), rep('Utopia Distance', 3)),
+                    typ = c('Total', 'False Positive', 'False Negative')))
 }
 
 ```
 
 ```{r GP: Error Rate Calculation}
-GP.pre = error.test.screen(mod.dist = mod.dist.pre, mod.f1 = mod.f1.pre, 
-                           mod.f2 = mod.f2.pre, mod.rad = mod.rad.pre, 
-                           mod.ang = mod.ang.pre, nsamp = 5e4, nlevel = 5)
-GP.post = error.test.screen(mod.dist = mod.dist.post, mod.f1 = mod.f1.post, 
-                           mod.f2 = mod.f2.post, mod.rad = mod.rad.post, 
-                           mod.ang = mod.ang.post, nsamp = 5e4, nlevel = 5)
+samp = 5e4; level = 5
+# samp = 100; level = 3
+GP.paret = error.test.screen(mod.dist = mod.dist.paret, mod.f1 = mod.f1.paret, 
+                           mod.f2 = mod.f2.paret, mod.rad = mod.rad.paret, 
+                           mod.ang = mod.ang.paret, nsamp = samp, nlevel = level)
+GP.adapt = error.test.screen(mod.dist = mod.dist.adapt, mod.f1 = mod.f1.adapt, 
+                           mod.f2 = mod.f2.adapt, mod.rad = mod.rad.adapt, 
+                           mod.ang = mod.ang.adapt, nsamp = samp, nlevel = level)
+GP.rando = error.test.screen(mod.dist = mod.dist.rando, mod.f1 = mod.f1.rando, 
+                           mod.f2 = mod.f2.rando, mod.rad = mod.rad.rando, 
+                           mod.ang = mod.ang.rando, nsamp = samp, nlevel = level)
+
+GP.paret$cat = 'paret'
+GP.adapt$cat = 'adapt'
+GP.rando$cat = 'rando'
+
+GP.error = rbind(GP.paret, GP.adapt, GP.rando)
+write.csv(GP.error, 'GP_ErrorRate.csv')
 
 ```
 
-```{r GP: Error Rate Visuaized}
-error.rate = data.frame(rate = c(GP.pre[c(TRUE, FALSE, FALSE)], GP.post[c(TRUE, FALSE, FALSE)]), 
-                        err.lo = c(GP.pre[c(FALSE, TRUE, FALSE)], GP.post[c(FALSE, TRUE, FALSE)]),
-                        err.hi = c(GP.pre[c(FALSE, FALSE, TRUE)], GP.post[c(FALSE, FALSE, TRUE)]),
-                 method = 'GP', source = c(rep('0pre', 3), rep('1post', 3)),
-                 criteria = rep(c('Pareto Distance', 'Objective Cutoff', 
-                              'Distance + Priority')))
-ggplot(error.rate) + 
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, y = rate, ymin = err.lo, ymax = err.hi), width = 0.5) +
-  facet_wrap(~criteria, scales = 'free') +
-  scale_x_discrete(breaks = c(), labels = c()) +
-  labs(x = '', y = 'Error Probability') +
-  scale_fill_discrete(labels = c('0pre' = 'Before', '1post' = 'After'), name = '') +
-  theme_classic() + scale_y_continuous(expand = c(0.01,0))
+```{r GP: Error Rate Visualization}
+GP.error = read.csv('GP_ErrorRate.csv')
+
+ggplot(GP.error) +
+  geom_col(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), 
+                         fill = cat, y = prob)) +
+  geom_errorbar(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), 
+                              ymin = prob - err, ymax = prob + err), width = 0.5) +
+  facet_grid(factor(typ, levels = c('Total', 'False Positive', 'False Negative')) ~ 
+             factor(class, levels = c('Pareto Distance', 'Threshold Cutoff', 'Utopia Distance')), 
+             scales = 'free_y') +
+  # guides(fill = FALSE) + 
+  scale_x_discrete(breaks = c('paret', 'adapt', 'rando'),
+                      labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random')) +
+  scale_fill_discrete(breaks = c('paret', 'adapt', 'rando'),
+                      labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random')) +
+  labs(x = '', y = 'Error Probability', fill = '')
 
 ```
 
-In 3 dimensions, it is difficult to compare the calculated and true boundary edges without prohibitively fine resolution calculations. Instead, the primary accuracy measure is the probability that the model incorrectly categorizes a point as sub-optimal based on the defined criteria. These probabilities are incredibly small, likely due to the fact that optimal points are rare events. Of the 3 criteria, 2 showed a slight improvement in accuracy due to additional points being included in the training data. It is possible that the additional data biased the results in such a way to minimize the importance of the local minima, instead smoothing over it instead.
+In 3 dimensions, it is difficult to compare the calculated and true boundary edges without prohibitively fine resolution calculations. 
+Instead, the primary accuracy measure is the probability that the model correctly categorizes a point based on the defined criteria. 
+
+The type I (false positive) error is very high, indicating that there is a high likelihood that the model believes a point to satisfy the criteria when it in reality does not.
+However, the overall error rate is still low, which is consistent with the fact that accepting a point is a rare event (approximately 5% of all points), so this is potentially a sampling bias.
+
+Importantly, the adaptive sampling condition leads to more accurate results compared to no sampling (start) and random sampling, supporting the assertion that the sample method reduces the number of necessary samples for an accurate classifier.
+
+## Marginals accuracy
+
+```{r GP Marginals Comparison}
+# Single variable conditionals compared to the expected conditionals by integration
+Infer.plt = read.csv('../Ex_ZDT4/Marginals_delta_tru.csv')
+ggplot() +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat != 'tru'), mapping = aes(x = x, y = prob, color = cat)) +
+  facet_wrap(var~., nrow = 3, scales = 'free_y') + 
+  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
+                                  'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
+                     values = c('tru' = 'black', 'start' = 'skyblue2', 
+                                  'adapt' = 'red', 'rando' = 'green'),
+                     breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Pareto Distance'), color = '') +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+Infer.plt = read.csv('../Ex_ZDT4/Marginals_cutof_tru.csv')
+ggplot() +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat != 'tru'), mapping = aes(x = x, y = prob, color = cat)) +
+  facet_wrap(var~., nrow = 3, scales = 'free_y') + 
+  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
+                                  'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
+                     values = c('tru' = 'black', 'start' = 'skyblue2', 
+                                  'adapt' = 'red', 'rando' = 'green'),
+                     breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Cutoff Thresholds'), color = '') +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+Infer.plt = read.csv('../Ex_ZDT4/Marginals_radan_tru.csv')
+ggplot() +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat != 'tru'), mapping = aes(x = x, y = prob, color = cat)) +
+  facet_wrap(var~., nrow = 3, scales = 'free_y') + 
+  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
+                                  'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
+                     values = c('tru' = 'black', 'start' = 'skyblue2', 
+                                  'adapt' = 'red', 'rando' = 'green'),
+                     breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Utopia Distance + Priority'), color = '') +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+```
+
+GP Importance ranking
+
+```{r GP: Importance Ranking Functions}
+## Importance by marginalization
+marginal.import = function(marginal, typ){
+  # Split up the marginal into the variables
+  Infer.x1 = filter(marginal, var == 'x1')
+  Infer.x2 = filter(marginal, var == 'x2')
+  Infer.x3 = filter(marginal, var == 'x3')
+  
+  Import = data.frame(import = c(diff(range(Infer.x1$prob))*nrow(Infer.x1)/sum(Infer.x1$psd), 
+                                     diff(range(Infer.x2$prob))*nrow(Infer.x2)/sum(Infer.x2$psd),
+                                     diff(range(Infer.x3$prob))*nrow(Infer.x3)/sum(Infer.x3$psd)),
+                      var = c('x1', 'x2', 'x3'),
+                      typ)
+  Import$sd = sqrt(c(max(Infer.x1$prob)*(1-max(Infer.x1$prob)) + min(Infer.x1$prob)*(1-min(Infer.x1$prob)) * 
+                      diff(range(Infer.x1$prob)),
+                    max(Infer.x2$prob)*(1-max(Infer.x2$prob)) + min(Infer.x2$prob)*(1-min(Infer.x2$prob)) * 
+                      diff(range(Infer.x2$prob)),
+                    max(Infer.x3$prob)*(1-max(Infer.x3$prob)) + min(Infer.x3$prob)*(1-min(Infer.x3$prob)) * 
+                      diff(range(Infer.x3$prob)) )/1500 + 
+                  c(var(Infer.x1$psd), var(Infer.x2$psd), var(Infer.x3$psd))/nrow(Infer.x1) )
+  # Normalize so they all have the same maximum
+  Import$r.import = Import$import/max(Import$import)
+  Import$r.sd = Import$sd/max(Import$import)
+  return(Import)
+}
+
+## Shapley value functions
+# Function evaluations: output the probability
+# Calculating the Shapley values and their standard error
+shap = function(nsamp, mod.dist, mod.f1, mod.f2, mod.rad, mod.ang){
+  # Set up the random points
+  tot.rand = nsamp*50 # Repeat 50 times to get the standard error
+  x0 = data.frame(x1 = runif(n = tot.rand, min = 0, max = 1),
+                  x2 = runif(n = tot.rand, min = 0, max = 1),
+                  x3 = runif(n = tot.rand, min = 0, max = 1))
+  z1 = data.frame(x1 = x0$x1,
+                  x2 = runif(n = tot.rand, min = 0, max = 1),
+                  x3 = runif(n = tot.rand, min = 0, max = 1))
+  z2 = data.frame(x1 = runif(n = tot.rand, min = 0, max = 1),
+                  x2 = x0$x2,
+                  x3 = runif(n = tot.rand, min = 0, max = 1))
+  z3 = data.frame(x1 = runif(n = tot.rand, min = 0, max = 1),
+                  x2 = runif(n = tot.rand, min = 0, max = 1),
+                  x3 = x0$x3)
+  # Shapley values: Pareto distance
+  res = predict(object = mod.dist, newdata = x0, type = 'UK')
+  p.x0 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  res = predict(object = mod.dist, newdata = z1, type = 'UK')
+  p.z1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  res = predict(object = mod.dist, newdata = z2, type = 'UK')
+  p.z2 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  res = predict(object = mod.dist, newdata = z3, type = 'UK')
+  p.z3 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  # Matrix form to find the standard error
+  p.x0 = matrix(data = p.x0, nrow = nsamp);  p.z1 = matrix(data = p.z1, nrow = nsamp)
+  p.z2 = matrix(data = p.z2, nrow = nsamp);  p.z3 = matrix(data = p.z3, nrow = nsamp)
+  # Calculate Shapley Values
+  x1.m = apply(p.x0 - p.z1, 2, mean)
+  x2.m = apply(p.x0 - p.z2, 2, mean)
+  x3.m = apply(p.x0 - p.z3, 2, mean)
+  x1.shap = mean(x1.m); x1.s = sd(x1.m)
+  x2.shap = mean(x2.m); x2.s = sd(x2.m)
+  x3.shap = mean(x3.m); x3.s = sd(x3.m)
+  shap = data.frame(import = c(x1.shap, x2.shap, x3.shap), 
+                    r.import = c(x1.shap, x2.shap, x3.shap)/max(c(x1.shap, x2.shap, x3.shap)),
+                    sd = c(x1.s, x2.s, x3.s), r.sd = c(x1.s, x2.s, x3.s)/max(c(x1.shap, x2.shap, x3.shap)),
+                    typ = 'Pareto Distance', var = c('x1', 'x2', 'x3'))
+  
+  # Shapley values: Threshold Cutoff
+  res1 = predict(object = mod.f1, newdata = x0, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = x0, type = 'UK')
+  p.x0 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  res1 = predict(object = mod.f1, newdata = z1, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = z1, type = 'UK')
+  p.z1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  res1 = predict(object = mod.f1, newdata = z2, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = z2, type = 'UK')
+  p.z2 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  res1 = predict(object = mod.f1, newdata = z3, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = z3, type = 'UK')
+  p.z3 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  
+  p.x0 = matrix(data = p.x0, nrow = nsamp);  p.z1 = matrix(data = p.z1, nrow = nsamp)
+  p.z2 = matrix(data = p.z2, nrow = nsamp);  p.z3 = matrix(data = p.z3, nrow = nsamp)
+  
+  x1.m = apply(p.x0 - p.z1, 2, mean)
+  x2.m = apply(p.x0 - p.z2, 2, mean)
+  x3.m = apply(p.x0 - p.z3, 2, mean)
+  x1.shap = mean(x1.m); x1.s = sd(x1.m)
+  x2.shap = mean(x2.m); x2.s = sd(x2.m)
+  x3.shap = mean(x3.m); x3.s = sd(x3.m)
+  shap = rbind(shap, 
+               data.frame(import = c(x1.shap, x2.shap, x3.shap), 
+                          r.import = c(x1.shap, x2.shap, x3.shap)/max(c(x1.shap, x2.shap, x3.shap)),
+                    sd = c(x1.s, x2.s, x3.s), r.sd = c(x1.s, x2.s, x3.s)/max(c(x1.shap, x2.shap, x3.shap)),
+                    typ = 'Threshold Cutoff', var = c('x1', 'x2', 'x3')))
+  
+  # Shapley value: Utopia distance + Priority
+  res1 = predict(object = mod.rad, newdata = x0, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = x0, type = 'UK')
+  p.x0 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  res1 = predict(object = mod.rad, newdata = z1, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = z1, type = 'UK')
+  p.z1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  res1 = predict(object = mod.rad, newdata = z2, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = z2, type = 'UK')
+  p.z2 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  res1 = predict(object = mod.rad, newdata = z3, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = z3, type = 'UK')
+  p.z3 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  
+  
+  p.x0 = matrix(data = p.x0, nrow = nsamp);  p.z1 = matrix(data = p.z1, nrow = nsamp)
+  p.z2 = matrix(data = p.z2, nrow = nsamp);  p.z3 = matrix(data = p.z3, nrow = nsamp)
+  
+  x1.m = apply(p.x0 - p.z1, 2, mean)
+  x2.m = apply(p.x0 - p.z2, 2, mean)
+  x3.m = apply(p.x0 - p.z3, 2, mean)
+  x1.shap = mean(x1.m); x1.s = sd(x1.m)
+  x2.shap = mean(x2.m); x2.s = sd(x2.m)
+  x3.shap = mean(x3.m); x3.s = sd(x3.m)
+  shap = rbind(shap, 
+               data.frame(import = c(x1.shap, x2.shap, x3.shap), 
+                          r.import = c(x1.shap, x2.shap, x3.shap)/max(c(x1.shap, x2.shap, x3.shap)),
+                    sd = c(x1.s, x2.s, x3.s), r.sd = c(x1.s, x2.s, x3.s)/max(c(x1.shap, x2.shap, x3.shap)),
+                    typ = 'Utopia Distance', var = c('x1', 'x2', 'x3')))
+  
+  return(shap)
+}
+
+```
+
+```{r GP: Importance Ranking Calculation}
+# Load data; only want the adaptive sampling marginal for the importance ranking
+Infer.delta = read.csv('../Ex_ZDT4/Marginals_delta_tru.csv')
+Infer.delta = filter(Infer.delta, cat == 'adapt')
+Infer.cutof = read.csv('../Ex_ZDT4/Marginals_cutof_tru.csv')
+Infer.cutof = filter(Infer.cutof, cat == 'adapt')
+Infer.radan = read.csv('../Ex_ZDT4/Marginals_radan_tru.csv')
+Infer.radan = filter(Infer.radan, cat == 'adapt')
+
+# GP marginals
+import.delta = marginal.import(marginal = Infer.delta, typ = 'Pareto Distance')
+import.cutof = marginal.import(marginal = Infer.cutof, typ = 'Threshold Cutoff')
+import.radan = marginal.import(marginal = Infer.radan, typ = 'Utopia Distance')
+
+import.GP = rbind(import.delta, import.cutof, import.radan)
+
+#
+# marginal.import(marginal, typ)
+import.shap = shap(nsamp = 10, mod.dist = mod.dist.adapt, 
+     mod.f1 = mod.f1.adapt, mod.f2 = mod.f2.adapt, 
+     mod.rad = mod.rad.adapt, mod.ang = mod.ang.adapt)
+
+# Combine datasets
+import.GP$method = 'Marginalization'
+import.shap$method = 'Shapley Value'
+
+write.csv(rbind(import.GP, import.shap), 'GP_ImportanceRank.csv')
+ggplot(rbind(import.GP, import.shap)) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = import + sd, ymin = import - sd)) +
+  facet_grid(method~typ, scales = 'free_y')
+
+ggplot(rbind(import.GP, import.shap)) +
+  geom_col(mapping = aes(x = var, y = r.import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = r.import + r.sd, ymin = r.import - r.sd), width = 0.5) +
+  facet_grid(method~typ, scales = 'free_y') +
+  labs(x = '', y = 'Relative Importance') +
+  guides(fill = FALSE) +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]), expression('x'[3])))
+
+# Separate scales for each column
+g.delta = ggplot(filter(rbind(import.GP, import.shap), typ == 'Pareto Distance')) +
+  geom_col(mapping = aes(x = var, y = r.import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = r.import + r.sd, ymin = r.import - r.sd), width = 0.5) +
+  facet_grid(method~typ, scales = 'free_y') +
+  labs(x = '', y = 'Relative Importance') +
+  guides(fill = FALSE) +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]), expression('x'[3])))
+g.cutof = ggplot(filter(rbind(import.GP, import.shap), typ == 'Threshold Cutoff')) +
+  geom_col(mapping = aes(x = var, y = r.import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = r.import + r.sd, ymin = r.import - r.sd), width = 0.5) +
+  facet_grid(method~typ, scales = 'free_y') +
+  labs(x = '', y = '') +
+  guides(fill = FALSE) +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]), expression('x'[3])))
+g.radan = ggplot(filter(rbind(import.GP, import.shap), typ == 'Utopia Distance')) +
+  geom_col(mapping = aes(x = var, y = r.import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = r.import + r.sd, ymin = r.import - r.sd), width = 0.5) +
+  facet_grid(method~typ, scales = 'free_y') +
+  labs(x = '', y = '') +
+  guides(fill = FALSE) +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]), expression('x'[3])))
+
+g.delta + g.cutof + g.radan
+rm(g.delta, g.cutof, g.radan)
+
+```
+
 
 # Existing Method: Support Vector Machines
 The method should use only the data from the initial Pareto front calculation. 
@@ -432,13 +724,13 @@ SVM.mod.all = function(input.data){
   fit.lin = svm(as.factor(cat) ~ x1*x2*x3, data = input.data[,c('x1', 'x2', 'x3', 'cat')], 
             scale = FALSE, kernel = "linear", cost = 5)
   fit.pol = svm(as.factor(cat) ~ x1*x2*x3, data = input.data[,c('x1', 'x2', 'x3', 'cat')], 
-            scale = FALSE, kernel = "polynomial", cost = 5)
+            scale = FALSE, kernel = "polynomial", cost = 5, degree = 3.5)
   fit.sig = svm(as.factor(cat) ~ x1*x2*x3, data = input.data[,c('x1', 'x2', 'x3', 'cat')], 
             scale = FALSE, kernel = "sigmoid", cost = 5)
   return(list(rad = fit.rad, lin = fit.lin, pol = fit.pol, sig = fit.sig))
 }
 
-SVM.err = function(nsamp, mod.list, nlevel = 5){
+SVM.err = function(nsamp, mod.list, nlevel){
   # Obtain sample of actual results
   err.samp = error.test.eval(nlevel = nlevel, nsamp = nsamp)
   # Accepted points
@@ -449,10 +741,10 @@ SVM.err = function(nsamp, mod.list, nlevel = 5){
   err.samp$radan[err.samp$rad <= 2 & err.samp$ang > 20] = 1
   
   ## Model estimates: delta from Pareto front
-  err.samp$rad = predict(object = mod.list$rad.delta, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$lin = predict(object = mod.list$lin.delta, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$pol = predict(object = mod.list$pol.delta, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$sig = predict(object = mod.list$sig.delta, newdata = err.samp[,c('x1', 'x2', 'x3')])
+  err.samp$rad = as.numeric(predict(object = mod.list$rad.delta, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$lin = as.numeric(predict(object = mod.list$lin.delta, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$pol = as.numeric(predict(object = mod.list$pol.delta, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$sig = as.numeric(predict(object = mod.list$sig.delta, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
   # Error rate
   err.rate = c(nrow(filter(err.samp, rad == 1 & delta == 0)) + nrow(filter(err.samp, rad == 0 & delta == 1)),
                nrow(filter(err.samp, lin == 1 & delta == 0)) + nrow(filter(err.samp, lin == 0 & delta == 1)),
@@ -460,13 +752,28 @@ SVM.err = function(nsamp, mod.list, nlevel = 5){
                nrow(filter(err.samp, sig == 1 & delta == 0)) + nrow(filter(err.samp, sig == 0 & delta == 1)))
   err.rate = err.rate/nrow(err.samp)
   err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
-  delta = c(err.rate, err.rate.err)
+  # Type 1 error = P[should reject | accepted] = P[should reject but accepted] P[should reject] / P[accepted]
+  typ1 = c(nrow(filter(err.samp, rad == 1, delta == 0))/max(nrow(filter(err.samp, rad == 1)), 1),
+           nrow(filter(err.samp, lin == 1, delta == 0))/max(nrow(filter(err.samp, lin == 1)), 1),
+           nrow(filter(err.samp, pol == 1, delta == 0))/max(nrow(filter(err.samp, pol == 1)), 1),
+           nrow(filter(err.samp, sig == 1, delta == 0))/max(nrow(filter(err.samp, sig == 1)), 1) ) * 
+    nrow(filter(err.samp, delta == 0))/nrow(err.samp)
+  typ1.err = sqrt(typ1*(1 - typ1)/nrow(err.samp))
+  # Type 2 error = P[should accept | rejected] = P[should accept but rejected] P[should accept] / P[rejected]
+  typ2 = c(nrow(filter(err.samp, rad == 0, delta == 1))/max(nrow(filter(err.samp, rad == 0)), 1),
+           nrow(filter(err.samp, lin == 0, delta == 1))/max(nrow(filter(err.samp, lin == 0)), 1),
+           nrow(filter(err.samp, pol == 0, delta == 1))/max(nrow(filter(err.samp, pol == 0)), 1),
+           nrow(filter(err.samp, sig == 0, delta == 1))/max(nrow(filter(err.samp, sig == 0)), 1) ) * 
+    nrow(filter(err.samp, delta == 1))/nrow(err.samp)
+  typ2.err = sqrt(typ2*(1 - typ2)/nrow(err.samp))
+  delta = c(err.rate, typ1, typ2)
+  delta.s = c(err.rate.err, typ1.err, typ2.err)
 
   ## Model estimates: normalized cutoff
-  err.samp$rad = predict(object = mod.list$rad.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$lin = predict(object = mod.list$lin.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$pol = predict(object = mod.list$pol.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$sig = predict(object = mod.list$sig.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')])
+  err.samp$rad = as.numeric(predict(object = mod.list$rad.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$lin = as.numeric(predict(object = mod.list$lin.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$pol = as.numeric(predict(object = mod.list$pol.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$sig = as.numeric(predict(object = mod.list$sig.cutof, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
   # Error rate
   err.rate = c(nrow(filter(err.samp, rad == 1 & cutof == 0)) + nrow(filter(err.samp, rad == 0 & cutof == 1)),
                nrow(filter(err.samp, lin == 1 & cutof == 0)) + nrow(filter(err.samp, lin == 0 & cutof == 1)),
@@ -474,13 +781,28 @@ SVM.err = function(nsamp, mod.list, nlevel = 5){
                nrow(filter(err.samp, sig == 1 & cutof == 0)) + nrow(filter(err.samp, sig == 0 & cutof == 1)))
   err.rate = err.rate/nrow(err.samp)
   err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
-  cutof = c(err.rate, err.rate.err)
+  # Type 1 error = P[should reject | accepted] = P[should reject but accepted] P[should reject] / P[accepted]
+  typ1 = c(nrow(filter(err.samp, rad == 1, cutof == 0))/max(nrow(filter(err.samp, rad == 1)), 1),
+           nrow(filter(err.samp, lin == 1, cutof == 0))/max(nrow(filter(err.samp, lin == 1)), 1),
+           nrow(filter(err.samp, pol == 1, cutof == 0))/max(nrow(filter(err.samp, pol == 1)), 1),
+           nrow(filter(err.samp, sig == 1, cutof == 0))/max(nrow(filter(err.samp, sig == 1)), 1) ) * 
+    nrow(filter(err.samp, cutof == 0))/nrow(err.samp)
+  typ1.err = sqrt(typ1*(1 - typ1)/nrow(err.samp))
+  # Type 2 error = P[should accept | rejected] = P[should accept but rejected] P[should accept] / P[rejected]
+  typ2 = c(nrow(filter(err.samp, rad == 0, cutof == 1))/max(nrow(filter(err.samp, rad == 0)), 1),
+           nrow(filter(err.samp, lin == 0, cutof == 1))/max(nrow(filter(err.samp, lin == 0)), 1),
+           nrow(filter(err.samp, pol == 0, cutof == 1))/max(nrow(filter(err.samp, pol == 0)), 1),
+           nrow(filter(err.samp, sig == 0, cutof == 1))/max(nrow(filter(err.samp, sig == 0)), 1) ) * 
+    nrow(filter(err.samp, cutof == 1))/nrow(err.samp)
+  typ2.err = sqrt(typ2*(1 - typ2)/nrow(err.samp))
+  cutof = c(err.rate, typ1, typ2)
+  cutof.s = c(err.rate.err, typ1.err, typ2.err)
   
   ## Model estimates: normalized cutoff
-  err.samp$rad = predict(object = mod.list$rad.radan, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$lin = predict(object = mod.list$lin.radan, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$pol = predict(object = mod.list$pol.radan, newdata = err.samp[,c('x1', 'x2', 'x3')])
-  err.samp$sig = predict(object = mod.list$sig.radan, newdata = err.samp[,c('x1', 'x2', 'x3')])
+  err.samp$rad = as.numeric(predict(object = mod.list$rad.radan, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$lin = as.numeric(predict(object = mod.list$lin.radan, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$pol = as.numeric(predict(object = mod.list$pol.radan, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
+  err.samp$sig = as.numeric(predict(object = mod.list$sig.radan, newdata = err.samp[,c('x1', 'x2', 'x3')]))-1
   # Error rate
   err.rate = c(nrow(filter(err.samp, rad == 1 & radan == 0)) + nrow(filter(err.samp, rad == 0 & radan == 1)),
                nrow(filter(err.samp, lin == 1 & radan == 0)) + nrow(filter(err.samp, lin == 0 & radan == 1)),
@@ -488,241 +810,384 @@ SVM.err = function(nsamp, mod.list, nlevel = 5){
                nrow(filter(err.samp, sig == 1 & radan == 0)) + nrow(filter(err.samp, sig == 0 & radan == 1)))
   err.rate = err.rate/nrow(err.samp)
   err.rate.err = sqrt(err.rate*(1-err.rate)/nrow(err.samp))
-  radan = c(err.rate, err.rate.err)
+  # Type 1 error = P[should reject | accepted] = P[should reject but accepted] P[should reject] / P[accepted]
+  # P[accepted] is assumed to be non-zero, so if no points are accepted, then assume at least 1 is
+  typ1 = c(nrow(filter(err.samp, rad == 1, radan == 0))/max(nrow(filter(err.samp, rad == 1)), 1),
+           nrow(filter(err.samp, lin == 1, radan == 0))/max(nrow(filter(err.samp, lin == 1)), 1),
+           nrow(filter(err.samp, pol == 1, radan == 0))/max(nrow(filter(err.samp, pol == 1)), 1),
+           nrow(filter(err.samp, sig == 1, radan == 0))/max(nrow(filter(err.samp, sig == 1)), 1) ) * 
+    nrow(filter(err.samp, radan == 0))/nrow(err.samp)
+  typ1.err = sqrt(typ1*(1 - typ1)/nrow(err.samp))
+  # Type 2 error = P[should accept | rejected] = P[should accept but rejected] P[should accept] / P[rejected]
+  typ2 = c(nrow(filter(err.samp, rad == 0, radan == 1))/max(nrow(filter(err.samp, rad == 0)), 1),
+           nrow(filter(err.samp, lin == 0, radan == 1))/max(nrow(filter(err.samp, lin == 0)), 1),
+           nrow(filter(err.samp, pol == 0, radan == 1))/max(nrow(filter(err.samp, pol == 0)), 1),
+           nrow(filter(err.samp, sig == 0, radan == 1))/max(nrow(filter(err.samp, sig == 0)), 1) ) * 
+    nrow(filter(err.samp, radan == 1))/nrow(err.samp)
+  typ2.err = sqrt(typ2*(1 - typ2)/nrow(err.samp))
+  radan = c(err.rate, typ1, typ2)
+  radan.s = c(err.rate.err, typ1.err, typ2.err)
 
-  return(c(delta, cutof, radan))
+  return(data.frame(prob = c(delta, cutof, radan), err = c(delta.s, cutof.s, radan.s),
+                    class = c(rep('Pareto Distance', 12), rep('Threshold Cutoff', 12), rep('Utopia Distance', 12)),
+                    typ = c(rep('Total', 4), rep('False Positive', 4), rep('False Negative', 4)),
+                    mod = c('rad', 'lin', 'pol', 'sig')))
 }
-# SVM.err(nsamp = 500, mod.list = mod.list.pre, nlevel = 5)
 
 ```
 
-```{r SVM: Errors}
-data.start = read.csv(file = '../Ex_ZDT4/GPar_all_start.csv')
+```{r SVM: Model generation}
+# Load datasets prior to refinement
 data.delta = read.csv('../Ex_ZDT4/GPar_Accept_Delta1.csv')
 data.cutof = read.csv('../Ex_ZDT4/GPar_Accept_Threshold.csv')
 data.radan = read.csv('../Ex_ZDT4/GPar_Accept_Radius.csv')
+data.paret = read.csv('../Ex_ZDT4/GPar_all_start.csv')
+data.paret$rad = sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2)
+data.rando = read.csv(file = 'GPar_Random.csv')
 
-# Define acceptance: distance
-data.start$cat = 0; data.delta$cat = 0
-data.start$cat[data.start$dist <= 2] = 1
+# Load the estimate of the Pareto frontier
+GPar.front = read.csv(file = '../Ex_ZDT4/GPar_fnt_start.csv')
+
+inputs = c('x1', 'x2', 'x3')
+
+# Define acceptance: Pareto distance
+data.paret$cat = 0; data.delta$cat = 0; data.rando$cat = 0
+data.paret$cat[data.paret$dist <= 2] = 1
 data.delta$cat[data.delta$dist <= 2] = 1
-mod.delta.pre = SVM.mod.all(input.data = data.start)
-mod.delta.post = SVM.mod.all(input.data = data.delta)
+data.rando$cat[data.rando$dist <= 2] = 1
+SVMmod.delta.paret = SVM.mod.all(input.data = data.paret)
+SVMmod.delta.adapt = SVM.mod.all(input.data = data.delta)
+SVMmod.delta.rando = SVM.mod.all(input.data = data.rando)
 
-# Define acceptance: Cutoff
-data.start$cat = 0; data.cutof$cat = 0
-data.start$cat[data.start$f1.norm <= 2 & data.start$f2.norm <= 2] = 1
+# Define acceptance: cutoff
+data.paret$cat = 0; data.cutof$cat = 0; data.rando$cat = 0
+data.paret$cat[data.paret$f1.norm <= 2 & data.paret$f2.norm <= 2] = 1
 data.cutof$cat[data.cutof$f1.norm <= 2 & data.cutof$f2.norm <= 2] = 1
-mod.cutof.pre = SVM.mod.all(input.data = data.start)
-mod.cutof.post = SVM.mod.all(input.data = data.cutof)
+data.rando$cat[data.rando$f1.norm <= 2 & data.rando$f2.norm <= 2] = 1
+SVMmod.cutof.paret = SVM.mod.all(input.data = data.paret)
+SVMmod.cutof.adapt = SVM.mod.all(input.data = data.cutof)
+SVMmod.cutof.rando = SVM.mod.all(input.data = data.rando)
 
 # Define acceptance: utopia distance and priority
-data.start$cat = 0; data.radan$cat = 0
-data.start$cat[sqrt(data.start$f1.norm^2 + data.start$f2.norm^2) <= 2 & data.start$theta > 20] = 1
+data.paret$cat = 0; data.radan$cat = 0; data.rando$cat = 0
+data.paret$cat[sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2) <= 2 & data.paret$theta > 20] = 1
 data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 2 & data.radan$theta > 20] = 1
-mod.radan.pre = SVM.mod.all(input.data = data.start)
-mod.radan.post = SVM.mod.all(input.data = data.radan)
+data.rando$cat[sqrt(data.rando$f1.norm^2 + data.rando$f2.norm^2) <= 2 & data.rando$theta > 20] = 1
+SVMmod.radan.paret = SVM.mod.all(input.data = data.paret)
+SVMmod.radan.adapt = SVM.mod.all(input.data = data.radan)
+SVMmod.radan.rando = SVM.mod.all(input.data = data.rando)
 
-# Rename to combine
-names(mod.delta.pre) = paste(names(mod.delta.pre), '.delta', sep = '')
-names(mod.radan.pre) = paste(names(mod.radan.pre), '.radan', sep = '')
-names(mod.cutof.pre) = paste(names(mod.cutof.pre), '.cutof', sep = '')
-mod.list.pre = append(mod.delta.pre, mod.radan.pre)
-mod.list.pre = append(mod.list.pre, mod.cutof.pre)
-names(mod.delta.post) = paste(names(mod.delta.post), '.delta', sep = '')
-names(mod.radan.post) = paste(names(mod.radan.post), '.radan', sep = '')
-names(mod.cutof.post) = paste(names(mod.cutof.post), '.cutof', sep = '')
-mod.list.post = append(mod.delta.post, mod.radan.post)
-mod.list.post = append(mod.list.post, mod.cutof.post)
+# Combine each dataset's models to reduce the number of relevant models
+names(SVMmod.delta.paret) = paste(names(SVMmod.delta.paret), '.delta', sep = '')
+names(SVMmod.radan.paret) = paste(names(SVMmod.radan.paret), '.radan', sep = '')
+names(SVMmod.cutof.paret) = paste(names(SVMmod.cutof.paret), '.cutof', sep = '')
+SVMmod.list.paret = append(SVMmod.delta.paret, SVMmod.radan.paret)
+SVMmod.list.paret = append(SVMmod.list.paret, SVMmod.cutof.paret)
 
-# Calculate errors
-err.pre = SVM.err(nsamp = 5e4, mod.list = mod.list.pre, nlevel = 5)
-err.post = SVM.err(nsamp = 5e4, mod.list = mod.list.post, nlevel = 5)
+names(SVMmod.delta.adapt) = paste(names(SVMmod.delta.adapt), '.delta', sep = '')
+names(SVMmod.radan.adapt) = paste(names(SVMmod.radan.adapt), '.radan', sep = '')
+names(SVMmod.cutof.adapt) = paste(names(SVMmod.cutof.adapt), '.cutof', sep = '')
+SVMmod.list.adapt = append(SVMmod.delta.adapt, SVMmod.radan.adapt)
+SVMmod.list.adapt = append(SVMmod.list.adapt, SVMmod.cutof.adapt)
 
-# Combine for storage
-err.SVM = data.frame(rate = c(err.pre[c(rep(TRUE, 4), rep(FALSE, 4))], 
-                              err.post[c(rep(TRUE, 4), rep(FALSE, 4))]),
-                     err.lo = c(err.pre[c(rep(FALSE, 4), rep(TRUE, 4))], 
-                              err.post[c(rep(FALSE, 4), rep(TRUE, 4))]),
-                     method = c('SVM-rad', 'SVM-lin', 'SVM-pol', 'SVM-sig'), 
-                     source = c(rep('0pre', 12), rep('1post', 12)),
-                     criteria = c(rep('Pareto Distance', 4), rep('Objective Cutoff', 4), 
-                              rep('Distance + Priority', 4)))
-# Re-calculate uncertainty as 95% confidence bound
-err.SVM$err.hi = err.SVM$rate + err.SVM$err.lo*1.96
-err.SVM$err.lo = err.SVM$rate - err.SVM$err.lo*1.96
-```
-
-```{r}
-ggplot(rbind(error.rate, err.SVM)) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, y = rate, ymin = err.lo, ymax = err.hi), color = 'black', width = 0.5) +
-  facet_grid(criteria~method) +
-  labs(x = '', y = 'Error Probability', fill = '') + scale_x_discrete(breaks = c()) +
-  scale_fill_discrete(breaks = c('0pre', '1post'), labels = c('0pre' = 'Before', '1post' = 'After')) +
-  theme(axis.text = element_text(size = 16),
-        strip.text = element_text(size = 14),
-        legend.text = element_text(size = 14),
-        legend.title = element_text(size = 16),
-        axis.title = element_text(size = 16))
-ggsave('/home/jkboualavong/Desktop/PSU/Data202102_Paper2_BayesOpt/Figures/ZDT4_Accuracy.jpg', width = 8, height = 6)
+names(SVMmod.delta.rando) = paste(names(SVMmod.delta.rando), '.delta', sep = '')
+names(SVMmod.radan.rando) = paste(names(SVMmod.radan.rando), '.radan', sep = '')
+names(SVMmod.cutof.rando) = paste(names(SVMmod.cutof.rando), '.cutof', sep = '')
+SVMmod.list.rando = append(SVMmod.delta.rando, SVMmod.radan.rando)
+SVMmod.list.rando = append(SVMmod.list.rando, SVMmod.cutof.rando)
 
 ```
 
-Predictions of all SVM are identical - should they be? Test with fine grid
+```{r SVM: Error Calculation}
+samp = 5e4; level = 5
+SVMerr.paret = SVM.err(nsamp = samp, mod.list = SVMmod.list.paret, nlevel = level)
+SVMerr.adapt = SVM.err(nsamp = samp, mod.list = SVMmod.list.adapt, nlevel = level)
+SVMerr.rando = SVM.err(nsamp = samp, mod.list = SVMmod.list.rando, nlevel = level)
 
-```{r}
-# Set up grid
-lower = c(0, 0, 0); upper = c(1, 1, 1); grid.sz = 75
-fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = grid.sz), 
-                        x2 = seq(from = lower[2], to = upper[2], length.out = grid.sz),
-                        # x3 = seq(from = lower[3], to = upper[3], length.out = 9))
-                        x3 = 0.5)
-fine.grid = fine.grid[,1:3]
-names(fine.grid) = c('x1', 'x2', 'x3')
+# Label by dataset
+SVMerr.paret$cat = 'paret'
+SVMerr.adapt$cat = 'adapt'
+SVMerr.rando$cat = 'rando'
 
-# Calculate with models
-fine.grid$rad = predict(object = mod.cutof.post$rad.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$pol = predict(object = mod.cutof.post$pol.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$lin = predict(object = mod.cutof.post$lin.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$sig = predict(object = mod.cutof.post$sig.cutof, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-# True result map
-res = ZDT4.mod(x = as.matrix(fine.grid[,c('x1', 'x2', 'x3')]))
-fine.grid$f1 = res[,1]; fine.grid$f2 = res[,2]
-# Normalize
-fine.grid = n.obj(GPar.data = fine.grid, GPar.front = GPar.front)
-fine.grid$tru = 0; fine.grid$tru[fine.grid$f1.norm <= 2 & fine.grid$f2.norm <= 2] = 1
+# Store
+SVMerr.error = rbind(SVMerr.paret, SVMerr.adapt, SVMerr.rando)
+write.csv(SVMerr.error, 'SVM_ErrorRate.csv')
+```
 
-# GP Model result
-res1 = predict(object = mod.f1.pre,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
-res2 = predict(object = mod.f2.pre,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
-fine.grid$GP.pre  = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*
-  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-res1 = predict(object = mod.f1.post,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
-res2 = predict(object = mod.f2.post,  newdata = fine.grid[,c('x1', 'x2', 'x3')],  type = 'UK')
-fine.grid$GP.post  = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd)*
-  pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+```{r SVM: Error Rate Visualization}
+GP.error = read.csv('GP_ErrorRate.csv')
+GP.error$mod = 'GP'
+SVMerr.error = read.csv('SVM_ErrorRate.csv')
+SVMerr.error$mod = paste('SVM-', SVMerr.error$mod, sep = '')
 
-# fine.grid$GP.pre = 0; fine.grid$GP.post = 0
-# fine.grid$GP.pre[fine.grid$mod.f1.pre <= 1, fine.grid$mod.f2.pre <= 1] = 1
-# fine.grid$GP.post[fine.grid$mod.f1.post <= 1, fine.grid$mod.f2.post <= 1] = 1
+all.err = rbind(GP.error, SVMerr.error)
 
+ggplot(filter(all.err, class == 'Threshold Cutoff')) +
+  geom_col(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), 
+                         fill = cat, y = prob)) +
+  geom_errorbar(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), 
+                              ymin = prob - err, ymax = prob + err), width = 0.5) +
+  geom_point(filter(all.err, class == 'Threshold Cutoff', prob == 0), 
+             mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), 
+                              y = 0), shape = '*') +
 
-g1 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = rad)) +
-  labs(subtitle = 'SVM: Radius', title = 'Threshold Cutoff', x = '', y = '') + guides(color = FALSE)
-g2 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = pol)) +
-  labs(subtitle = 'SVM: Cubic', x = '', y = '') + guides(color = FALSE)
-g3 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = lin)) +
-  labs(subtitle = 'SVM: Linear', x = '', y = '') + guides(color = FALSE)
-g4 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = sig)) +
-  labs(subtitle = 'SVM: Sigmoidal', x = '', y = '') + guides(color = FALSE)
-# ((g1 + g2) / (g3 + g4))
-g5 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(tru))) +
-  labs(subtitle = 'Target Result', x = '', y = '') + guides(color = FALSE)
-g6 = ggplot() +
-  geom_point(data.cutof, mapping = aes(x = x1, y = x2, alpha = 1-abs(x3 - 0.5), fill = as.factor(cat)), 
-             color = 'black', size = 3, shape = 21) +
-  labs(subtitle = 'Training Data', x = '', y = '', fill = 'Designation') + 
-  guides(alpha = FALSE) + scale_fill_discrete(labels = c('Reject', 'Accept'))
-((g1 + g2 + g5) / (g3 + g4 + g6))
-
-g7 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = (GP.pre > 0.5))) +
-  labs(subtitle = 'GP: Before', x = '', y = '', title = '') + guides(color = FALSE)
-g8 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = (GP.post > 0.5))) +
-  labs(subtitle = 'GP: After', x = '', y = '') + guides(color = FALSE)
-((g1 + g2) / (g3 + g4))
-ggsave('/home/jkboualavong/Desktop/PSU/Data202102_Paper2_BayesOpt/Figures/ZDT4_Slice1.jpg', width = 8, height = 6)
-((g7 + g5) / (g8 + g6))
-ggsave('/home/jkboualavong/Desktop/PSU/Data202102_Paper2_BayesOpt/Figures/ZDT4_Slice2.jpg', width = 8, height = 6)
+  facet_grid(factor(typ, levels = c('Total', 'False Positive', 'False Negative')) ~ 
+             mod, 
+             scales = 'free_y') +
+  # guides(fill = FALSE) + 
+  scale_x_discrete(breaks = c())+#,
+                   # breaks = c('paret', 'adapt', 'rando'),
+                   # labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random')) +
+  scale_fill_discrete(breaks = c('paret', 'adapt', 'rando'),
+                      labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random')) +
+  labs(x = '', y = 'Error Probability', fill = '', subtitle = 'Cutoff Threshold')
 
 ```
-```{r}
-# Pareto distance: Cutoff
-fine.grid$rad = predict(object = mod.delta.post$rad.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$pol = predict(object = mod.delta.post$pol.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$lin = predict(object = mod.delta.post$lin.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$sig = predict(object = mod.delta.post$sig.delta, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-# True result
-fine.grid$dist = NaN
-for(row in 1:nrow(fine.grid)){
-  fine.grid$dist[row] = n.dist(f1.norm = fine.grid$f1.norm[row], 
-                               f2.norm = fine.grid$f2.norm[row], 
-                               GPar.front = GPar.front)
+
+Calculating marginals with the SVM
+
+```{r SVM: Marginal Function}
+SVM.marginal.calc = function(mod.list){
+  x.rng = seq(from = 0, to = 1, length.out = 75)
+  svm.margin = data.frame()
+  nsamp = 1500
+  for(x in x.rng){
+    # x1 marginal
+    temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 1),
+                            x3 = runif(n = nsamp, min = 0, max = 1))
+    for(i in 1:length(mod.list)){
+      res = as.numeric(predict(object = mod.list[[i]], newdata = temp.frame[,c('x1', 'x2', 'x3')]))-1
+      mod = substr(names(mod.list)[i], 0, 3)
+      class = substr(names(mod.list)[i], 5, 9)
+      svm.margin = rbind(svm.margin, 
+                         data.frame(x = x, var = 'x1', prob = sum(res)/length(res), mod, class))
+    }
+    # x2 marginal
+    temp.frame = data.frame(x2 = x, x1 = runif(n = nsamp, min = 0, max = 1),
+                            x3 = runif(n = nsamp, min = 0, max = 1))
+    for(i in 1:length(mod.list)){
+      res = as.numeric(predict(object = mod.list[[i]], newdata = temp.frame[,c('x1', 'x2', 'x3')]))-1
+      mod = substr(names(mod.list)[i], 0, 3)
+      class = substr(names(mod.list)[i], 5, 9)
+      svm.margin = rbind(svm.margin, 
+                         data.frame(x = x, var = 'x2', prob = sum(res)/length(res), mod, class))
+    }
+    # x3 marginal
+    temp.frame = data.frame(x3 = x, x2 = runif(n = nsamp, min = 0, max = 1),
+                            x1 = runif(n = nsamp, min = 0, max = 1))
+    for(i in 1:length(mod.list)){
+      res = as.numeric(predict(object = mod.list[[i]], newdata = temp.frame[,c('x1', 'x2', 'x3')]))-1
+      mod = substr(names(mod.list)[i], 0, 3)
+      class = substr(names(mod.list)[i], 5, 9)
+      svm.margin = rbind(svm.margin, 
+                         data.frame(x = x, var = 'x3', prob = sum(res)/length(res), mod, class))
+    }
+  }
+  # Use class names
+  svm.margin$class[svm.margin$class == 'delta'] = 'Pareto Distance'
+  svm.margin$class[svm.margin$class == 'cutof'] = 'Threshold Cutoff'
+  svm.margin$class[svm.margin$class == 'radan'] = 'Utopia Distance'
+  
+  return(svm.margin)
 }
-fine.grid$tru = 0; fine.grid$tru[fine.grid$dist <= 2] = 1
 
-g1 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = rad)) +
-  labs(subtitle = 'SVM: Radius', title = 'Pareto Distance', x = '', y = '') + guides(color = FALSE)
-g2 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = pol)) +
-  labs(subtitle = 'SVM: Cubic', x = '', y = '') + guides(color = FALSE)
-g3 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = lin)) +
-  labs(subtitle = 'SVM: Linear', x = '', y = '') + guides(color = FALSE)
-g4 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = sig)) +
-  labs(subtitle = 'SVM: Sigmoidal', x = '', y = '') + guides(color = FALSE)
-g5 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(tru))) +
-  labs(subtitle = 'Target Result', x = '', y = '') + guides(color = FALSE)
-# ((g1 + g2) / (g3 + g4))
-g6 = ggplot() +
-  geom_point(data.delta, mapping = aes(x = x1, y = x2, alpha = 1-abs(x3 - 0.5), fill = as.factor(cat)), 
-             color = 'black', size = 3, shape = 21) +
-  labs(subtitle = 'Training Data', x = '', y = '', fill = 'Designation') + 
-  guides(alpha = FALSE) + scale_fill_discrete(labels = c('Reject', 'Accept'))
-((g1 + g2 + g5) / (g3 + g4 + g6))
 
 ```
 
+
+```{r SVM Marginals: Calculation}
+marginal.paret = SVM.marginal.calc(SVMmod.list.paret)
+marginal.adapt = SVM.marginal.calc(SVMmod.list.adapt)
+marginal.rando = SVM.marginal.calc(SVMmod.list.rando)
+
+marginal.paret$cat = 'paret'
+marginal.adapt$cat = 'adapt'
+marginal.rando$cat = 'rando'
+
+SVM.marginal = rbind(marginal.paret, marginal.adapt, marginal.rando)
+write.csv(SVM.marginal, 'SVM_marginal.csv')
+```
+
+Compare only the cutoff threshold for the data.
+Obtain the coefficients of determination compared to the expected marginals.
+
+```{r SVM Marginals vs GP Marginals}
+# Load data and convert into a form to concatenate
+GP.marginal = read.csv('../Ex_ZDT4/Marginals_cutof_tru.csv')
+GP.marginal$mod = 'GP'
+GP.marginal$class = 'Threshold Cutoff'
+GP.marginal$cat[GP.marginal$cat == 'start'] = 'paret'
+SVM.marginal = read.csv('SVM_marginal.csv')
+SVM.marginal = filter(SVM.marginal, class == 'Threshold Cutoff')
+SVM.marginal$psd = sqrt(SVM.marginal$prob*(1-SVM.marginal$prob)/1500)
+SVM.marginal$mod = paste('SVM-', SVM.marginal$mod, sep = '')
+
+# Filter data to only the adaptive sampling condition
+marginal.all = rbind(GP.marginal, SVM.marginal)
+marginal.adapt = filter(marginal.all, cat == 'adapt' | cat == 'tru')
+
+sz = 1
+ggplot() +
+  geom_path(data = filter(marginal.adapt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = 'True Result'), 
+            linetype = 2, size = sz) +
+  geom_path(data = filter(marginal.adapt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = 'True Result'), 
+            linetype = 2, size = sz) +
+  geom_path(data = filter(marginal.adapt, cat != 'tru'), mapping = aes(x = x, y = prob, color = mod)) +
+  facet_wrap(var~., nrow = 3, scales = 'free_y') + 
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Cutoff Thresholds'), color = 'Model') +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  scale_color_brewer(type = 'qual', palette = 2)
+
+# Calculating the coefficients of determination
+corcoef = data.frame()
+for(dataset in unique(marginal.all$cat)){
+  if(dataset == 'tru'){next}
+  for(xvar in unique(marginal.all$var)){
+    true.res = filter(marginal.all, cat == 'tru', var == xvar)
+    for(model in unique(marginal.all$mod)){
+      sub = filter(marginal.all, mod == model, var == xvar, cat == dataset)
+      # Some of the probabilities are flat at 0 or 1; to get a coefficient of determination, apply noise
+      if(diff(range(sub$prob)) < 0.01){
+        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)
+      } else{adjust = 1}
+      corcoef = rbind(corcoef,
+                      data.frame(var = xvar, model, cat = dataset,
+                                 rsq = cor(y = sub$prob*adjust,
+                                           x = true.res$prob, method = 'pearson')^2))
+    }
+  }
+}
+ggplot(filter(corcoef, model %in% c('GP', 'SVM-pol', 'SVM-sig'))) +
+  geom_col(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), y = rsq, fill = cat)) +
+  facet_grid(var~model) +
+  labs(x = 'Model', y = 'Coefficient of Determination', subtitle = 'Marginalization Accuracy: Cutoff Threshold') +
+  guides(fill = FALSE) +
+  scale_x_discrete(breaks = c('paret', 'adapt', 'rando'),
+                   labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random'))
+
+write.csv(corcoef, 'CoefDet_cutof.csv')
+```
+
+Repeat the coefficient of determination for the other criteria
 ```{r}
-# Radius and angle
-# True result
-fine.grid$ang = atan(fine.grid$f2.norm/fine.grid$f1.norm)*180/pi*10/9
-fine.grid$rad = sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2)
-fine.grid$tru = 0; fine.grid$tru[fine.grid$rad <= 2 & fine.grid$ang > 20] = 1
-# Models
-fine.grid$rad = predict(object = mod.radan.post$rad.radan, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$pol = predict(object = mod.radan.post$pol.radan, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$lin = predict(object = mod.radan.post$lin.radan, newdata = fine.grid[,c('x1', 'x2', 'x3')])
-fine.grid$sig = predict(object = mod.radan.post$sig.radan, newdata = fine.grid[,c('x1', 'x2', 'x3')])
+# Load data and convert into a form to concatenate
+GP.marginal = read.csv('../Ex_ZDT4/Marginals_delta_tru.csv')
+GP.marginal$mod = 'GP'
+GP.marginal$class = 'Pareto Distance'
+GP.marginal$cat[GP.marginal$cat == 'start'] = 'paret'
+SVM.marginal = read.csv('SVM_marginal.csv')
+SVM.marginal = filter(SVM.marginal, class == 'Pareto Distance')
+SVM.marginal$psd = sqrt(SVM.marginal$prob*(1-SVM.marginal$prob)/1500)
+SVM.marginal$mod = paste('SVM-', SVM.marginal$mod, sep = '')
 
-g1 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = rad)) +
-  labs(subtitle = 'SVM: Radius', title = 'Utopia Distance', x = '', y = '') + guides(color = FALSE)
-g2 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = pol)) +
-  labs(subtitle = 'SVM: Cubic', x = '', y = '') + guides(color = FALSE)
-g3 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = lin)) +
-  labs(subtitle = 'SVM: Linear', x = '', y = '') + guides(color = FALSE)
-g4 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = sig)) +
-  labs(subtitle = 'SVM: Sigmoidal', x = '', y = '') + guides(color = FALSE)
-g5 = ggplot() +
-  geom_point(fine.grid, mapping = aes(x = x1, y = x2, color = as.factor(tru))) +
-  labs(subtitle = 'Target Result', x = '', y = '') + guides(color = FALSE)
-# ((g1 + g2) / (g3 + g4))
-g6 = ggplot() +
-  geom_point(data.radan, mapping = aes(x = x1, y = x2, alpha = 1-abs(x3 - 0.5), fill = as.factor(cat)), 
-             color = 'black', size = 3, shape = 21) +
-  labs(subtitle = 'Training Data', x = '', y = '', fill = 'Designation') + 
-  guides(alpha = FALSE) + scale_fill_discrete(labels = c('Reject', 'Accept'))
-((g1 + g2 + g5) / (g3 + g4 + g6))
+# Filter data to only the adaptive sampling condition
+marginal.all = rbind(GP.marginal, SVM.marginal)
+marginal.adapt = filter(marginal.all, cat == 'adapt' | cat == 'tru')
 
+sz = 1
+ggplot() +
+  geom_path(data = filter(marginal.adapt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = 'True Result'), 
+            linetype = 2, size = sz) +
+  geom_path(data = filter(marginal.adapt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = 'True Result'), 
+            linetype = 2, size = sz) +
+  geom_path(data = filter(marginal.adapt, cat != 'tru'), mapping = aes(x = x, y = prob, color = mod)) +
+  facet_wrap(var~., nrow = 3, scales = 'free_y') + 
+  labs(x = '', y = 'Probability of Acceptance', subtitle = 'Pareto Distance', color = 'Model') +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  scale_color_brewer(type = 'qual', palette = 2)
+
+# Calculating the coefficients of determination
+corcoef = data.frame()
+for(dataset in unique(marginal.all$cat)){
+  if(dataset == 'tru'){next}
+  for(xvar in unique(marginal.all$var)){
+    true.res = filter(marginal.all, cat == 'tru', var == xvar)
+    for(model in unique(marginal.all$mod)){
+      sub = filter(marginal.all, mod == model, var == xvar, cat == dataset)
+      # Some of the probabilities are flat at 0 or 1; to get a coefficient of determination, apply noise
+      if(diff(range(sub$prob)) < 0.01){
+        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)
+      } else{adjust = 1}
+      corcoef = rbind(corcoef,
+                      data.frame(var = xvar, model, cat = dataset,
+                                 rsq = cor(y = sub$prob*adjust,
+                                           x = true.res$prob, method = 'pearson')^2))
+    }
+  }
+}
+ggplot(filter(corcoef, model %in% c('GP', 'SVM-pol', 'SVM-sig'))) +
+  geom_col(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), y = rsq, fill = cat)) +
+  facet_grid(var~model) +
+  labs(x = 'Model', y = 'Coefficient of Determination', subtitle = 'Marginalization Accuracy: Pareto Distance') +
+  guides(fill = FALSE) +
+  scale_x_discrete(breaks = c('paret', 'adapt', 'rando'),
+                   labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random'))
+
+write.csv(corcoef, 'CoefDet_delta.csv')
+
+## Utopia distance
+# Load data and convert into a form to concatenate
+GP.marginal = read.csv('../Ex_ZDT4/Marginals_radan_tru.csv')
+GP.marginal$mod = 'GP'
+GP.marginal$class = 'Utopia Distance'
+GP.marginal$cat[GP.marginal$cat == 'start'] = 'paret'
+SVM.marginal = read.csv('SVM_marginal.csv')
+SVM.marginal = filter(SVM.marginal, class == 'Utopia Distance')
+SVM.marginal$psd = sqrt(SVM.marginal$prob*(1-SVM.marginal$prob)/1500)
+SVM.marginal$mod = paste('SVM-', SVM.marginal$mod, sep = '')
+
+# Filter data to only the adaptive sampling condition
+marginal.all = rbind(GP.marginal, SVM.marginal)
+marginal.adapt = filter(marginal.all, cat == 'adapt' | cat == 'tru')
+
+sz = 1
+ggplot() +
+  geom_path(data = filter(marginal.adapt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = 'True Result'), 
+            linetype = 2, size = sz) +
+  geom_path(data = filter(marginal.adapt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = 'True Result'), 
+            linetype = 2, size = sz) +
+  geom_path(data = filter(marginal.adapt, cat != 'tru'), mapping = aes(x = x, y = prob, color = mod)) +
+  facet_wrap(var~., nrow = 3, scales = 'free_y') + 
+  labs(x = '', y = 'Probability of Acceptance', subtitle = 'Utopia Distance + Priority', color = 'Model') +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  scale_color_brewer(type = 'qual', palette = 2)
+
+# Calculating the coefficients of determination
+corcoef = data.frame()
+for(dataset in unique(marginal.all$cat)){
+  if(dataset == 'tru'){next}
+  for(xvar in unique(marginal.all$var)){
+    true.res = filter(marginal.all, cat == 'tru', var == xvar)
+    for(model in unique(marginal.all$mod)){
+      sub = filter(marginal.all, mod == model, var == xvar, cat == dataset)
+      # Some of the probabilities are flat at 0 or 1; to get a coefficient of determination, apply noise
+      if(diff(range(sub$prob)) < 0.01){
+        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)*sub$prob + runif(n = nrow(sub), min = -0.001, max = 0.001)
+      } else{adjust = sub$prob}
+      corcoef = rbind(corcoef,
+                      data.frame(var = xvar, model, cat = dataset,
+                                 rsq = cor(y = adjust,
+                                           x = true.res$prob, method = 'pearson')^2))
+    }
+  }
+}
+ggplot(filter(corcoef, model %in% c('GP', 'SVM-pol', 'SVM-sig'))) +
+  geom_col(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), y = rsq, fill = cat)) +
+  facet_grid(var~model) +
+  labs(x = 'Model', y = 'Coefficient of Determination', subtitle = 'Marginalization Accuracy: Utopia Distance + Priority') +
+  guides(fill = FALSE) +
+  scale_x_discrete(breaks = c('paret', 'adapt', 'rando'),
+                   labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random'))
+
+write.csv(corcoef, 'CoefDet_radan.csv')
 ```
 
-The SVM all predict effectively no points will satisfy the criteria. The sole reason the error is so low is because the region of interest is incredibly small compared to the total hypervolume space. This also explains why all SVM model types have the same error rate: they all make effectively the same prediction. Further tuning of the SVM models could provide better fits (eg. changing the degree of the polynomials or the gamma parameters). While this could improve the results, this finding highlights a key feature that the GP method has over SVM: accounting for uncertainty in the ML algorithm itself provides more accurate results with less tuning.
+SVM Importance Measures
 
-----------
+Given the poor accuracy of the SVM models (misclassification error > 25%), the importance rankings are not meaningful, so they will not be calculated.
 
 # Existing Method: Gaussian Mixtures
 
@@ -748,7 +1213,6 @@ cluster.out = Mclust(data = GPar.all[,c('f1', 'f2')], G = 2:max.cat)
 
 ```{r}
 # summary(cluster, parameters = TRUE)
-
 GPar.all$typ.all = cluster.all$classification
 GPar.all$typ.in = cluster.in$classification
 GPar.all$typ.out = cluster.out$classification
