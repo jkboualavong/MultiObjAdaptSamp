@@ -707,28 +707,17 @@ g.radan = ggplot(filter(rbind(import.GP, import.shap), typ == 'Utopia Distance')
 g.delta + g.cutof + g.radan
 rm(g.delta, g.cutof, g.radan)
 
-
 ```
 
-```{r GP: Error Rate Plot}
-GP.error = read.csv('GP_ErrorRate.csv')
 
-ggplot(GP.error) +
-  geom_col(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), 
-                         fill = cat, y = prob)) +
-  geom_errorbar(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), 
-                              ymin = prob - err, ymax = prob + err), width = 0.5) +
-  facet_grid(factor(typ, levels = c('Total', 'False Positive', 'False Negative')) ~ 
-             factor(class, levels = c('Pareto Distance', 'Threshold Cutoff', 'Utopia Distance')), 
-             scales = 'free_y') +
-  # guides(fill = FALSE) + 
-  scale_x_discrete(breaks = c('paret', 'adapt', 'rando'),
-                      labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random')) +
-  scale_fill_discrete(breaks = c('paret', 'adapt', 'rando'),
-                      labels = c('paret' = 'Start', 'adapt' = '+Adaptive', 'rando' = '+Random')) +
-  labs(x = '', y = 'Error Probability', fill = '')
+In 3 dimensions, it is difficult to compare the calculated and true boundary edges without prohibitively fine resolution calculations. 
+Instead, the primary accuracy measure is the probability that the model correctly categorizes a point based on the defined criteria. 
 
-```
+The type I (false positive) error is very high, indicating that there is a high likelihood that the model believes a point to satisfy the criteria when it in reality does not.
+However, the overall error rate is still low, which is consistent with the fact that accepting a point is a rare event (approximately 5% of all points), so this is potentially a sampling bias.
+
+Importantly, the adaptive sampling condition leads to more accurate results compared to no sampling (start) and random sampling, supporting the assertion that the sample method reduces the number of necessary samples for an accurate classifier.
+
 
 In 3 dimensions, it is difficult to compare the calculated and true boundary edges without prohibitively fine resolution calculations. 
 Instead, the primary accuracy measure is the probability that the model correctly categorizes a point based on the defined criteria. 
@@ -1211,13 +1200,11 @@ ggplot(filter(corcoef, model %in% c('GP', 'SVM-pol', 'SVM-sig'))) +
 
 write.csv(corcoef, 'CoefDet_radan.csv')
 ```
-<<<<<<< HEAD
 
-SVM Importance Measures
+
+## SVM Importance Measures
 
 Given the poor accuracy of the SVM models (misclassification error > 25%), the importance rankings are not meaningful, so they will not be calculated.
-=======
->>>>>>> f3afd354277d962485427f24db2f574b7c94d83b
 
 # Existing Method: Gaussian Mixtures
 
