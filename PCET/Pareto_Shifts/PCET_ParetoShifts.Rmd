@@ -1,0 +1,1107 @@
+---
+title: "PCET pH Swings: Pareto Frontier"
+author: "Jonathan Boualavong"
+output: html_notebook
+---
+
+<!-- output:    -->
+<!--   md_document: -->
+<!--     variant: markdown_github -->
+
+# Description
+This notebook uses a newly developed Gaussian Process-based method to solve for the near-optimal set of solutions for CO2 capture using proton coupled electron transfers (PCET) to drive pH swings. 
+The work assumes that the redox molecule is a quinone, and restricts the search to only combinations of properties that a quinone is likely to have.
+After determining the restricted search space, the performance of CO2 capture, defined by minimum energy demand and the CO2 capture flux, will be determined using established thermodynamic and kinetics equations.
+The resulting Pareto frontier of this bi-objective problem is solved using the GPareto package, then characterized to define acceptable sub-optimal performance in the likely event that a compound with the exact specifications of any of the Pareto frontier estimates not exist.
+The near-optimal set will be solved using the established method (see other mathematical examples for details and description of the algorithm) to describe what criteria the optimal quinone and solution composition should have.
+
+# Code
+## Initialization
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Clear the workspace and define the functions.
+
+```{r Load Packages}
+# Setup
+rm(list = ls())
+# Visualization
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+# Parallel processing
+library(parallel)
+library(doParallel)
+# Gaussian processes
+library(GPareto)
+library(DiceKriging)
+library(DiceOptim)
+# Optimization
+library(GA)
+```
+
+## Parameter space
+Data for restricting the quinone features is based on results from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
+
+pKa1: 0 to 13.41
+pKa2 = pKa1 + error
+error ~ unif(0, 5.5)
+
+The concentrations of quinone are assumed to be a minimum of 10 mM (approximately solubility of BQ from experiments) and 3 M (based on tiron, which has a solubility of about 1 M [Huang 2019])
+
+## Objective Functions
+
+The objective function for energy demand solves the set of equilibrium equations across the range of charge and gas transfers based on four state variables: 
+total dissolved inorganic carbon (DIC), state of charge (xA), partial pressure of CO2 (pCO2), and solution pH.
+
+The minimum energy demand assumes all charge is passed at the Nernst potential, which is updated as charge passes through the system.
+The energy demand assumes anti-symmetric operation, ie. quinone reduction at the cathode and hydroquinone oxidation at the anode.
+Charge balance of the anolyte and catholyte are assumed to be the result of the background electrolyte travelling across an ion selective membrane.
+The gas transfers are assumed to be separate stages from the electrochemical stages, purely for the sake of simplicity. 
+This estimate for the minimum energy is a slight overestimate because of over-pressurization of the CO2; coupling the gas transfer steps with the appropriate electrochemical steps decreases the minimum energy by approximately a factor of 2.
+The function can accommodate feed CO2 gases of any partial pressure, but this study is interested in 3 applications: coal flue gas (15v% feed to 1.5v% lean), air revitalization (2000 ppm to 1000 ppm), and direct air capture (400 ppm to 250 ppm).
+
+This code is broken down into explicit functions and derived functions.
+Explicit functions are a series of sub-functions which solve for one of the four state variables using knowledge of the other three state variables and the solution conditions. 
+These functions solve the set of chemical equilibrium, mass, and charge balance equations for the bulk solution.
+Derived functions use the information from the explicit functions to determine relevant information for determining the energy demand and CO2 flux.
+
+For the purpose of generalization, these equations are written with the variables 'beta1' and 'beta2' which describe the deprotonated hydroquinone's affinity for CO2, forming an organic carbonate. 
+This species is ignored in this particular notebook for the above-stated reason (slow kinetics), and therefore both variables are set to 0.
+These variables are included because other compounds have been proposed to capture CO2 primarily through that mechanism, and thus they could also be studied with this script.
+
+```{r PCET Explicit functions}
+# Direct explicit functions
+# Functions are named with the output variable first, then all relevant inputs
+DIC.xA.pCO2.pH.A.k.beta = function(xA, pCO2, pH, A.tot, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Proton concentration
+  H = 10^-pH
+  
+  # Inorganic carbonate
+  CO3.free = kH * pCO2 * (H^2 + kc1 * H + kc1 * kc2) / H^2
+  
+  # Bound carbon
+  CO2.bound = A.tot*xA *k1*k2*(beta1*pCO2 + 2*beta2*pCO2^2)/((1 + beta1*pCO2 + beta2*pCO2^2)*k1*k2 + k1*H + H^2)
+  
+  return(CO3.free + CO2.bound)
+}
+
+pH.xA.pCO2.A.k.beta.Na = function(xA, P, At, k1, k2, beta1, beta2, Na){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x5 = 1
+  x4 = k1 + Na + 2*At*xA 
+  x3 = k1*k2 - kw + k1*Na + beta1*k1*k2*P - kc1*kH*P +
+      beta2*k1*k2*P^2 + 2*At*k1*xA - 2*At*k2*xA
+  x2 = (-k1)*kw + k1*k2*Na - k1*kc1*kH*P - 2*kc1*kc2*kH*P + beta1*k1*k2*Na*P + beta2*k1*k2*Na*P^2 -
+      2*At*k1*k2*xA + 2*At*beta1*k1*k2*P*xA + 2*At*beta2*k1*k2*P^2*xA
+  x1 = (-k1)*k2*kw - k1*k2*kc1*kH*P - 2*k1*kc1*kc2*kH*P - beta1*k1*k2*kw*P -
+      beta1*k1*k2*kc1*kH*P^2 - beta2*k1*k2*kw*P^2 - beta2*k1*k2*kc1*kH*P^3
+  x0 = - 2*k1*k2*kc1*kc2*kH*P - 2*beta1*k1*k2*kc1*kc2*kH*P^2 -
+     2*beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4, x5))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  
+  # It is possible for multiple roots to satisfy the solution. Typical pH is going to be the one closest to 7-8
+  # H = H[which.min(abs(-log10(H) - 7))]
+
+  return(-log10(H[1]))
+}
+
+pCO2.xA.pH.A.k.beta.Na = function(xA, pH, At, k1, k2, beta1, beta2, Na, pCO2.prev){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  # Proton concentration
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = (-beta2)*H*k1*k2*kc1*kH - 2*beta2*k1*k2*kc1*kc2*kH
+  x2 = beta2*H^3*k1*k2 - beta1*H*k1*k2*kc1*kH - 2*beta1*k1*k2*kc1*kc2*kH -
+      beta2*H*k1*k2*kw + beta2*H^2*k1*k2*Na + 2*At*beta2*H^2*k1*k2*xA
+  x1 = beta1*H^3*k1*k2 - H^3*kc1*kH - H^2*k1*kc1*kH - H*k1*k2*kc1*kH - 2*H^2*kc1*kc2*kH - 2*H*k1*kc1*kc2*kH -
+      2*k1*k2*kc1*kc2*kH - beta1*H*k1*k2*kw + beta1*H^2*k1*k2*Na +
+      2*At*beta1*H^2*k1*k2*xA
+  x0 = H^5 + H^4*k1 + H^3*k1*k2 - H^3*kw - H^2*k1*kw - H*k1*k2*kw +
+      H^4*Na + H^3*k1*Na + H^2*k1*k2*Na + 2*At*H^4*xA + 2*At*H^3*k1*xA -
+      2*At*H^3*k2*xA - 2*At*H^2*k1*k2*xA
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  # There are cases of multiepl roots. Find the one that is closest to the previous known value
+  pCO2 = pCO2[which.min(abs(log10(pCO2) - log10(pCO2.prev)))]
+  
+  return(pCO2)
+}
+
+pH.DIC.xA.pCO2.A.k.beta = function(DIC, xA, P, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  # Polynomial root
+  x4 = (DIC - kH*P)
+  x3 = (DIC*k1 - k1*kH*P - kc1*kH*P)
+  x2 = (DIC*k1*k2 + beta1*DIC*k1*k2*P - k1*k2*kH*P - k1*kc1*kH*P - kc1*kc2*kH*P + beta2*DIC*k1*k2*P^2 - 
+    beta1*k1*k2*kH*P^2 - beta2*k1*k2*kH*P^3 - At*beta1*k1*k2*P*xA - 2*At*beta2*k1*k2*P^2*xA)
+  x1 = ((-k1)*k2*kc1*kH*P - k1*kc1*kc2*kH*P - beta1*k1*k2*kc1*kH*P^2 - 
+        beta2*k1*k2*kc1*kH*P^3)
+  x0 = (-k1)*k2*kc1*kc2*kH*P - beta1*k1*k2*kc1*kc2*kH*P^2 - beta2*k1*k2*kc1*kc2*kH*P^3
+  roots = polyroot(c(x0, x1, x2, x3, x4))
+  
+  # Only the real and positive roots
+  H = roots[abs(Im(roots)) < 1e-8]
+  H = Re(H[Re(H) > 0])
+  return(-log10(H))
+}
+
+pCO2.DIC.xA.pH.A.k.beta = function(DIC, xA, pH, At, k1, k2, beta1, beta2){
+  # Constants: carbonate and water chemistry 
+  kH = 3.4e-2; # M/atm
+  kc1 = 10^-6.3
+  kc2 = 10^-10.3
+  kw = 1e-14
+  
+  H = 10^-pH
+  
+  # Polynomial root
+  x3 = ((-beta2)*H^2*k1*k2*kH - beta2*H*k1*k2*kc1*kH - beta2*k1*k2*kc1*kc2*kH)
+  x2 = (beta2*DIC*H^2*k1*k2 - beta1*H^2*k1*k2*kH - beta1*H*k1*k2*kc1*kH - 
+        beta1*k1*k2*kc1*kc2*kH - 2*At*beta2*H^2*k1*k2*xA)
+  x1 = (beta1*DIC*H^2*k1*k2 - H^4*kH - H^3*k1*kH - H^2*k1*k2*kH - H^3*kc1*kH - 
+        H^2*k1*kc1*kH - H*k1*k2*kc1*kH - H^2*kc1*kc2*kH - H*k1*kc1*kc2*kH - 
+        k1*k2*kc1*kc2*kH - At*beta1*H^2*k1*k2*xA)
+  x0 = DIC*H^4 + DIC*H^3*k1 + DIC*H^2*k1*k2
+  roots = polyroot(c(x0, x1, x2, x3))
+  
+  # Only the real and positive roots
+  pCO2 = roots[abs(Im(roots)) < 1e-8]
+  pCO2 = Re(pCO2[Re(pCO2) > 0])
+  return(pCO2)
+}
+
+# There are cases in the process where both pH and pCO2 are unknown. 
+# For those cases, both variables can be solved togther, but it leads to coupled nonlinear root finding problems. 
+# Initial testing of the equations has found that using an initial guess of pH (such as the pH at the immediately previous state of charge) leads to a good enough estimate of the pH to solve pCO2.
+pH.it.guess.DIC.At.k.beta = function(pH.guess, xA.next, DIC, A.tot, k1, k2, beta1, beta2, Na){
+  # Iterates to solve the pH and pCO2 at the next electrochemical time step, 
+  # given xA and DIC and an initial guess (the pH at the previous time step)
+  pCO2.it = c(); pH.it = c(pH.guess)
+  pCO2.it = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it, At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  for(n in 2:74){
+    pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    pCO2.it[n] = pCO2.DIC.xA.pH.A.k.beta(DIC = DIC, xA = xA.next, pH = pH.it[n], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  } 
+  n = 7:5
+  pH.it[n] = pH.xA.pCO2.A.k.beta.Na(xA = xA.next, P = pCO2.it[n - 1], At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  # Due to some oscillatory instabilities under specific conditions, take the last 25 and use the value that is closest to the guess
+  pH.res = pH.it[50:75]
+  pH.res = pH.res[which.min(abs(pH.res) - pH.guess)]
+  return(pH.res)
+}
+```
+
+```{r PCET Derived Functions: Process Conditions}
+# Derived functions
+# DIC difference: CO2/L*cycle - this is a good first check for the condition to ensure that CO2 is, in fact, captured, represented by a positive value.
+DIC.diff = function(Na, A, beta1, beta2, k1, k2, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  # pCO2.in = 0.1; pCO2.out = 1
+  
+  # Absorption: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the difference
+  DIC.diff = start.soln$DIC - stop.soln$DIC
+  return(DIC.diff)
+}
+
+# Minimum partial pressure of the lean gas
+pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  
+  # Calculate the DIC of the outlet after complete desorption: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                       A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  
+  # Calculate the pCO2 when fully reduced, holding DIC constant. Due to the need for a previous case, run in ~5 steps
+  out.soln = data.frame(DIC = stop.soln$DIC, xA = seq(from = min(xA.lim), to = max(xA.lim), length.out = 5))
+  # Loop the pH and pCO2 simultaneously
+  loop.pH = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = out.soln$xA[1], DIC = out.soln$DIC[1],
+                                      A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  loop.pCO2 = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[1], pH = loop.pH[1],
+                                     At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, 
+                                     pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:5){
+    loop.pH[i] = pH.it.guess.DIC.At.k.beta(pH.guess = loop.pH[i-1], xA.next = out.soln$xA[i], DIC = out.soln$DIC[i],
+                                        A.tot = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    loop.pCO2[i] = pCO2.xA.pH.A.k.beta.Na(xA = out.soln$xA[i], pH = loop.pH[i],
+                                       At = A, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, 
+                                       pCO2.prev = loop.pCO2[i-1])
+    
+  }
+  return(loop.pCO2[i])
+}
+
+```
+
+
+Penalty function: logistic weighting function such that for values where 90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
+The hyperparameters L, k, and x0 of the logistic component of the weighting function were tuned by fitting to a variety of minimum lean gas pressures on the range of 0.016 to 2.5 atm and then selected as the modal value.
+The logistic function was tuned such that the growth rate steepness captured the range of 0 to 90% capture; when no CO2 could be captured, the weight is applied fully.
+
+A penalty function is not necessary for the flux because insufficient capture would manifest as negative fluxes. It may still show up in the Pareto frontier, but it can easily be filtered out, unlike the cases with the energy demand.
+
+See the script analyzing the basic conditions for details on its construction.
+
+The inlet term is constant at 0.15 atm and the reference point is 90% reduction in the partial pressure in the lean gas.
+The calculation is based on mass balance, assuming that the volume adjusted to maintain a total pressure of 1 atm.
+
+Assuming 1 total mole of gas is processed at the reference point:
+* Inlet: 0.15 mol CO2, 0.85 mol not CO2
+* Lean gas: 0.85 mol not CO2, (0.015*0.85)/(1 - 0.015) mol CO2
+* Enriched gas: 1 - (0.015*0.85)/(1 - 0.015) mol CO2, 0.1% not CO2
+
+The lean gas and enriched gas will change according to the system with a similar mass balance.
+
+Applying the penalty function directly to energy demand
+
+```{r PCET Derived Functions: Energy Demand}
+weight.fun = function(pCO2.lean){
+  # Ideal
+  n.inlet = c(0.15, 0.85)
+  n.lean = c(0.85, 0.015*0.85/(1 - 0.015))
+  n.enrich = c(0.001*(1 - 0.015*0.85/(1 - 0.015)), 1 - 0.015*0.85/(1 - 0.015))
+  
+  E.ideal = sum(n.enrich*log(n.enrich/sum(n.enrich)) + 
+                  n.lean*log(n.lean/sum(n.lean)) - 
+                  n.inlet*log(n.inlet/sum(n.inlet)))
+
+  # Actual: separate into 3 cases:
+  E.tru = rep(x = 0, times = length(pCO2.lean))
+  # Third case: if the lean gas pressure is above 1, i.e. it pressurized
+  pos3 = (pCO2.lean >= 0.99)
+  # Set the lean gas pressure to 0.999, 
+  # then multiply the weight by the actual pressure to correct the energy; 
+  # since the weight is divided by this energy, this means dividing by the pressure
+  set.lean = 0.999
+  n.enrich.co2 = (set.lean - 0.15)/(1 - set.lean)
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos3] = (- sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))) / pCO2.lean[pos3]
+
+  # Second case: if the lean gas pressure is between 0.15 and 1, 
+  # i.e. the CO2 was moved from the pure gas to the lean gas
+  pos2 = (pCO2.lean >= 0.15 & pCO2.lean < 0.99)
+  # For the mass balance to work, gas must have moved from the enriched stream to the lean gas
+  n.enrich.co2 = (pCO2.lean[pos2] - 0.15)/(1 - pCO2.lean[pos2])
+  n.lean = n.enrich.co2 + 0.15
+  n.enrich.gas = 0.001*n.enrich.co2
+  E.tru[pos2] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # First case: if the lean gas pressure is less than 0.15, i.e. some amount of capture happened
+  pos1 = (pCO2.lean < 0.15)
+  # Mathematically identical to the lean gas case, just adjusting the lean gas and enriched gas mass balance
+  n.lean = pCO2.lean[pos1]*0.85/(1 - pCO2.lean[pos1])
+  n.enrich.co2 = 0.15 - n.lean
+  n.enrich.gas = 0.001*n.enrich.co2
+  
+  E.tru[pos1] = - sum(n.inlet*log(n.inlet/sum(n.inlet))) +
+    0.85*log(0.85/(n.lean + 0.85)) +
+    n.enrich.gas*log(n.enrich.gas/(n.enrich.gas + n.enrich.co2)) + 
+    n.enrich.co2*log(n.enrich.co2/(n.enrich.gas + n.enrich.co2)) + 
+    n.lean*log(n.lean/(n.lean + 0.85))
+  
+  # Maximum weight
+  weight.max = E.ideal/E.tru
+
+  # Logistic function
+  L = weight.max - 0.98
+  k = 267; x0 = 0.071
+  # data.frame(weight.max)
+  return(25*L/(1 + exp(-k * (pCO2.lean - x0))) + 1)
+}
+
+# Total energy demand - 4-stage process for simplicity
+Energy.tot = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  z = 2; R = 8.314; T = 298; F = 96485; resolution = 151;
+  # pCO2.in = 0.1; pCO2.out = 1
+  xA.lim = c(0.025, 0.975)
+  
+  # 1 -> 2: Electrochemical oxidation (xA decrease to endpoint), constant DIC
+  # Starting solution for initial guess: low P, high xA
+  start.soln = data.frame(p.CO2 = pCO2.in, xA = max(xA.lim))
+  start.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = start.soln$xA, P = start.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  start.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = start.soln$xA, pCO2 = start.soln$p.CO2, pH = start.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Anode progress
+  E.anode = data.frame(DIC = start.soln$DIC, xA = seq(from = start.soln$xA[1], to = min(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = start.soln$pH[1], xA.next = E.anode$xA[1], DIC = E.anode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.anode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.anode$xA[i], DIC = E.anode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.anode$pH = loop; 
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[1], pH = E.anode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = start.soln$p.CO2)
+  for(i in 2:length(E.anode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.anode$xA[i], pH = E.anode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.anode$p.CO2 = loop
+  E.anode$q = abs(E.anode$xA - E.anode$xA[1])*A.tot*z*F # Coulombs
+  
+  # 3 -> 4: Electrochemical reduction (xA increase to endpoint), constant DIC
+  # Starting solution for initial guess: high P, low xA
+  stop.soln = data.frame(p.CO2 = pCO2.out, xA = min(xA.lim))
+  stop.soln$pH = pH.xA.pCO2.A.k.beta.Na(xA = stop.soln$xA, P = stop.soln$p.CO2, 
+                                       At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  stop.soln$DIC = DIC.xA.pCO2.pH.A.k.beta(xA = stop.soln$xA, pCO2 = stop.soln$p.CO2, pH = stop.soln$pH, 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2)
+  # Cathode progress
+  E.cathode = data.frame(DIC = stop.soln$DIC[1], xA = seq(from = stop.soln$xA[1], to = max(xA.lim), length.out = resolution))
+  # Loop to solve the ieration function
+  loop = pH.it.guess.DIC.At.k.beta(pH.guess = stop.soln$pH[1], xA.next = E.cathode$xA[1], DIC = E.cathode$DIC[1], 
+                                       A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+  for(i in 2:length(E.cathode$DIC)){
+    loop = c(loop, pH.it.guess.DIC.At.k.beta(pH.guess = loop[i-1], xA.next = E.cathode$xA[i], DIC = E.cathode$DIC[i], 
+                                         A.tot = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na))
+  }
+  # Some iterations don't converge completely, leading to single points that deviated from the rest of the curve. This is characterized by a single point that is a local maxima or minimum. Endpoints are asusmed to be good
+  loop.check.left = loop[1:(resolution-2)] - loop[2:(resolution-1)]
+  loop.check.right = loop[2:(resolution-1)] - loop[3:(resolution)]
+  # If the signs are different, then it is a local shift
+  loop.pos = c(TRUE, (sign(loop.check.left) == sign(loop.check.right)), TRUE)
+  for(pos in which(loop.pos == FALSE)){ # Take the average
+    loop[pos] = (loop[pos-1] + loop[pos+1])/2
+  }
+  E.cathode$pH = loop;
+  # Loop pCO2 calculation as well, since the pCO2 function relies on the previous point
+  loop = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[1], pH = E.cathode$pH[1],
+                                At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = stop.soln$p.CO2)
+  for(i in 2:length(E.cathode$DIC)){
+    loop[i] = pCO2.xA.pH.A.k.beta.Na(xA = E.cathode$xA[i], pH = E.cathode$pH[i],
+                                  At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na, pCO2.prev = loop[i-1])
+  }
+  E.cathode$p.CO2 = loop
+  E.cathode$q = abs(E.cathode$xA - E.cathode$xA[1])*A.tot*z*F # Coulombs
+  
+  # Equilibrium potential: Deviation from standard reduction potential
+  E.anode$H = 10^-E.anode$pH
+  E.anode$E = R*T/(z*F) * log( (1 - E.anode$xA)/E.anode$xA * 
+                                   ((1 + beta1*E.anode$p.CO2 + beta2*E.anode$p.CO2^2)*k1*k2 + k1*E.anode$H + E.anode$H^2)/(k1*k2))
+  E.cathode$H = 10^-E.cathode$pH
+  E.cathode$E = R*T/(z*F) * log( (1 - E.cathode$xA)/E.cathode$xA * 
+                                   ((1 + beta1*E.cathode$p.CO2 + beta2*E.cathode$p.CO2^2)*k1*k2 + k1*E.cathode$H + E.cathode$H^2)/(k1*k2))
+  
+  # Total energy
+  E.cell = data.frame(q = E.anode$q, V = E.anode$E - E.cathode$E)
+  # Only the positive energy demand
+  E.cell = filter(E.cell, V > 0)
+  len = length(E.cell$q)
+  if(len == 0){
+    E.cell = data.frame(q = rep(x = 0, times = 10), V = rep(x = 0, times = 10))
+    len = 10
+  }
+  # E.anode$typ = "anode"; E.cathode$typ = "cathode"
+  Energy.tot.sep = sum(0.5*(E.cell$V[2:len] + E.cell$V[1:(len-1)])*(E.cell$q[2:len] - E.cell$q[1:(len-1)]))
+  
+  ## Adjust the total energy by multiplying by the penalty function
+  # Calculate the lean gas pressure
+  # k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out
+  p.lean = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  penalty = weight.fun(pCO2.lean = p.lean)
+  
+  # Normalize by the total amount of carbon moved, i.e. units of kJ/mol
+  DIC.capture = DIC.diff(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.in = pCO2.in, pCO2.out = pCO2.out)
+  return(Energy.tot.sep*penalty/DIC.capture*1e-3)
+}
+
+```
+
+
+```{r PCET Derived Functions: CO2 Flux}
+# These equations are based on the framework for determining the CO2 flux as presented in Wilcox 2012.
+Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
+  # Constants: general
+  kw = 1e-14 # M^2
+  kH = 3.4e-2; # M/atm
+  z = 1 # OH- + CO2 = HCO3-
+  # Constants: from Wilcox 2012
+  Dco2 = 0.5e-5 # cm2/s, assume slowest due to high ionic strength
+  kL = 0.1 # Assume fast mass transfer of typical range
+  # Constants: average of Pocker 1997, Zeman 2007, Stolaroff 2008, Wilcox 2012
+  k.rate = (6.03e3 + 6.745e3 + 8.5e3 + 12.1e3)/4
+  # Constants: Lvov2012
+  Doh = 5.2e-5 # cm2/s
+
+  # Base concentration = OH + HQ- + 2Q--
+  H = 10^-pH
+  OH = kw/H
+  base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
+  
+  # Interface CO2 concentration - assume 90% capture from the inlet
+  CO2.int = 0.1*pCO2.in*kH
+  
+  # Hatta number: reaction rate / mass transfer rate
+  Ha = sqrt(Dco2*base*k.rate)/kL
+  # Instantaneous enhancement factor
+  Ei = 1 + Doh*base / (z*Dco2*CO2.int)
+  
+  # return(c(Ei, Ha / tanh(Ha), Ha))
+  # Check the extreme cases for E to simplify the equations
+  if(Ha > 10*Ei){ # Instantaneous
+    E = Ei
+  } else if(Ha < Ei/2){ # Pseudo-1st order
+    E = Ha / tanh(Ha)
+  } else if(Ha > 3){ # 1st order
+    E = Ha
+  } else{ # No simplification - Solve the root that is less than Ei, as Ei is the upper bound
+    x.guess = c(0.9, 0.95)*Ei
+    for(i in 1:5){ # Newton's method
+      y.guess = (Ha*(Ei - x.guess) / (Ei - 1)) / tanh(Ha*(Ei - x.guess) / (Ei - 1)) - x.guess
+      slp.fit = (y.guess[1] - y.guess[2]) / (x.guess[1] - x.guess[2])
+      E.guess = -y.guess[1]/slp.fit + x.guess[1]
+      x.guess = c(0.975, 1.025)*E.guess
+    }
+    E = E.guess
+  }
+  #### Need to include order of magnitude for reaction rate with sorbent - use acid anhydride formation rate constants as estimates?
+  return(E)
+}
+
+# Calculate the average kinetic driving force over the course of absorption (stage 4 -> 1)
+kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
+  # Constants
+  xA.lim = c(0.025, 0.975)
+  kH = 3.4e-2; # M/atm
+  # Calculate the pCO2 of the fully reduced species prior to equilibration with the gas
+  out.pCO2 = pCO2.lean(Na = Na, A = A.tot, beta1 = beta1, beta2 = beta2, k1 = k1, k2 = k2, pCO2.out = pCO2.out)
+  # If the minimum outlet pCO2 is greater than the target capture:
+  # if(out.pCO2 > 0.1*pCO2.in | is.na(out.pCO2)){
+  if(is.na(out.pCO2)){
+    return(0)
+  } else{
+    # Calculate the pH at the start of desorption
+    soln41 = data.frame(xA = max(xA.lim), p.CO2 = out.pCO2)
+    # Solve pH with multiple cores
+    soln41$pH = pH.xA.pCO2.A.k.beta.Na(xA = soln41$xA, P = soln41$p.CO2, 
+                         At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
+    soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
+
+    # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
+    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    # Flux: delC * kL * E, assume kL = 0.1 cm/s
+    # Unit conversion: L to cm3, cm2 to m2
+    flux = soln41$delC*soln41$E*0.1 * (1/1e3) * (100^2)
+    # return(soln41)
+    return(signif(flux, 5)) # Highest driving force at outlet
+    # return(soln41)
+  }
+}
+
+```
+
+
+To work with GPareto, the two objective functions need to combined, and the input should be a matrix, not a dataframe. I account for this with a wrapper function to simplify the process.
+
+
+```{r Baseline objective function}
+PCET.obj.flu.base = function(inputs){
+  # Inputs is a matrix where each row is an instance and each column is a specific variable:
+  # From left to right, the columns are:
+  # pka1, err.pka2, log10(A.tot), Na/A.tot
+  # For the functions, the variables should be:
+  # k1, k2, A.tot, Na
+  # The use of log units and ratios helps alleviate resolution issues associated with spanning multiple orders of magnitude
+  # The use of the error of pKa2 removes the correlation between the two variables
+  
+  # Storing the proper information.
+  if(is.matrix(inputs)){
+    dat = data.frame(k1 = 10^-inputs[,1],
+                     k2 = 10^-(inputs[,1] + inputs[,2]),
+                     A.tot = 10^inputs[,3],
+                     Na = 10^inputs[,4]*10^inputs[,3])
+  } else{
+    # The optimization function sometimes stores as a vector instead of as a matrix if it is just a single point
+    dat = data.frame(k1 = 10^-inputs[1],
+                     k2 = 10^-(inputs[1] + inputs[2]),
+                     A.tot = 10^inputs[3],
+                     Na = 10^inputs[4]*10^inputs[3])
+  }
+  # The following conditions are assumed for PCET from flue gas
+  beta1 = 0; beta2 = 0;
+  pCO2.in = 0.15; pCO2.out = 1;
+  
+  # The functions require substantial computation, so each row has to be processed independently
+  energy = c(); flux = c()
+  for(i in 1:nrow(dat)){
+    energy[i] = Energy.tot(k1 = dat$k1[i], k2 = dat$k2[i], 
+                           beta1 = 0, beta2 = 0, 
+                           A.tot = dat$A.tot[i], Na = dat$Na[i], 
+                           pCO2.in = 0.15, pCO2.out = 1)
+    flux[i] = kinetic.force(k1 = dat$k1[i], k2 = dat$k2[i], 
+                            beta1 = 0, beta2 = 0, 
+                            A.tot = dat$A.tot[i], Na = dat$Na[i], 
+                            pCO2.in = 0.15, pCO2.out = 1)
+  }
+  # Obtain the negative of the flux so it is a minimization function for the optimization search
+  return(c(log10(energy), -flux)) 
+}
+
+```
+
+# Pareto frontier search: Starting Design
+
+Use the starting dataset for the +base condition after refinement to points that can capture some CO2.
+
+```{r Baseline data}
+# Re-save in this folder
+GPar.all = read.csv('../Ex_PCET_Basic/GPar_all_data.csv')
+GPar.fnt = read.csv('../Ex_PCET_Basic/GPar_fnt_data.csv')
+
+# Flux needs to be flipped
+GPar.all$Flux.mol.m2s = -GPar.all$Flux.mol.m2s
+GPar.fnt$Flux.mol.m2s = -GPar.fnt$Flux.mol.m2s
+# Energy in log units
+GPar.all$Energy.kJ.mol = log10(GPar.all$Energy.kJ.mol)
+GPar.fnt$Energy.kJ.mol = log10(GPar.fnt$Energy.kJ.mol)
+
+write.csv(GPar.all, 'GPar_all_base.csv')
+write.csv(GPar.fnt, 'GPar_fnt_base.csv')
+
+```
+
+# Pareto frontier search: concentration
+
+Using the same objective function but modifying the bounds of the quinone concentration from high to low:
+7, 5, 3, 1, 0.5
+(logA = 0.85, 0.7, 0.5, 0, -0.3)
+
+Start the search with the high value constraint, then filter out the points that are too high for the next highest and proceed downward by filling in the same number of points that were removed.
+Doing the optimization in this way guarantees that the shifts in the Pareto front are from the constriction of the input range and not from additional sampling resolution.
+
+For the high concentration case, use a budget of 75 points.
+
+```{r Pareto Search: Highest concentration}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0.85); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_base.csv')
+# Set the budget
+Pareto.budget = 150
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_Qhst.csv')
+write.csv(GPar.all, file = 'GPar_all_Qhst.csv')
+```
+
+```{r Pareto Search: High concentration}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0.7); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_Qhst.csv')
+# Set the budget as the number of points that will be filtered
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, logA < max(logA.rng)))
+design.start = filter(design.start, logA < max(logA.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_Qhig.csv')
+write.csv(GPar.all, file = 'GPar_all_Qhig.csv')
+```
+
+```{r Pareto Search: Base concentration}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_Qhig.csv')
+# Set the budget as the number of points that will be filtered
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, logA < max(logA.rng)))
+design.start = filter(design.start, logA < max(logA.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_Qmid.csv')
+write.csv(GPar.all, file = 'GPar_all_Qmid.csv')
+```
+
+```{r Pareto Search Initial Design: Low concentration}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_Qmid.csv')
+# Shorten the budget by the number of points that will be removed
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, logA < max(logA.rng)))
+design.start = filter(design.start, logA < max(logA.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_Qlow.csv')
+write.csv(GPar.all, file = 'GPar_all_Qlow.csv')
+```
+
+```{r Pareto Search Initial Design: Lowest concentration}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, -0.3); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_Qlow.csv')
+# Shorten the budget by the number of points that will be removed
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, logA < max(logA.rng)))
+design.start = filter(design.start, logA < max(logA.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_Qlst.csv')
+write.csv(GPar.all, file = 'GPar_all_Qlst.csv')
+```
+
+# Pareto frontier search: pKa difference
+
+As above, but changing the pKa difference from 9, 7.25, 5.5, 3.25, 1
+
+```{r Pareto Search: Highest pKa difference}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 9)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_base.csv')
+# Set the budget
+Pareto.budget = 150
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_pkaH.csv')
+write.csv(GPar.all, file = 'GPar_all_pkaH.csv')
+```
+
+```{r Pareto Search: High pKa difference}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 7.25)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_pkaH.csv')
+# Set the budget as the number of points that will be filtered
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, pka2 < max(pka2.rng)))
+design.start = filter(design.start, pka2 < max(pka2.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_pkah.csv')
+write.csv(GPar.all, file = 'GPar_all_pkah.csv')
+```
+
+```{r Pareto Search: Base pKa difference}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 5.5)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_pkah.csv')
+# Set the budget as the number of points that will be filtered
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, pka2 < max(pka2.rng)))
+design.start = filter(design.start, pka2 < max(pka2.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_pkaM.csv')
+write.csv(GPar.all, file = 'GPar_all_pkaM.csv')
+```
+
+```{r Pareto Search Initial Design: Low pka difference}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 3.75)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_pkaM.csv')
+# Shorten the budget by the number of points that will be removed
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, pka2 < max(pka2.rng)))
+design.start = filter(design.start, pka2 < max(pka2.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_pkal.csv')
+write.csv(GPar.all, file = 'GPar_all_pkal.csv')
+```
+
+```{r Pareto Search Initial Design: Lowest pka difference}
+# Initial ranges
+pka1.rng = c(2, 13.5); pka2.rng = c(0, 1)
+logA.rng = c(-2, 0.5); Na.A.rng = c(-7, 0.7)
+
+# Since the concentration is lower, can use the data from the previous Pareto front search, but
+# filtering out points and then randomly sampling up to the required number
+design.start = read.csv(file = 'GPar_all_pkal.csv')
+# Shorten the budget by the number of points that will be removed
+Pareto.budget = nrow(design.start) - nrow(filter(design.start, pka2 < max(pka2.rng)))
+design.start = filter(design.start, pka2 < max(pka2.rng))
+
+# Separate into different matrices
+result.start = design.start[,c('Energy.kJ.mol', 'Flux.mol.m2s')]
+design.start = design.start[,c('pka1', 'pka2', 'logA', 'Na.A')]
+
+res = easyGParetoptim(fn = PCET.obj.flu.base, budget = Pareto.budget, 
+                      lower = c(min(pka1.rng), min(pka2.rng), min(logA.rng), min(Na.A.rng)), 
+                      upper = c(max(pka1.rng), max(pka2.rng), max(logA.rng), max(Na.A.rng)), 
+                      par = as.matrix(design.start), value = as.matrix(result.start), ncores = 2)
+plotGPareto(res)
+
+# Format into dataframe for easier plotting
+GPar.front = data.frame(pka1 = res$par[,1], pka2 = res$par[,2], logA = res$par[,3], Na.A = res$par[,4],
+                        Energy.kJ.mol = res$value[,1], Flux.mol.m2s = res$value[,2])
+GPar.all =  data.frame(pka1 = res$history$X[,1], pka2 = res$history$X[,2], logA = res$history$X[,3],
+                       Na.A = res$history$X[,4],
+                       Energy.kJ.mol = res$history$y[,1], Flux.mol.m2s = res$history$y[,2])
+rm(res)
+write.csv(GPar.front, file = 'GPar_fnt_pkaL.csv')
+write.csv(GPar.all, file = 'GPar_all_pkaL.csv')
+```
+
+# Comparisons
+
+```{r Visualize the Pareto Front}
+GPar.front.Qlst = read.csv(file = 'GPar_fnt_Qlst.csv')
+# GPar.front.Qlow = read.csv(file = 'GPar_fnt_Qlow.csv')
+GPar.front.Qmid = read.csv(file = 'GPar_fnt_Qmid.csv')
+# GPar.front.Qhig = read.csv(file = 'GPar_fnt_Qhig.csv')
+GPar.front.Qhst = read.csv(file = 'GPar_fnt_Qhst.csv')
+GPar.front.pkaL = read.csv(file = 'GPar_fnt_pkaL.csv')
+# GPar.front.pkal = read.csv(file = 'GPar_fnt_pkal.csv')
+GPar.front.pkaM = read.csv(file = 'GPar_fnt_pkaM.csv')
+# GPar.front.pkah = read.csv(file = 'GPar_fnt_pkah.csv')
+GPar.front.pkaH = read.csv(file = 'GPar_fnt_pkaH.csv')
+
+# Label concentrations
+GPar.front.Qlst$mConc = 0.5
+# GPar.front.Qlow$mConc = 1
+GPar.front.Qmid$mConc = 3
+# GPar.front.Qhig$mConc = 5
+GPar.front.Qhst$mConc = 7
+
+# Label differences
+GPar.front.pkaL$pkaDif = 1
+# GPar.front.pkal$pkaDif = 3.75
+GPar.front.pkaM$pkaDif = 5.5
+# GPar.front.pkah$pkaDif = 7.25
+GPar.front.pkaH$pkaDif = 9
+
+# Combine the fronts
+# GPar.front.con = rbind(GPar.front.Qlst, GPar.front.Qlow, GPar.front.Qmid, GPar.front.Qhig, GPar.front.Qhst)
+# GPar.front.pKa = rbind(GPar.front.pkaL, GPar.front.pkal, GPar.front.pkaM, GPar.front.pkah, GPar.front.pkaH)
+# rm(GPar.front.Qlst, GPar.front.Qlow, GPar.front.Qmid, GPar.front.Qhig, GPar.front.Qhst,
+#    GPar.front.pkaL, GPar.front.pkal, GPar.front.pkaM, GPar.front.pkah, GPar.front.pkaH)
+GPar.front.con = rbind(GPar.front.Qlst, GPar.front.Qmid, GPar.front.Qhst)
+GPar.front.pKa = rbind(GPar.front.pkaL, GPar.front.pkaM, GPar.front.pkaH)
+rm(GPar.front.Qlst, GPar.front.Qmid, GPar.front.Qhst,
+   GPar.front.pkaL, GPar.front.pkaM, GPar.front.pkaH)
+
+# Flip the flux sign back
+GPar.front.con$Flux.mol.m2s = -GPar.front.con$Flux.mol.m2s
+GPar.front.pKa$Flux.mol.m2s = -GPar.front.pKa$Flux.mol.m2s
+# Non-log energy units
+GPar.front.con$Energy.kJ.mol = 10^GPar.front.con$Energy.kJ.mol
+GPar.front.pKa$Energy.kJ.mol = 10^GPar.front.pKa$Energy.kJ.mol
+
+# Repeat for the full datasets
+GPar.Qlst = read.csv(file = 'GPar_all_Qlst.csv')
+# GPar.Qlow = read.csv(file = 'GPar_all_Qlow.csv')
+GPar.Qmid = read.csv(file = 'GPar_all_Qmid.csv')
+# GPar.Qhig = read.csv(file = 'GPar_all_Qhig.csv')
+GPar.Qhst = read.csv(file = 'GPar_all_Qhst.csv')
+GPar.pkaL = read.csv(file = 'GPar_all_pkaL.csv')
+# GPar.pkal = read.csv(file = 'GPar_all_pkal.csv')
+GPar.pkaM = read.csv(file = 'GPar_all_pkaM.csv')
+# GPar.pkah = read.csv(file = 'GPar_all_pkah.csv')
+GPar.pkaH = read.csv(file = 'GPar_all_pkaH.csv')
+
+# Combine the fronts
+# GPar.con = rbind(GPar.Qlst, GPar.Qlow, GPar.Qmid, GPar.Qhig, GPar.Qhst)
+# GPar.pKa = rbind(GPar.pkaL, GPar.pkal, GPar.pkaM, GPar.pkah, GPar.pkaH)
+# rm(GPar.Qlst, GPar.Qlow, GPar.Qmid, GPar.Qhig, GPar.Qhst,
+#    GPar.pkaL, GPar.pkal, GPar.pkaM, GPar.pkah, GPar.pkaH)
+GPar.con = rbind(GPar.Qlst, GPar.Qmid, GPar.Qhst)
+GPar.pKa = rbind(GPar.pkaL, GPar.pkaM, GPar.pkaH)
+rm(GPar.Qlst, GPar.Qmid, GPar.Qhst,
+   GPar.pkaL, GPar.pkaM, GPar.pkaH)
+
+# Flip the flux sign back
+GPar.con$Flux.mol.m2s = -GPar.con$Flux.mol.m2s
+GPar.pKa$Flux.mol.m2s = -GPar.pKa$Flux.mol.m2s
+# Adjust the energy back to non-log units
+GPar.con$Energy.kJ.mol = 10^GPar.con$Energy.kJ.mol
+GPar.pKa$Energy.kJ.mol = 10^GPar.pKa$Energy.kJ.mol
+
+# Label concentration and pKa differences dynamically, not based on which dataset it was generated from
+GPar.con$mConc = 7
+# GPar.con$mConc[GPar.con$logA <= 0.7] = 5
+GPar.con$mConc[GPar.con$logA <= 0.5] = 3
+# GPar.con$mConc[GPar.con$logA <= 0.0] = 1
+GPar.con$mConc[GPar.con$logA <= -0.3] = 0.5
+
+# Label differences
+GPar.pKa$pkaDif = 9
+# GPar.pKa$pkaDif[GPar.pKa$pka2 <= 7.25] = 7.25
+GPar.pKa$pkaDif[GPar.pKa$pka2 <= 5.50] = 5.5
+# GPar.pKa$pkaDif[GPar.pKa$pka2 <= 3.75] = 3.75
+GPar.pKa$pkaDif[GPar.pKa$pka2 <= 1.00] = 1
+
+sz = 1.5
+ggplot() +
+  geom_point(filter(GPar.con, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s, 
+                           color = as.factor(mConc), shape = as.factor(mConc)),
+             size = sz, alpha = 0.5) +
+  geom_line(filter(GPar.front.con, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
+            mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s, color = as.factor(mConc)),
+            size = sz) +
+  geom_point(filter(GPar.front.con, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s, 
+                           color = as.factor(mConc), shape = as.factor(mConc)),
+             size = sz+2) +
+  labs(x = 'CO2 Flux (mol/m^2/s)', y = 'Energy Demand (kJ/mol)', subtitle = 'Pareto Frontier',
+       color = 'Max Concentration (M)', shape = 'Max Concentration (M)')
+
+ggplot() +
+  geom_point(filter(GPar.pKa, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s, 
+                           color = as.factor(pkaDif), shape = as.factor(pkaDif)),
+             size = sz, alpha = 0.5) +
+  geom_line(filter(GPar.front.pKa, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
+            mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s, color = as.factor(pkaDif)),
+            size = sz) +
+  geom_point(filter(GPar.front.pKa, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
+             mapping = aes(y = Energy.kJ.mol, x = Flux.mol.m2s, 
+                           color = as.factor(pkaDif), shape = as.factor(pkaDif)),
+             size = sz+2) +
+  labs(x = 'CO2 Flux (mol/m^2/s)', y = 'Energy Demand (kJ/mol)', subtitle = 'Pareto Frontier',
+       color = expression('Max p'*italic(K)['a']*' Difference'), 
+       shape = expression('Max p'*italic(K)['a']*' Difference'))
+
+write.csv(GPar.front.con, 'FrontShift_conc_fnt.csv')
+write.csv(GPar.front.pKa, 'FrontShift_Dpka_fnt.csv')
+
+write.csv(GPar.con, 'FrontShift_conc_all.csv')
+write.csv(GPar.pKa, 'FrontShift_Dpka_all.csv')
+
+```
+
+
+
+

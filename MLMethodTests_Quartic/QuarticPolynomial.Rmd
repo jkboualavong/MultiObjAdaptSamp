@@ -506,10 +506,10 @@ $P[X|Y] = P[X, Y] P[X] / P[Y]$
 ```{r GP: Error rate}
 error.rate = data.frame(method = 'GP', source = rep(c('0paret', '1adapt', '2rando'), 3),
                         criteria = c(rep('Pareto Distance', 3), 
-                                     rep('Objective Cutoff', 3), 
-                                     rep('Utopia Distance + Priority', 3)))
+                                     rep('Threshold Cutoff', 3), 
+                                     rep('Utopia Distance', 3)))
 error.rate$criteria = factor(error.rate$criteria, levels = c("Pareto Distance", 
-                                     "Objective Cutoff", "Utopia Distance + Priority"))
+                                     "Threshold Cutoff", "Utopia Distance"))
 # Total error rate
 error.rate$rate =
   c(mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.paret, filter(fine.grid, delta == 0)$prob.delta.paret)),
@@ -1036,11 +1036,11 @@ SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')],
 
 # Error rates
 err.paret = SVM.err(fine.input = fine.grid, mod.list = mod.paret)
-err.paret$source = '0paret'; err.paret$criteria = 'Treshold Cutoff'
+err.paret$source = '0paret'; err.paret$criteria = 'Threshold Cutoff'
 err.adapt = SVM.err(fine.input = fine.grid, mod.list = mod.adapt)
-err.adapt$source = '1adapt'; err.adapt$criteria = 'Treshold Cutoff'
+err.adapt$source = '1adapt'; err.adapt$criteria = 'Threshold Cutoff'
 err.rando = SVM.err(fine.input = fine.grid, mod.list = mod.rando)
-err.rando$source = '2rando'; err.rando$criteria = 'Treshold Cutoff'
+err.rando$source = '2rando'; err.rando$criteria = 'Threshold Cutoff'
 
 err.svm.cutof = rbind(err.paret, err.adapt, err.rando)
 
@@ -1201,11 +1201,11 @@ SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')],
 
 # Error rates
 err.paret = SVM.err(fine.input = fine.grid, mod.list = mod.paret)
-err.paret$source = '0paret'; err.paret$criteria = 'Treshold Cutoff'
+err.paret$source = '0paret'; err.paret$criteria = 'Utopia Distance'
 err.adapt = SVM.err(fine.input = fine.grid, mod.list = mod.adapt)
-err.adapt$source = '1adapt'; err.adapt$criteria = 'Treshold Cutoff'
+err.adapt$source = '1adapt'; err.adapt$criteria = 'Utopia Distance'
 err.rando = SVM.err(fine.input = fine.grid, mod.list = mod.rando)
-err.rando$source = '2rando'; err.rando$criteria = 'Treshold Cutoff'
+err.rando$source = '2rando'; err.rando$criteria = 'Utopia Distance'
 
 err.svm.radan = rbind(err.paret, err.adapt, err.rando)
 

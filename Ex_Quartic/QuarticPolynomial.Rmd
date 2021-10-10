@@ -2273,6 +2273,49 @@ shap = function(p.x, p.z1, p.z2, nsamp){
 ```
 
 
+```{r}
+GPar.adapt = read.csv(file = 'GPar_Accept_Delta1.csv')
+mod.dist.adapt = fill.sample.mod(GPar.data = GPar.adapt, input.name = c('x1', 'x2'), output.name = 'dist')
+
+shap = function(x, nsamp, mod.dist){
+  # Calculate shapley value for each point in x
+  p.x = f.delta(x = x, mod.dist = mod.dist)
+  x1.shap = c(); x2.shap = c()
+  for(i in 1:nrow(x)){
+    x1 = x$x1[i]; x2 = x$x2[i];
+    z1 = data.frame(x1 = x1, x2 = runif(n = nsamp, min = 0, max = 5))
+    z2 = data.frame(x2 = x2, x1 = runif(n = nsamp, min = 0, max = 5))
+    
+    # Calculate
+    p.z1 = f.delta(x = z1, mod.dist = mod.dist)
+    p.z2 = f.delta(x = z2, mod.dist = mod.dist)
+    
+    # Mean difference
+    x1.shap = c(x1.shap, mean(p.x[i] - p.z1))
+    x2.shap = c(x2.shap, mean(p.x[i] - p.z2))
+  }
+  
+  
+  return(c(mean(x1.shap), mean(x2.shap), sd(x1.shap), sd(x2.shap)))
+}
+
+nsamp = 1500; nmean = 50
+x = data.frame(x1 = runif(n = nmean, min = 0, max = 5),
+               x2 = runif(n = nmean, min = 0, max = 5))
+# p.x = f.delta(x = x, mod.dist = mod.dist.adapt)
+res = shap(x = x, nsamp = nsamp, mod.dist = mod.dist.adapt)
+
+```
+
+```{r}
+
+ggplot(data.frame(shap.delta = res[1:2], shap.delta.s = res[3:4], var = c('x1', 'x2'))) +
+  geom_col(mapping = aes(x = var, y = shap.delta)) +
+  geom_errorbar(mapping = aes(x = var, ymin = shap.delta - shap.delta.s, ymax = shap.delta + shap.delta.s))
+
+```
+
+
 ```{r Shapley Value Calculation}
 nsamp = 1500*50 # Same number of points used in the calculation for the marginals
 # Create random vectors x and z
@@ -2345,7 +2388,7 @@ ggplot(Shap) +
   scale_fill_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])), name = '')
 )
 
-rm(x, z.x1, z.x2, p.x, p.z1, p.z2)
+# rm(x, z.x1, z.x2, p.x, p.z1, p.z2)
 
 # Store the importance rankings
 Import$method = 'Marginal'

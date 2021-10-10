@@ -1056,24 +1056,34 @@ ggplot() +
   scale_color_brewer(type = 'qual', palette = 2)
 
 # Calculating the coefficients of determination
-corcoef = data.frame()
+corcoef = data.frame(); 
 for(dataset in unique(marginal.all$cat)){
   if(dataset == 'tru'){next}
-  for(xvar in unique(marginal.all$var)){
-    true.res = filter(marginal.all, cat == 'tru', var == xvar)
-    for(model in unique(marginal.all$mod)){
+  for(model in unique(marginal.all$mod)){
+    corcoef.agg = data.frame()
+    for(xvar in unique(marginal.all$var)){
+      true.res = filter(marginal.all, cat == 'tru', var == xvar)
       sub = filter(marginal.all, mod == model, var == xvar, cat == dataset)
       # Some of the probabilities are flat at 0 or 1; to get a coefficient of determination, apply noise
       if(diff(range(sub$prob)) < 0.01){
-        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)
-      } else{adjust = 1}
+        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)*sub$prob + 
+          runif(n = nrow(sub), min = -0.001, max = 0.001)
+      } else{adjust = sub$prob}
       corcoef = rbind(corcoef,
                       data.frame(var = xvar, model, cat = dataset,
-                                 rsq = cor(y = sub$prob*adjust,
+                                 rsq = cor(y = adjust,
                                            x = true.res$prob, method = 'pearson')^2))
+      corcoef.agg = rbind(corcoef.agg,
+                          data.frame(y = adjust, x = true.res$prob))
     }
+    corcoef = rbind(corcoef,
+                    data.frame(var = 'agg', model, cat = dataset,
+                               rsq = cor(y = corcoef.agg$y,
+                                         x = corcoef.agg$x, method = 'pearson')^2))
   }
 }
+
+
 ggplot(filter(corcoef, model %in% c('GP', 'SVM-pol', 'SVM-sig'))) +
   geom_col(mapping = aes(x = factor(cat, levels = c('paret', 'adapt', 'rando')), y = rsq, fill = cat)) +
   facet_grid(var~model) +
@@ -1115,22 +1125,31 @@ ggplot() +
   scale_color_brewer(type = 'qual', palette = 2)
 
 # Calculating the coefficients of determination
-corcoef = data.frame()
+# Calculating the coefficients of determination
+corcoef = data.frame(); 
 for(dataset in unique(marginal.all$cat)){
   if(dataset == 'tru'){next}
-  for(xvar in unique(marginal.all$var)){
-    true.res = filter(marginal.all, cat == 'tru', var == xvar)
-    for(model in unique(marginal.all$mod)){
+  for(model in unique(marginal.all$mod)){
+    corcoef.agg = data.frame()
+    for(xvar in unique(marginal.all$var)){
+      true.res = filter(marginal.all, cat == 'tru', var == xvar)
       sub = filter(marginal.all, mod == model, var == xvar, cat == dataset)
       # Some of the probabilities are flat at 0 or 1; to get a coefficient of determination, apply noise
       if(diff(range(sub$prob)) < 0.01){
-        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)
-      } else{adjust = 1}
+        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)*sub$prob + 
+          runif(n = nrow(sub), min = -0.001, max = 0.001)
+      } else{adjust = sub$prob}
       corcoef = rbind(corcoef,
                       data.frame(var = xvar, model, cat = dataset,
-                                 rsq = cor(y = sub$prob*adjust,
+                                 rsq = cor(y = adjust,
                                            x = true.res$prob, method = 'pearson')^2))
+      corcoef.agg = rbind(corcoef.agg,
+                          data.frame(y = adjust, x = true.res$prob))
     }
+    corcoef = rbind(corcoef,
+                    data.frame(var = 'agg', model, cat = dataset,
+                               rsq = cor(y = corcoef.agg$y,
+                                         x = corcoef.agg$x, method = 'pearson')^2))
   }
 }
 ggplot(filter(corcoef, model %in% c('GP', 'SVM-pol', 'SVM-sig'))) +
@@ -1172,22 +1191,31 @@ ggplot() +
   scale_color_brewer(type = 'qual', palette = 2)
 
 # Calculating the coefficients of determination
-corcoef = data.frame()
+# Calculating the coefficients of determination
+corcoef = data.frame(); 
 for(dataset in unique(marginal.all$cat)){
   if(dataset == 'tru'){next}
-  for(xvar in unique(marginal.all$var)){
-    true.res = filter(marginal.all, cat == 'tru', var == xvar)
-    for(model in unique(marginal.all$mod)){
+  for(model in unique(marginal.all$mod)){
+    corcoef.agg = data.frame()
+    for(xvar in unique(marginal.all$var)){
+      true.res = filter(marginal.all, cat == 'tru', var == xvar)
       sub = filter(marginal.all, mod == model, var == xvar, cat == dataset)
       # Some of the probabilities are flat at 0 or 1; to get a coefficient of determination, apply noise
       if(diff(range(sub$prob)) < 0.01){
-        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)*sub$prob + runif(n = nrow(sub), min = -0.001, max = 0.001)
+        adjust = runif(n = nrow(sub), min = 0.999, max = 1.001)*sub$prob + 
+          runif(n = nrow(sub), min = -0.001, max = 0.001)
       } else{adjust = sub$prob}
       corcoef = rbind(corcoef,
                       data.frame(var = xvar, model, cat = dataset,
                                  rsq = cor(y = adjust,
                                            x = true.res$prob, method = 'pearson')^2))
+      corcoef.agg = rbind(corcoef.agg,
+                          data.frame(y = adjust, x = true.res$prob))
     }
+    corcoef = rbind(corcoef,
+                    data.frame(var = 'agg', model, cat = dataset,
+                               rsq = cor(y = corcoef.agg$y,
+                                         x = corcoef.agg$x, method = 'pearson')^2))
   }
 }
 ggplot(filter(corcoef, model %in% c('GP', 'SVM-pol', 'SVM-sig'))) +
