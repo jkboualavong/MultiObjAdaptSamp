@@ -9,12 +9,12 @@ output: html_notebook
 <!--     variant: markdown_github -->
 
 # Description
-This notebook takes the results from PCET optimization using the established method and interrogates specific points to illustrate 
+This notebook takes the results from PCET optimization and sampling and interrogates specific points to illustrate 
 
 (1) the mathematical underpinnings of the physical model and 
 (2) identify why specific inputs lead to better or worse performance.
 
-The source data (GPar_AcidBase_data.csv and GPar_AcidBase_fnt.csv) were those calculated from the scripts in the Ex_PCET_Acid and Ex_PCET_Base folders.
+The training data uses the datasets calculated from the scripts in the Ex_PCET_Acid and Ex_PCET_Base folders.
 
 # Code
 ## Initialization
@@ -44,20 +44,9 @@ library(GA)
 ```
 
 ## Parameter space
-Data for restricting the quinone features is based on results from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
+Re-plotting the dataset from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
 
-Remove points that are not likely to be stable within the electrochemcial window of water. For the process:
-Q + 2e- + 2H+ <-> QH2
-We can roughly assume that the reduction reaction is competing with hydrogen evolution
-2H+ + 2e- <-> H2
-and the oxidation reaction is competing with oxygen evolution
-2H2O + 4OH- <-> O2 + 4e-
-
-Both of these reactions are pH dependent, so the cutoff values are not obvious. 
-At the extreme, the reduction potential of hydrogen evolution will be at its highest (most likely to compete with the quinone reduction) at the lowest pH, which would typically be at the pH where carbonic acid makes up > 90% of the CO2 speciation (pH = 5.33).
-Similarly, the reduction potential of oxygen evolution will be at its lowest at the highest pH, which would be just above the hydroquinone's buffer region (the higher of its pKas + 1).
-
-Practically, the quinone electrochemistry has much faster kinetics than either gas evolution reaction in the absence of a specific water-splitting catalyst, so a tolerance of about 200 mV will be added to accommodate.
+The data will be analyzed again later in the context of CO2 capture performance; these plots simply re-iterate the motivation for the constraints on the pKas.
 
 ```{r}
 # Load data and correlation plot package
@@ -122,31 +111,9 @@ rm(fit.ln)
 
 ```
 
-While all four variables are strongly co-correlated, this is largely irrelevant because the thermodynamic and kinetic analyses do not rely on the reduction potential besides assuming that gas evolution does not occur.
-There is a Bronsted-like relationship between the reduction potential and the reaction rate of the deprotonated hydroquinone nucleophilically attacking the CO2 [Simpson & Durand 1990, doi: 10.1016/0013-4686(90)85012-C], but this is not likely to be the dominant mechanism because the reaction with OH- is approximately 10 to 100 times faster in water.
-To determine which pKa will be the free variable and which will be represented by an error term of the linear regression, the relative normalized standard deviations of the errors were compared. 
+## CO2 Capture Model functions
 
-
-## CO2 Capture Model
-
-The objective function for energy demand solves the set of equilibrium equations across the range of charge and gas transfers based on four state variables: 
-total dissolved inorganic carbon (DIC), state of charge (xA), partial pressure of CO2 (pCO2), and solution pH.
-
-The minimum energy demand assumes all charge is passed at the Nernst potential, which is updated as charge passes through the system.
-The energy demand assumes anti-symmetric operation, ie. quinone reduction at the cathode and hydroquinone oxidation at the anode.
-Charge balance of the anolyte and catholyte are assumed to be the result of the background electrolyte travelling across an ion selective membrane.
-The gas transfers are assumed to be separate stages from the electrochemical stages, purely for the sake of simplicity. 
-This estimate for the minimum energy is a slight overestimate because of over-pressurization of the CO2; coupling the gas transfer steps with the appropriate electrochemical steps decreases the minimum energy by approximately a factor of 2.
-The function can accommodate feed CO2 gases of any partial pressure, but this study is interested in 3 applications: coal flue gas (15v% feed to 1.5v% lean), air revitalization (2000 ppm to 1000 ppm), and direct air capture (400 ppm to 250 ppm).
-
-This code is broken down into explicit functions and derived functions.
-Explicit functions are a series of sub-functions which solve for one of the four state variables using knowledge of the other three state variables and the solution conditions. 
-These functions solve the set of chemical equilibrium, mass, and charge balance equations for the bulk solution.
-Derived functions use the information from the explicit functions to determine relevant information for determining the energy demand and CO2 flux.
-
-For the purpose of generalization, these equations are written with the variables 'beta1' and 'beta2' which describe the deprotonated hydroquinone's affinity for CO2, forming an organic carbonate. 
-This species is ignored in this particular notebook for the above-stated reason (slow kinetics), and therefore both variables are set to 0.
-These variables are included because other compounds have been proposed to capture CO2 primarily through that mechanism, and thus they could also be studied with this script.
+The functions are written assuming the pH correction is a base, but simply changing the sign to negative will treat it as if an acid were added.
 
 ```{r PCET Explicit functions}
 # Direct explicit functions
@@ -359,26 +326,6 @@ pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
 
 ```
 
-
-Penalty function: logistic weighting function such that for values where 90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
-The hyperparameters L, k, and x0 of the logistic component of the weighting function were tuned by fitting to a variety of minimum lean gas pressures on the range of 0.016 to 2.5 atm and then selected as the modal value.
-The logistic function was tuned such that the growth rate steepness captured the range of 0 to 90% capture; when no CO2 could be captured, the weight is applied fully.
-
-A penalty function is not necessary for the flux because insufficient capture would manifest as negative fluxes. It may still show up in the Pareto frontier, but it can easily be filtered out, unlike the cases with the energy demand.
-
-See the script analyzing the basic conditions for details on its construction.
-
-The inlet term is constant at 0.15 atm and the reference point is 90% reduction in the partial pressure in the lean gas.
-The calculation is based on mass balance, assuming that the volume adjusted to maintain a total pressure of 1 atm.
-
-Assuming 1 total mole of gas is processed at the reference point:
-* Inlet: 0.15 mol CO2, 0.85 mol not CO2
-* Lean gas: 0.85 mol not CO2, (0.015*0.85)/(1 - 0.015) mol CO2
-* Enriched gas: 1 - (0.015*0.85)/(1 - 0.015) mol CO2, 0.1% not CO2
-
-The lean gas and enriched gas will change according to the system with a similar mass balance.
-
-Applying the penalty function directly to energy demand
 
 ```{r PCET Derived Functions: Energy Demand}
 weight.fun = function(pCO2.lean){
@@ -638,8 +585,6 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
 ```
 
 
-To work with GPareto, the two objective functions need to combined, and the input should be a matrix, not a dataframe. I account for this with a wrapper function to simplify the process.
-
 ```{r}
 PCET.obj.flu = function(inputs){
   # Inputs is a matrix where each row is an instance and each column is a specific variable:
@@ -684,6 +629,8 @@ PCET.obj.flu = function(inputs){
 }
 
 ```
+
+## Gaussian Process Models
 
 ```{r GP Model Generation}
 fill.sample.flux = function(GPar.data, input.name, output.name){
@@ -776,7 +723,7 @@ fill.sample.ener = function(GPar.data, input.name, output.name){
 
 # Combined acid/base marginals and feature importance
 
-To obtain a complete description of the system, these two datasets will be combined and their combined marginals analyzed, as well as their combined importance rankings assessed.
+To obtain a complete description of the system, results of models trained on each dataset (+acid or +base) will be interpreted together.
 This will more accurately reflect the possible options for operation, as the decision for whether to add acid or base is independent of the characteristics of the quinone (pKas and solubilities).
 
 ```{r Combine acidic and basic condition data}
@@ -809,15 +756,9 @@ write.csv(GPar.front, file = 'GPar_AcidBase_fnt.csv')
 Plotting of the combined dataset.
 For the purposes of initial interpretation, any acid or base concentration below 10^-7 will be considered to be no addition, as this quantity is very small, particularly compared to the amount of quinone (10^-2 or greater).
 
-The selection criteria for a viable result:
-* energy demand < 33 kJ/mol C to be competitive with temperature-swing processes
+The selection criteria for a competitive result:
+* energy demand < ~35 kJ/mol C to be competitive with temperature-swing processes
 * flux > 1/10th of the flux of MEA capture processes (calculated to be ~2.2 mmol/m2*s)
-
-The Pareto front has a slight concavity at around 2.2 mmol/m2*s where the energy demand increases but the flux remains constant.
-This line delineates two regions of interest: a set of options for low energy demands at viable fluxes and a set of options for high flux at viable energy demands.
-
-Partial data cleaning is needed: there are samples where the flux is very strongly negative (less than -10 mol/m2s), which skews the results.
-Adjust the results so that the negative values do not exceed more than 1 order of magnitude as the positive values.
 
 ```{r Optimal Capture Marginals: Setup}
 # Load dataset
@@ -888,18 +829,24 @@ GPar.nat$typ = typ
 
 ```
 
+The Pareto front has a slight concavity where the energy demand increases but the flux remains constant; coincidentally, this happens at around the flux of MEA capture.
+This line delineates two regions of interest: a set of options for low energy demands at viable fluxes and a set of options for high flux at viable energy demands.
+
 # GP Model setup
 
-There is some inconsistency between runs associated with slightly different GP models.
-To get an accurate estimate, multiple models will be generated, and each tested.
-The mean probability and standard error of the mean will be used as the metrics for importance ranking, as well as for determining suggested ranges.
+Partial data cleaning may be needed: there are samples where the flux is very strongly negative (less than -10 mol/m2s), which sometimes skews the results.
+However, the flux cannot be converted to a log scale as the energy was because it contains fluxes at or around 0.
+Instead, a partial sample of points will be used to generate a collection of models, whose average performance will be used as the estimate.
+This was also some inconsistency between runs due to slight differences in the random number seed, suggesting either poor convergence or degeneracy of the GP models.
+Regardless, aggregation of multiple models trained on subsets of the data should help make results more consistent.
+
+In this case, the mean probability and standard error of the mean will be used as the metrics for importance ranking, as well as for determining suggested ranges.
 This repeated testing should minimize the run-to-run variance in the probability estimations.
 
-Since multiple models are being generated, not all points need to be used in the model construction, reducing the computation time for these models.
-Adequate sampling requires at least 60% of the dataset.
+Adequate sampling requires at least 60% of the dataset, as this guarantees that at least some of the points in the training set have positive fluxes and/or low energy demands.
 
 Combining the acid and base datasets leads to convergence issues even if a fifth variable of whether acid or base is included in the model.
-As a result, half of the models will be generated with acid conditions and half with basic conditions, and they will be separated accordingly.
+As a result, half of the models will be generated with acid conditions and half with basic conditions, and they will handled separated until aggregation of the probabilities at the end.
 
 There is interest in obtaining not just the parameters for the natural variables, but also for the relative variables (pKa difference and acid or base to quinone ratio), as those may be more insightful.
 
@@ -967,13 +914,14 @@ rm(nmod, mod, nsamp, GPar.samp)
 
 # Output space characterization
 
-I am interested in how likely a randomly selected set of inputs will generate good or bad results, what the average result would be, and what the range of possible results is.
-This will be assessed using the relative variable functions since they are easier to sample from (rectangular constraints).
-The expected value will be the mean among the multiple surrogate models.
+How likely a randomly selected set of inputs will generate good or bad results? What the average result would be? What is the range of possible results?
+This will be assessed using the relative variable functions since they are easier to sample from (rectangular constraints), and the quality difference among the GP with initial testing did not appear to be substantially different.
+These questions will be answered using the means among the different GP trained on different subsets, with the belief that the average among them will converge on the true expected mean.
 
-For a point:
-* Determine its energy and flux (average among model outputs)
+That is, for a randomly sampled point, for each model:
+* Determine its energy and flux
 * Determine its probability of being competitive with MEA, high flux, or low energy
+This will generate a mean and variance for each point, which, with repeated sampling, can give a sense of the entire space.
 
 ```{r}
 # Create a set of random points based on the limits
@@ -1074,17 +1022,24 @@ write.csv(descr, 'OutcomeDescribe.csv')
 rm(rand.samp, descr)
 ```
 
+The distributions for the energy demand and flux appear don't capture the entire range of possibilities from the training dataset: the flux does not extend as low (approximately -10 on this scale), while the energy demand does not extend as high (10^7).
+This suggests that the distributions are more centrally-focused, or that those extrema were rare events found by exploratory sampling.
+This does, however, provide some indication regarding the relative distributions close to the modal value: the energy demand tends to be focused in the 30-100 kJ/mol range, while the flux tends to be slightly positive.
+
+Looking at the relative frequencies of the sampled probabilities, there is some interesting multimodality in all distributions except the high flux condition.
+This suggests that there are clusters of points that are likely to meet the specified criteria, and another cluster of points that are less likely.
 
 # Importance Rankings
 
 Assessment of the importance ranking of the 5 variables (pka1, pka2, concentration of quinone, concentration of pH correction species, and decision of acid or base)
 
 For the importance ranking, the most importance has the lowest total variance, normalized by the range of the mean probabilities (i.e. high variance with low means will be least important).
-This area is normalized based on the resolution such that the continuous variables can be compared to the categorical variables.
+We use the average variance to be able to compare continuous variables to categorical variables.
 
 The ranking can vary based on the specific region of interest, so each region (generally acceptable, high flux, and low energy) will be assessed separately.
 Uncertainty estimate of the ranking uses the standard propagation of uncertainty for a function defined by $f(x) = 1/x$ where $x$ has known variance ($s_x$).
-For ease of repeatability, writing a function.
+
+For ease of repeatability, writing a set of functions.
 
 ```{r Importance Ranking Function}
 marginals1D = function(E.cutof, F.cutof, mod.flux.a, mod.ener.a, mod.flux.b, mod.ener.b){
@@ -1466,6 +1421,9 @@ ggplot(acid.base) +
   labs(x = '', y = 'Probability', fill = '')
 
 ```
+
+Single variable marginals indicate peaks in the pKas/pH-correction and a threshold for the concentration, regardless of the condition.
+The marginals for low energy and viable performance (competitive vs MEA) are similar, indicating the importance of energy demands to being competitive.
 
 ```{r Plots: Importance Ranking - Natural Variables}
 # Plot results
@@ -1962,7 +1920,7 @@ In terms of relative variables, the ranking is:
 Combining these two rankings, it shows that the relative difference between the two pKas and the ratio of pH correction species to the quinone concentration is largely unimportant.
 These two relative variables are less important the the decision of whether to use an acid or base, whose probabilities and distribution were unchanged in the models.
 
-The remainder of this analysis will solely be in terms of natural variables.
+The remainder of this analysis will solely be in terms of natural variables for ease of interpretability.
 
 # Suggested ranges
 
@@ -2602,6 +2560,9 @@ rm(g1, g2, g3, g4)
 
 ```
 
+The suggested ranges appear to agree with the distribution of sampled points.
+Generally, high flux conditions require more specific characteristics, in agreement with the fact that this region is very small compared to the other two.
+
 Confirming that the peak points suggested by the marginals fall within the specified regions
 
 ```{r Check peak points: Calculation}
@@ -2698,6 +2659,9 @@ ggplot() +
 
 region.pk
 ```
+
+The suggested peak points all fall squarely within the regions that they target, showing the utility of this method as a predictor.
+In fact, the high flux suggestions were more Pareto optimal, and thus may provide a means for refining the Pareto front.
 
 # Points of interest
 Specific points of interest are:
@@ -2994,6 +2958,11 @@ rm(test.plt, g.points, g.dist)
 
 ```
 
+The "bad point" suggested by marginals was too far from the other points such that interpreting the impact of each variable was hard to untangle.
+Instead, we picked a point with moderate energy demand but low flux to contrast with the low energy-moderate flux and the high energy-high flux suggestions.
+
+For the points of interest, we plot the entire cycle dynamics to attempt to distinguish effects of each variable.
+
 ```{r Plot Functions}
 plt.demo.E = function(test.sys, i){
   # Calculate system processes
@@ -3194,7 +3163,7 @@ for(i in 1:nrow(quinone.data)){
 # Show most promising candidates in order from most to least likely to work
 quinone.data[order(quinone.data$p.accept, decreasing = TRUE), !(names(quinone.data) %in% c('QuinoneCode', 'E0.1', 'E0.2'))]
 
-p.cutof = quinone.data$p.accept*0.7
+p.cutof = max(quinone.data$p.accept)*0.7
 range(filter(quinone.data, p.accept > p.cutof)$Pka.1)
 range(filter(quinone.data, p.accept > p.cutof)$Pka.2)
 
@@ -3222,18 +3191,10 @@ g1 / g2
 rm(g1, g2)
 ```
 
-Based solely on pKa information available, 19 quinones have a moderate likelihood of having low energy demands (probability of acceptance about > 30% - near the peak of the P[Optimal | known pKa1, optimal set pKa2]).
+More than half of the candidates have at least a 50% likelihood of performing well, indicating that there are a number of known candidates that may work.
+The distribution of known quinones (weighted by their probabilities) shows that quinones with pKa near the single variable marginal peaks are important to investigate in future studies.
 
-These 19 quinones have the following characteristics:
-* pKa2: 10.10 ~ 12.19 compared to the calculated 9.38 ~ 15.91
-* pKa1: 4.77  ~ 9.48  compared to the calculated 6.70 ~ 10.49
-
-Apart from the single quinone with a low first pKa, all fit within the calculated ranges for an optimal quinone.
-
-The top candidates appear to have strong electron withdrawing groups (primarily oxygen-containing functionalities separated from the aromatic ring), while the less likely candidates have electron donating groups. 
-However, this is not a strict rule - for instance, the most promising candidate contains only alcohols (electron donating groups).
-
-Breakdown into function groups
+Breakdown into function groups, organized by their electronic effect (donating/withdrawing)
 
 ```{r}
 groups = unique(c(quinone.data$R2, quinone.data$R3, quinone.data$R5, quinone.data$R6))
@@ -3292,6 +3253,8 @@ ggplot(filter(group.dist, is.na(str) == FALSE)) +
   coord_flip()
 
 ```
+
+Electron donating groups increase the probability of viability substantially, but withdrawing groups are not necessarily a detriment given their wide distribution.
 
 ```{r}
 # Store substituent effect calculation results

@@ -1,5 +1,5 @@
 ---
-title: "PCET pH Swings: Pareto Frontier"
+title: "PCET pH Swings: Pareto Frontier Shifts"
 author: "Jonathan Boualavong"
 output: html_notebook
 ---
@@ -9,14 +9,11 @@ output: html_notebook
 <!--     variant: markdown_github -->
 
 # Description
-This notebook uses a newly developed Gaussian Process-based method to solve for the near-optimal set of solutions for CO2 capture using proton coupled electron transfers (PCET) to drive pH swings. 
+This notebook performs exploratory calculations on some possible variable effects on the Pareto frontier of the performance of a CO2 capture process using proton coupled electron transfers (PCET) to drive pH swings. 
 The work assumes that the redox molecule is a quinone, and restricts the search to only combinations of properties that a quinone is likely to have.
-After determining the restricted search space, the performance of CO2 capture, defined by minimum energy demand and the CO2 capture flux, will be determined using established thermodynamic and kinetics equations.
 The resulting Pareto frontier of this bi-objective problem is solved using the GPareto package, then characterized to define acceptable sub-optimal performance in the likely event that a compound with the exact specifications of any of the Pareto frontier estimates not exist.
-The near-optimal set will be solved using the established method (see other mathematical examples for details and description of the algorithm) to describe what criteria the optimal quinone and solution composition should have.
 
-# Code
-## Initialization
+# Code Initialization
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -53,24 +50,9 @@ The concentrations of quinone are assumed to be a minimum of 10 mM (approximatel
 
 ## Objective Functions
 
-The objective function for energy demand solves the set of equilibrium equations across the range of charge and gas transfers based on four state variables: 
-total dissolved inorganic carbon (DIC), state of charge (xA), partial pressure of CO2 (pCO2), and solution pH.
-
-The minimum energy demand assumes all charge is passed at the Nernst potential, which is updated as charge passes through the system.
-The energy demand assumes anti-symmetric operation, ie. quinone reduction at the cathode and hydroquinone oxidation at the anode.
-Charge balance of the anolyte and catholyte are assumed to be the result of the background electrolyte travelling across an ion selective membrane.
-The gas transfers are assumed to be separate stages from the electrochemical stages, purely for the sake of simplicity. 
-This estimate for the minimum energy is a slight overestimate because of over-pressurization of the CO2; coupling the gas transfer steps with the appropriate electrochemical steps decreases the minimum energy by approximately a factor of 2.
-The function can accommodate feed CO2 gases of any partial pressure, but this study is interested in 3 applications: coal flue gas (15v% feed to 1.5v% lean), air revitalization (2000 ppm to 1000 ppm), and direct air capture (400 ppm to 250 ppm).
-
-This code is broken down into explicit functions and derived functions.
-Explicit functions are a series of sub-functions which solve for one of the four state variables using knowledge of the other three state variables and the solution conditions. 
-These functions solve the set of chemical equilibrium, mass, and charge balance equations for the bulk solution.
-Derived functions use the information from the explicit functions to determine relevant information for determining the energy demand and CO2 flux.
-
-For the purpose of generalization, these equations are written with the variables 'beta1' and 'beta2' which describe the deprotonated hydroquinone's affinity for CO2, forming an organic carbonate. 
-This species is ignored in this particular notebook for the above-stated reason (slow kinetics), and therefore both variables are set to 0.
-These variables are included because other compounds have been proposed to capture CO2 primarily through that mechanism, and thus they could also be studied with this script.
+See the preparatory file (/../Prep) for a full description of the model.
+For this script, we assume that the additional pH correction can only be a base, as the concentration of the species spans multiple orders of magnitude.
+For this reason, the variable is noted as "Na", a reflection of the fact that the most common base would be NaOH.
 
 ```{r PCET Explicit functions}
 # Direct explicit functions
@@ -564,7 +546,6 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
 
 To work with GPareto, the two objective functions need to combined, and the input should be a matrix, not a dataframe. I account for this with a wrapper function to simplify the process.
 
-
 ```{r Baseline objective function}
 PCET.obj.flu.base = function(inputs){
   # Inputs is a matrix where each row is an instance and each column is a specific variable:
@@ -638,7 +619,7 @@ Using the same objective function but modifying the bounds of the quinone concen
 (logA = 0.85, 0.7, 0.5, 0, -0.3)
 
 Start the search with the high value constraint, then filter out the points that are too high for the next highest and proceed downward by filling in the same number of points that were removed.
-Doing the optimization in this way guarantees that the shifts in the Pareto front are from the constriction of the input range and not from additional sampling resolution.
+Doing the optimization in this way guarantees that any observed shifts in the Pareto front are from the constriction of the input range and not from additional sampling resolution.
 
 For the high concentration case, use a budget of 75 points.
 
@@ -1102,6 +1083,6 @@ write.csv(GPar.pKa, 'FrontShift_Dpka_all.csv')
 
 ```
 
+Plots of the lowest, middle, and higest show rough trends with concentration gradually shifting the Pareto front towards high fluxes without substantial changes to the energy demands.
 
-
-
+Increasing the difference between the pKas led to a slight shift in the Pareto front, but above 5.5 there was no further change, suggesting possibly asymptotic behavior with this variable.

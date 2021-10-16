@@ -17,20 +17,22 @@ The intention is for this procedure to be applied to optimization problems where
 * I. Setup: find the Pareto frontier of the 2D optimization problem
 1. Solve objective functions with a space filling method to obtain an initial set of data.
 2. Use GPareto to find the Pareto front.
-3. Calculatate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics will be used to establish the acceptable suboptimal performance and the relative importance of each input variable.
+3. Calculate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics are used in the selection criteria that define acceptable suboptimal performance and the relative importance of each input variable.
 
 * II. Acceptable suboptimal performance (the "near-Pareto set")
 4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
-5. Using Gaussian processes, create a new objective called the "sample utility" function that describes the probability of meeting the desired distance and objective function criteria, multiplied by the variance.
-6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or the sample utility function maximum drops below a specified threshold, often relative to first maximum.
+5. Using Gaussian processes, create a new objective called the "total uncertainty" function that describes the uncertainty in classifying the performance (acceptable or unacceptable) multiplied by the uncertainty in the actual value of the selection criteria functions.
+6. Sample new points iteratively by maximizing the total uncertainty function. Repeat until the computational budget has been expended or the total uncertainty function maximum drops below a specified threshold, often relative to first iteration.
 
 * III. Feature importance of each input variable
-7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
-8. Calculate the 25th and 75th quantile of the 1-variable conditional probability estimate. The area between these two curves represents the variance due to all of the other variables in question.
-9. Determine the normalized areas between these quantiles for all 1-variable conditionals. The most important variable is the one that has the smallest area, i.e. the other variables have small impact on whether or not the result meets the selection criteria.
-10. Calculate the same conditional probability, but given the that the most important variable falls within its optimal range and the second most important variable is known.
-11. Repeat step 10 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
+7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about that input variable.
+8. Calculate the variance in the probability of the 1-variable conditional probability estimate. This variance represents the contribution due to all of the other variables in question.
+9. The feature importance metric is the range of the probability divided by the average of the variance. The greater the range of probabilities, the more the single variable can influence the likelihood, but this is relative to the amount that the other variables contribute.
 
+* IV: Suggested ranges
+10. For the most important variable, determine the input values that give the peak response. This is the suggested input range.
+11. For the next most important variable, calculate the conditional probability if this variable is known precisely, but the most important is known to be within its suggested range.
+12. Repeat step 11 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
 
 # Code
 ## 0. Initialization
@@ -59,7 +61,7 @@ library(DiceOptim)
 library(GA)
 ```
 
-```{r Functions}
+```{r Objective Functions}
 # Example simultaneous minimization function
 # Set (x1, x2) on range of [0, 5]
 f1 = function(x1, x2){
@@ -76,61 +78,7 @@ fun = function(x){
 
 ```
 
-## I. Setup: 
-Find the Pareto frontier of the 2D optimization problem
-
-1. Solve objective functions with a space filling method to obtain an initial set of data.
-The 2D function takes two inputs, defined $x_1$ and $x_2$, to produce two outputs $f_1$ and $f_2$. 
-The domain of both $x_1$ and $x_2$ is [0,5]. The space-filling method here is a simple square grid construction.
-
-```{r Grid Setup}
-# Set up simple grid
-sz = 7
-x1.rng = seq(from = 0, to = 5, length.out = sz)
-x2.rng = seq(from = 0, to = 5, length.out = sz)
-des.start = expand.grid(x1.rng, x2.rng)
-des.start = des.start[,1:2]
-names(des.start) = c('x1', 'x2')
-
-# Solve edge cases
-des.start$f1 = f1(x1 = des.start$x1, x2 = des.start$x2)
-des.start$f2 = f2(x1 = des.start$x1, x2 = des.start$x2)
-
-Pareto.budget = 20
-res.start = matrix(c(des.start$f1, des.start$f2), ncol = 2, nrow = nrow(des.start))
-des.start = matrix(c(des.start$x1, des.start$x2), ncol = 2, nrow = nrow(des.start))
-
-```
-
-2. Use GPareto to find the Pareto front.
-
-GPareto uses Gaussian processes to approximate the Pareto frontier, defaulting to the SMS-EGO selection criterion.
-The function produces both the Pareto frontier estimate and the set of iterations, which will both be used in subsequent steps.
-To simplify computation time, the data are stored in .csv files so these variables do not need to be calculated with each attempt.
-
-```{r GPareto Calculation}
-res = easyGParetoptim(fn = fun, budget = Pareto.budget, lower = c(0, 0), upper = c(5, 5), par = des.start, value = res.start, ncores = 2)
-plotGPareto(res)
-# Format into dataframe for easier plotting
-GPar.front = data.frame(x1 = res$par[,1], x2 = res$par[,2], f1 = res$value[,1], f2 = res$value[,2])
-GPar.all =  data.frame(x1 = res$history$X[,1], x2 = res$history$X[,2], f1 = res$history$y[,1], f2 = res$history$y[,2])
-GPar.all$order = c(rep(0, nrow(des.start)), seq(from = 1, to = Pareto.budget, by = 1))
-rm(res)
-write.csv(GPar.all, file = 'GPar_all_data.csv')
-write.csv(GPar.front, file = 'GPar_fnt_data.csv')
-```
-
-3. Calculatate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics will be used to establish the acceptable suboptimal performance and the relative importance of each input variable.
-
-Normalization is defined such that (0,0) is the utopia point and (1,0) and (0,1) are the single-objective optimizations. The prioitization is the angle $\theta$ made between the point in the normalized objective space and the x-axis, i.e. the axis of purely prioritizing objective 2. This angle is re-mapped to a percentage from 0 to 100% prioritization of objective 2. The distance between each point and the Pareto front is the distance in the normalized space
-
-```{r Map to Normalized Objective Space}
-GPar.all = read.csv(file = 'GPar_all_data.csv')
-GPar.front = read.csv(file = 'GPar_fnt_data.csv')
-
-# Saved data have an index
-GPar.all = GPar.all[, !(names(GPar.all) %in% c("X"))]
-GPar.front = GPar.front[, !(names(GPar.front) %in% c("X"))]
+```{r Functions: Normalization}
 # Normalized objective functions
 n.obj = function(GPar.data, GPar.front){
   # Given dataframes that describe the entire dataset and the front, find the normalized (x,y)
@@ -139,21 +87,11 @@ n.obj = function(GPar.data, GPar.front){
   # Normalize the objective outputs so that the utopia point is (0,0) and the nadir point is (1,1)
   f1.up = GPar.front$f1[which.min(GPar.front$f2)]
   f2.up = GPar.front$f2[which.min(GPar.front$f1)]
-  GPar.data$f1.norm = (GPar.data$f1 - min(GPar.front$f1))/f1.up
-  GPar.data$f2.norm = (GPar.data$f2 - min(GPar.front$f2))/f2.up
-  # In the event that the optimum is worse:
-  GPar.data$f1.norm[GPar.data$f1.norm < 0] = 0
-  GPar.data$f2.norm[GPar.data$f2.norm < 0] = 0
-  
+  GPar.data$f1.norm = (GPar.data$f1 - min(GPar.front$f1))/(f1.up - min(GPar.front$f1))
+  GPar.data$f2.norm = (GPar.data$f2 - min(GPar.front$f2))/(f2.up - min(GPar.front$f2))
+
   return(GPar.data)
 }
-# Run normalization
-GPar.all = n.obj(GPar.data = GPar.all, GPar.front = GPar.front)
-GPar.front = n.obj(GPar.data = GPar.front, GPar.front = GPar.front)
-GPar.front = GPar.front[order(GPar.front$f1.norm),]
-
-# Calculate theta according to the angle. Remap from [0, pi/2] to [0, 100] for simplicity
-GPar.all$theta = atan(GPar.all$f2.norm/GPar.all$f1.norm)*180/pi*10/9
 
 # Calculate the normalized distance
 n.dist = function(f1.norm, f2.norm, GPar.front){
@@ -162,6 +100,8 @@ n.dist = function(f1.norm, f2.norm, GPar.front){
   
   # Determine the two points on the Pareto front that define the relevant segment
   GPar.front$theta = atan(GPar.front$f2.norm / GPar.front$f1.norm)
+  if(f1.norm < 0){f1.norm = 0}
+  if(f2.norm < 0){f2.norm = 0}
   ratio = atan(f2.norm/f1.norm)
   
   # Check if the angle is the same as a point on the Pareto front
@@ -190,6 +130,413 @@ n.dist = function(f1.norm, f2.norm, GPar.front){
   dist = sqrt(f1.norm^2 + f2.norm^2) - sqrt(Par.x^2 + Par.y^2)
   return(dist)
 }
+
+```
+
+```{r Functions: Iterative Sampling}
+# Model construction
+fill.sample.mod = function(GPar.data, input.name, output.name){
+  # Calculate the GP model to use. 
+  # Using the km function, but applies checks on the system to make sure that 
+  # the model uncertainty matches expectations based on GP, ie. it did not
+  # fail to converge.
+  
+  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
+  # of the standard deviation are of the same order of magnitude. This is easiest
+  # checked if the difference between the 10th and 90th percentile
+  # is larger than the difference between the 25th and 75th.
+  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
+  while(log10(pt90/pt10) <= log10(pt75/pt25)){
+    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
+                 # covtyp = 'gauss', # Gaussian uncertainty
+                 # optim.method = 'gen', # Genetic algorithm optimization
+                 control = list(trace = FALSE, # Turn off tracking to simplify output
+                                pop.size = 50), # Increase robustness
+                 nugget = 1e-6, # Avoid eigenvalues of 0
+                 )
+    
+    # Randomly sample 200 points from the search space
+    pt = 200; i = 1
+    lims = range(GPar.data[,input.name[i]])
+    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
+    for(i in 2:length(input.name)){
+      lims = range(GPar.data[,input.name[i]])
+      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
+    }
+    names(samp) = input.name
+    
+    # Find model output to find the percentile ranks for this iteration
+    res = predict(object = mod.out, newdata = samp, type = 'UK')
+    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
+    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
+  }
+  return(mod.out)
+}
+
+fill.sample.delta = function(x, model){
+  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
+  # the function will output the objective function evaluated at x = (x1, x2)
+  
+  # Evaluate the Kriging model function at x 
+  res = predict(object = model, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  
+  # Probability distribution fits a Gaussian distribution
+  prob = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+
+  # Objective result. Adjust the probability weight so the maximum is only 2 orders of magnitude greater than the minimum.
+  return(res$sd*(prob*(1-prob) + 0.25/99))
+  # Offset on the uncertainty so that 0 uncertainty (p = 0 or 1) does not give a 0 result; 
+  # instead these points give a 1 order of magnitude less weight
+}
+
+fill.sample.cutoff = function(x, model.f1, model.f2){
+  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), 
+  # and the normalized distance of (f1, f2) to the Pareto front
+  # the function will output the objective function evaluated at x = (x1, x2)
+  
+  # Evaluate the Kriging model function at x 
+  res.f1 = predict(object = model.f1, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  
+  # Probability distribution fits a Gaussian distribution
+  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * 
+    pnorm(q = 0, mean = res.f2$mean - 1, sd = res.f2$sd)
+  
+  # Variance based on propagation of errors, assuming independent measures
+  sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2)
+
+  # Objective result. Adjust the probability weight so the maximum is only 2 orders of magnitude greater than the minimum.
+  return(sd*(prob*(1-prob) + 0.25/99))
+}
+
+fill.sample.radan = function(x, model.f1, model.f2){
+  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
+  # the function will output the objective function evaluated at x = (x1, x2)
+  
+  # Evaluate the Kriging model function at x 
+  res.f1 = predict(object = model.f1, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
+  
+  # Probability distribution fits a Gaussian distribution
+  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * (1 - pnorm(q = 0, mean = res.f2$mean - 20, sd = res.f2$sd))
+  
+  # Variance based on propagation of errors
+  sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2) 
+
+  # Objective result. Adjust the probability weight so the maximum is only 2 orders of magnitude greater than the minimum.
+  return(sd*(prob*(1-prob) + 0.25/99))
+}
+
+fill.sample.update = function(GPar.front.old, GPar.data, GPar.new){
+  # Update the dataset and Pareto front with the new datapoint
+  
+  # Update the Pareto front
+  # The new point will only have the inputs and direct outputs
+  GPar.front.new = rbind(GPar.front.old[, names(GPar.front.old) %in% names(GPar.new)], GPar.new)
+  pos.front = t(nondominated_points(points = t(as.matrix(GPar.front.new[, c('f1', 'f2')]))))
+  GPar.front.new = filter(GPar.front.new, f1 %in% pos.front[,1], f2 %in% pos.front[,1])
+  
+  # If the new point is a new minimum for either f1 or f2, then need to re-calculate all of the normalized values
+  if(which.min(c(GPar.new$f1, GPar.front.old$f1)) %in% 1:nrow(GPar.new) | 
+     which.min(c(GPar.new$f2, GPar.front.old$f2)) %in% 1:nrow(GPar.new) ){
+    # Update front
+    f1.f2.update = n.obj(GPar.data = GPar.front.new, GPar.front = GPar.front.new)
+    GPar.front.new$f1.norm = f1.f2.update$f1.norm; GPar.front.new$f2.norm = f1.f2.update$f2.norm
+    GPar.front.new$theta = atan(GPar.front.new$f2.norm/GPar.front.new$f1.norm)*180/pi*10/9
+    # Update dataset
+    f1.f2.update = n.obj(GPar.data = GPar.data, GPar.front = GPar.front.new)
+    GPar.data$f1.norm = f1.f2.update$f1.norm; GPar.data$f2.norm = f1.f2.update$f2.norm
+    GPar.data$theta = atan(GPar.data$f2.norm/GPar.data$f1.norm)*180/pi*10/9
+    } else{GPar.front.new = GPar.front.old}
+  # Get normalized values for new points
+  GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front.new)
+  GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
+  
+  # If any new points are on the Pareto front at all, then update the distance and theta
+  new.pareto = nrow(filter(GPar.new, f1 %in% pos.front[,1], f2 %in% pos.front[,1]))
+  if(new.pareto > 0){ # Need to update all points in the front
+    dist = c()
+    for(i in 1:nrow(GPar.data)){
+      dist = c(dist, n.dist(f1.norm = GPar.data$f1.norm[i], f2.norm = GPar.data$f2.norm[i], GPar.front = GPar.front.new))
+    }
+    GPar.data$dist = dist
+  } 
+  # Need to calculate the new point's distance
+  dist = c()
+  for(i in 1:nrow(GPar.new)){
+    dist = c(dist, n.dist(f1.norm = GPar.new$f1.norm[i], f2.norm = GPar.new$f2.norm[i], GPar.front = GPar.front.new))
+  }
+  GPar.new$dist = dist
+  GPar.new$order = max(GPar.data$order) + 1
+  
+  # Add the new point
+  GPar.data = rbind(GPar.data[, names(GPar.data) %in% names(GPar.new)], GPar.new)
+  
+  return(list(front = GPar.front.new, data = GPar.data, new = GPar.new))
+}
+
+```
+
+```{r Functions: Marginalization}
+marginal.dist = function(mod.dist){
+  # Calculate the marginal distributions for x1 and x2 given a model
+  resolution = 50; MCsamp = 1500
+  x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
+  x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+  x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+  
+  Infer.x1 = data.frame(); Infer.x2 = data.frame()
+  
+  for(i in 1:resolution){
+    # x1
+    fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
+    res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+    Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
+                                          prob = mean(fill.frame$p.del1), 
+                                          psd = sd(fill.frame$p.del1),
+                                          p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                          p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                          var = 'x1', ncond = 'None'))  
+    # x2
+    fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
+    res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+    Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
+                                          psd = sd(fill.frame$p.del1),
+                                          p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                          p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                          prob = mean(fill.frame$p.del1),
+                                          var = 'x2', ncond = 'None'))
+  }
+  return(rbind(Infer.x1, Infer.x2))
+}
+
+marginal.cut = function(mod.f1, mod.f2){
+  resolution = 50; MCsamp = 1500
+  x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
+  x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+  x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+  
+  Infer.x1 = data.frame(); Infer.x2 = data.frame()
+  
+  for(i in 1:resolution){
+    # x1
+    fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
+    res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+    res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+    Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
+                                          psd = sd(fill.frame$p.del1),
+                                          p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                          p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                          var = 'x1', ncond = 'None'))  
+    # x2
+    fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
+    res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+    res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+    Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), 
+                                          psd = sd(fill.frame$p.del1),
+                                          p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                          p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                          var = 'x2', ncond = 'None'))
+  }
+  return(rbind(Infer.x1, Infer.x2))
+}
+
+marginal.rad = function(mod.rad, mod.ang){
+  resolution = 50; MCsamp = 1500
+  x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
+  x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
+  x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+  
+  Infer.x1 = data.frame(); Infer.x2 = data.frame()
+  
+  for(i in 1:resolution){
+    # x1
+    fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
+    res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+    res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
+    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+      (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+    Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
+                                          prob = mean(fill.frame$p.del1), 
+                                          psd = sd(fill.frame$p.del1), 
+                                          p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                          p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                          var = 'x1', ncond = 'None'))  
+  
+    # x2
+    fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
+    res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+    res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
+    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+      (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+    Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
+                                          p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
+                                          p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
+                                          prob = mean(fill.frame$p.del1),
+                                          psd = sd(fill.frame$p.del1),
+                                          var = 'x2', ncond = 'None'))
+  }
+  return(rbind(Infer.x1, Infer.x2))
+}
+
+```
+
+Since the test function is very easy to calculate, the results can be compared to an estimate by Monte Carlo sampling.
+This is calculated ahead of time and stored for later.
+
+```{r Expected results}
+# Approximate the true result by with a grid. Use the same grid size as the resolution for the marginalization measures
+grid.sz = 50
+fine.grid = expand.grid(x1 = seq(from = 0, to = 5, length.out = grid.sz), 
+                        x2 = seq(from = 0, to = 5, length.out = grid.sz))
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+
+# Calculate the actual results
+fine.grid$f1 = f1(x1 = fine.grid$x1, x2 = fine.grid$x2)
+fine.grid$f2 = f2(x1 = fine.grid$x1, x2 = fine.grid$x2)
+
+# Obtain the Pareto front
+pos.front = t(nondominated_points(points = t(as.matrix(fine.grid[, c('f1', 'f2')]))))
+front = filter(fine.grid, f1 %in% pos.front[,1], f2 %in% pos.front[,2])
+
+fine.grid = n.obj(GPar.data = fine.grid, GPar.front = front)
+front = n.obj(GPar.data = front, GPar.front = front)
+fine.grid$dist = NaN
+for(row in 1:nrow(fine.grid)){
+  fine.grid$dist[row] = n.dist(f1.norm = fine.grid$f1.norm[row], 
+                               f2.norm = fine.grid$f2.norm[row], 
+                               GPar.front = front)
+}
+fine.grid$ang = atan(fine.grid$f2.norm/fine.grid$f1.norm)*180/pi*10/9
+fine.grid$rad = sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2)
+
+# Calculate the marginals
+# Integrate
+delta.tru = data.frame()
+cutof.tru = data.frame()
+radan.tru = data.frame()
+for(x in unique(fine.grid$x1)){
+  # Only the single value of x1 or x2
+  sub1 = filter(fine.grid, x1 == x)
+  sub2 = filter(fine.grid, x2 == x)
+  
+  # Distance criteria: Pareto distance less than 1
+  p1 = nrow(filter(sub1, dist <= 1)) / nrow(sub1)
+  p2 = nrow(filter(sub2, dist <= 1)) / nrow(sub2)
+  p = c(p1, p2)
+  # Monte carlo error = sqrt(p*(1-p)/samples)
+  psd = sqrt(p * (1-p) / nrow(sub1))
+  # Add to data
+  delta.tru = rbind(delta.tru, data.frame(x = x, prob = c(p1, p2), psd = psd, var = c('x1', 'x2')))
+  
+  # Cutoff criteria: normalized value less than 1 for both f1 and f2
+  p1 = nrow(filter(sub1, f1.norm <= 1, f2.norm <= 1)) / nrow(sub1)
+  p2 = nrow(filter(sub2, f1.norm <= 1, f2.norm <= 1)) / nrow(sub2)
+  p = c(p1, p2)
+  # Monte carlo error = sqrt(p*(1-p)/samples)
+  psd = sqrt(p * (1-p) / nrow(sub1))
+  # Add to data
+  cutof.tru = rbind(cutof.tru, data.frame(x = x, prob = c(p1, p2), psd = psd, var = c('x1', 'x2')))
+  
+  # Radius-angle criteria: utopia distance less than 1, angle above 20%
+  p1 = nrow(filter(sub1, rad <= 1, ang >= 20)) / nrow(sub1)
+  p2 = nrow(filter(sub2, rad <= 1, ang >= 20)) / nrow(sub2)
+  p = c(p1, p2)
+  # Monte carlo error = sqrt(p*(1-p)/samples)
+  psd = sqrt(p * (1-p) / nrow(sub1))
+  # Add to data
+  radan.tru = rbind(radan.tru, data.frame(x = x, prob = c(p1, p2), psd = psd, var = c('x1', 'x2')))
+  
+}
+rm(sub1, sub2, p1, p2, p, psd, fine.grid, pos.front, front, grid.sz)
+
+# Store for later
+write.csv(delta.tru, 'ExpectedMarginal_delta.csv')
+write.csv(cutof.tru, 'ExpectedMarginal_cutof.csv')
+write.csv(radan.tru, 'ExpectedMarginal_radan.csv')
+```
+
+## I. Setup: 
+Find the Pareto frontier of the 2D optimization problem
+
+1. Solve objective functions with a space filling method to obtain an initial set of data.
+The 2D function takes two inputs, defined $x_1$ and $x_2$, to produce two outputs $f_1$ and $f_2$. 
+The domain of both $x_1$ and $x_2$ is [0,5]. 
+
+The initial search obtains the extremes of the 4 corners, the center points on each edge, the central point, and 3*(number of inputs) random points in each quadrant.
+
+```{r Grid Setup}
+# Set up initial design
+sz = 3
+x1.rng = seq(from = 0, to = 5, length.out = sz)
+x2.rng = seq(from = 0, to = 5, length.out = sz)
+des.start = expand.grid(x1.rng, x2.rng)
+des.start = des.start[,1:2]
+names(des.start) = c('x1', 'x2')
+npt = 3
+des.start = rbind(des.start,
+                  data.frame(x1 = runif(n = length(names(des.start))*npt, min = 0, max = 2.5),
+                             x2 = runif(n = length(names(des.start))*npt, min = 0, max = 2.5)),
+                  data.frame(x1 = runif(n = length(names(des.start))*npt, min = 0, max = 2.5),
+                             x2 = runif(n = length(names(des.start))*npt, min = 2.5, max = 5)),
+                  data.frame(x1 = runif(n = length(names(des.start))*npt, min = 2.5, max = 5),
+                             x2 = runif(n = length(names(des.start))*npt, min = 0, max = 2.5)),
+                  data.frame(x1 = runif(n = length(names(des.start))*npt, min = 2.5, max = 5),
+                             x2 = runif(n = length(names(des.start))*npt, min = 2.5, max = 5)))
+# Solve
+des.start$f1 = f1(x1 = des.start$x1, x2 = des.start$x2)
+des.start$f2 = f2(x1 = des.start$x1, x2 = des.start$x2)
+
+Pareto.budget = min(100, 2*nrow(des.start)) # Want a clearly defined Pareto front
+res.start = matrix(c(des.start$f1, des.start$f2), ncol = 2, nrow = nrow(des.start))
+des.start = matrix(c(des.start$x1, des.start$x2), ncol = 2, nrow = nrow(des.start))
+
+```
+
+2. Use GPareto to find the Pareto front.
+
+GPareto uses Gaussian processes to approximate the Pareto frontier, defaulting to the SMS-EGO selection criterion.
+The function produces both the Pareto frontier estimate and the set of iterations, which will both be used in subsequent steps.
+To simplify computation time, the data are stored in .csv files so these variables do not need to be calculated with each attempt.
+
+```{r GPareto Calculation}
+res = easyGParetoptim(fn = fun, budget = Pareto.budget, lower = c(0, 0), upper = c(5, 5), par = des.start, value = res.start, ncores = 2)
+plotGPareto(res)
+# Format into dataframe for easier plotting
+GPar.front = data.frame(x1 = res$par[,1], x2 = res$par[,2], f1 = res$value[,1], f2 = res$value[,2])
+GPar.all =  data.frame(x1 = res$history$X[,1], x2 = res$history$X[,2], f1 = res$history$y[,1], f2 = res$history$y[,2])
+GPar.all$order = c(rep(0, nrow(des.start)), seq(from = 1, to = Pareto.budget, by = 1))
+rm(res)
+write.csv(GPar.all, file = 'GPar_all_data.csv')
+write.csv(GPar.front, file = 'GPar_fnt_data.csv')
+```
+
+3. Calculate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics are used in the selection criteria that define acceptable suboptimal performance and the relative importance of each input variable.
+
+Normalization is defined such that (0,0) is the utopia point and (1,0) and (0,1) are the single-objective optimization. 
+The prioritization is the angle $\theta$ made between the point in the normalized objective space and the x-axis, i.e. the axis of purely prioritizing objective 2. This angle is re-mapped to a percentage from 0 to 100% prioritization of objective 2. 
+The distance between each point and the Pareto front is the distance in the normalized space.
+
+```{r Map to Normalized Objective Space}
+GPar.all = read.csv(file = 'GPar_all_data.csv')
+GPar.front = read.csv(file = 'GPar_fnt_data.csv')
+
+# Saved data have an index
+GPar.all = GPar.all[, !(names(GPar.all) %in% c("X"))]
+GPar.front = GPar.front[, !(names(GPar.front) %in% c("X"))]
+
+# Run normalization
+GPar.all = n.obj(GPar.data = GPar.all, GPar.front = GPar.front)
+GPar.front = n.obj(GPar.data = GPar.front, GPar.front = GPar.front)
+GPar.front = GPar.front[order(GPar.front$f1.norm),]
+
+# Calculate theta according to the angle. Remap from [0, pi/2] to [0, 100] for simplicity
+GPar.all$theta = atan(GPar.all$f2.norm/GPar.all$f1.norm)*180/pi*10/9
 
 # Run distance calculations in parallel to speed up
 cl <- makeCluster(2)
@@ -268,7 +615,7 @@ rm(gplt.start, gplt.GPar, gplt.Norm)
 ## II. Acceptable suboptimal performance (the "near-Pareto set")
 4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
 
-For this example, defines $\delta$ as the distance between the point and the point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 1$.
+For this example, define $\delta$ as the distance between the point and a point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 1$.
 
 ```{r Load data: Accept Distance less than 1}
 # Load data
@@ -283,74 +630,19 @@ GPar.front = GPar.front[,nm]
 
 ```
 
-5. Using Gaussian processes, create a new objective called the "sample utility" function that describes the probability of meeting the desired distance and objective function criteria, multiplied by the variance.
+5. Using Gaussian processes, create a new objective called the "total uncertainty" function that describes the uncertainty in classifying the performance (acceptable or unacceptable) multiplied by the uncertainty in the actual value of the selection criteria functions.
 
-The sample utility function prioritizes points that are likely to describe the boundary (normalized distance equal to 1) with the greatest model uncertainty at the time. 
-When the point is sampled, this means information gained is maximized. 
-Points on the boundary have intermediate acceptance probabilities, ie. close to 0.5, while points with the greatest model uncertainty have the greatest standard error. 
+The total uncertainty function prioritizes points that are likely to describe the boundary (in this selection criterion: normalized distance equal to 1) with the greatest model uncertainty at the time. 
+When a point is sampled, these uncertainties become zero because the result becomes known, indicating that the point that would lead to the most information gain would be the point where the total uncertainty is maximized.
+Points on the boundary have intermediate acceptance probabilities, ie. close to 0.5, while points with the greatest model uncertainty have the greatest standard error.
 Therefore, the utility function can be estimated as the product of the standard error, the probability of being accepted, and the probability of being rejected.
 
-```{r Functions: Iterative Sampling, message=FALSE, warning=FALSE}
-fill.sample.mod = function(GPar.data, input.name, output.name){
-  # Calculate the GP model to use. 
-  # Using the km function, but applies checks on the system to make sure that 
-  # the model uncertainty matches expectations based on GP, ie. it did not
-  # fail to converge.
-  
-  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
-  # of the standard deviation are of the same order of magnitude. This is easiest
-  # checked if the difference between the 10th and 90th percentile
-  # is larger than the difference between the 25th and 75th.
-  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
-  while(log10(pt90/pt10) <= log10(pt75/pt25)){
-    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
-                 covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
-                 control = list(trace = FALSE, # Turn off tracking to simplify output
-                                pop.size = 50), # Increase robustness
-                 nugget = 1e-6, # Avoid eigenvalues of 0
-                 )
-    
-    # Randomly sample 200 points from the search space
-    pt = 200; i = 1
-    lims = range(GPar.data[,input.name[i]])
-    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
-    for(i in 2:length(input.name)){
-      lims = range(GPar.data[,input.name[i]])
-      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
-    }
-    names(samp) = input.name
-    
-    # Find model output to find the percentile ranks for this iteration
-    res = predict(object = mod.out, newdata = samp, type = 'UK')
-    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
-    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
-  }
-  return(mod.out)
-}
-
-fill.sample.obj = function(x, model){
-  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
-  # the function will output the objective function evaluated at x = (x1, x2)
-  
-  # Evaluate the Kriging model function at x 
-  res = predict(object = model, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
-  
-  # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-
-  # Objective result
-  return(res$sd*prob*(1-prob))
-}
-
-```
-
 Visualize the first iteration to show that it actually samples the point that is most useful
-```{r Iteration 1: Distance less than 1}
+```{r Iteration 1: Distance less than 1, message=FALSE, warning=FALSE}
 # Search for the first point
 mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'dist')
 GA.pred = ga(type = 'real-valued',
-             fitness = function(x){fill.sample.obj(x, model = mod.dist)},
+             fitness = function(x){fill.sample.delta(x, model = mod.dist)},
              lower = c(0, 0), upper = c(5, 5),
              popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
              parallel = 2)
@@ -360,16 +652,10 @@ GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
 GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
 GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
 
-# Fill in the remaining calculations: normalized outputs, distance, theta, order
-GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
-GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
-cl <- makeCluster(2)
-registerDoParallel(cl)
-dist = foreach(row = 1:nrow(GPar.new)) %dopar%
-  n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
-stopCluster(cl)
-GPar.new$dist = unlist(dist)
-GPar.new$order = max(GPar.all$order) + 1
+# Update the Pareto front and add the new point
+res = fill.sample.update(GPar.front.old = GPar.front, GPar.data = GPar.all, GPar.new = GPar.new)
+GPar.all = res$data
+GPar.front = res$front
 
 # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
 start.fit = max(GA.pred@fitness)
@@ -379,7 +665,9 @@ rm(dist)
 
 # Store the initial mod.dist for later
 mod.dist.init = mod.dist
+```
 
+```{r Iteration 1: Plotting}
 # Grid of the relevant region to visualize
 lower = c(0, 0); upper = c(5,5)
 fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 50), 
@@ -393,10 +681,6 @@ fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
 fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 1, sd = fine.grid$dist.sd)
-# Calculate the fraction of the search space that is uncertain
-start.perc = rep(0, nrow(fine.grid))
-start.perc[fine.grid$dist.p1 >= 0.25 & fine.grid$dist.p1 <= 0.75] = 1
-start.perc = mean(start.perc)
 
 ncolor = 7; pt.size = 2.5
 g1 = ggplot() +
@@ -450,26 +734,24 @@ g3 = ggplot() +
   guides(color=guide_legend(override.aes=list(fill=NA))) # Remove fill in the legend
 
 g1 + g2 + g3
-rm(g1, g2, g3)
+
 ```
 
-6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or a stop criteria is met.
+6. Sample new points iteratively by maximizing the total uncertainty function. Repeat until the computational budget has been expended or the total uncertainty function maximum drops below a specified threshold, often relative to first iteration.
 
-A typical stop criteria is based on the hypervolume fraction that is uncertain, i.e. an acceptance probability between 0.25 and 0.75. The fraction of the total input hypervolume space should be less than 0.5% of the total hypervolume space. This can be easily approximated by Monte Carlo sampling from the space and taking the fraction of points that are uncertain.
+The cutoff threshold is when the sample utility function's maximum falls below 5% of the sample utility of the first iteration, or when the budget has been expended.
+For consistency with the Pareto frontier search, the budget is set to 20 (10 times the nubmer of dimensions).
 
-```{r Iteration loop: Accept distance less than 1 percent uncertainty cutoff, message=FALSE, warning=FALSE}
+```{r Iteration loop: Accept distance less than 1, message=FALSE, warning=FALSE}
 budget = 20
-next.perc = start.perc
-while(next.perc > 0.005 & max(GPar.all$order) < budget+Pareto.budget){
-  # Add the  new point to the dataset
-  GPar.all = rbind(GPar.all, GPar.new)
-  
+next.fit = start.fit
+while(next.fit > start.fit*0.05 & max(GPar.all$order) < budget+Pareto.budget){
   # Create new Kriging model
   mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'dist')
   
   # Run the optimization to find the best point
   GA.pred = ga(type = 'real-valued',
-               fitness = function(x){fill.sample.obj(x, model = mod.dist)},
+               fitness = function(x){fill.sample.delta(x, model = mod.dist)},
                lower = c(0, 0), upper = c(5, 5),
                popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
                parallel = 2)
@@ -484,42 +766,30 @@ while(next.perc > 0.005 & max(GPar.all$order) < budget+Pareto.budget){
   GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
   
   # Fill in the remaining caluclations: normalized outputs, distance, theta, order
-  GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
-  cl <- makeCluster(2)
-  registerDoParallel(cl)
-  dist = foreach(row = 1:nrow(GPar.new)) %dopar%
-    n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
-  stopCluster(cl)
-  GPar.new$dist = unlist(dist)
-  GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
-  GPar.new$order = max(GPar.all$order) + 1
+  res = fill.sample.update(GPar.front.old = GPar.front, GPar.data = GPar.all, GPar.new = GPar.new)
+  GPar.all = res$data
+  GPar.front = res$front
   
   # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
-  # next.fit = max(GA.pred@fitness)
-  
-  # Collect samples for the Monte Carlo. Sample >10^(2N) points for N dimensions
-  npt = 3000
-  samp = data.frame(x1 = runif(n = npt, min = min(x1.rng), max = max(x1.rng)), 
-                    x2 = runif(n = npt, min = min(x2.rng), max = max(x2.rng)))
-  res = predict(object = mod.dist, newdata = samp, type = 'UK')
-  samp$dist.p1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  next.perc = rep(0, nrow(samp))
-  next.perc[samp$dist.p1 >= 0.25 & samp$dist.p1 <= 0.75] = 1
-  next.perc = mean(next.perc)
-
+  next.fit = max(GA.pred@fitness)
 }
 
-GPar.all = rbind(GPar.all, GPar.new)
 # Save the data for later
 write.csv(GPar.all, 'GPar_Accept_Delta1.csv')
 
-# rm(budget, n.samples, res, samp, next.perc)
 ```
 
 ```{r}
+GPar.all = read.csv(file = 'GPar_Accept_Delta1.csv')
 # Plot results on top of the most recent Kriging model
 mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'dist')
 
+lower = c(0, 0); upper = c(5,5)
+fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 50), 
+                        x2 = seq(from = lower[2], to = upper[2], length.out = 50))
+fine.grid = fine.grid[,1:2]
+names(fine.grid) = c('x1', 'x2')
+# Apply Kriging function of distance
 res = predict(object = mod.dist, newdata = fine.grid[,c('x1', 'x2')], type = "UK")
 fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
@@ -586,215 +856,140 @@ g4 + g5 + g6
 ```
 
 ## III. Feature importance of each input variable
+7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about that input variable.
 
-The easiest and typical method of feature importance is to take the correlation coefficient between the input and the output.
-For a bi-objective problem, dimension reduction to a single output for the correlation coefficient is not straightforward.
-In this case, the approximation is to use to the relative distance from the Pareto front and compare it to the relative distance in the input space.
-
-```{r Feature Importance: Correlation Coefficient and Slope}
-# Load data
-GPar.all = read.csv(file = 'GPar_Accept_Delta1.csv')
-GPar.front = read.csv(file = 'GPar_fnt_start.csv')
-# Remove leading indices: the names are:
-nm = c("x1",  "x2", "f1", "f2", "order",  "f1.norm", "f2.norm", "dist", "theta")
-GPar.all = GPar.all[,nm]
-nm = c("x1",  "x2", "f1", "f2",  "f1.norm", "f2.norm")
-GPar.front = GPar.front[,nm]
-
-# Define the process used to collect the point
-GPar.all$proc = 'Initial'
-GPar.all$proc[GPar.all$order > 0] = 'Pareto'
-GPar.all$proc[GPar.all$order > Pareto.budget] = 'Post'
-# Break up the prioritization into favoring f1, f2, or a balance of the two
-GPar.all$region = "f1"
-GPar.all$region[GPar.all$theta < 200/3] = "50:50"
-GPar.all$region[GPar.all$theta < 100/3] = "f2"
-
-pt.size = 3
-g1 = ggplot() +
-  geom_point(data = filter(GPar.all, dist > 1), mapping = aes(x = theta, y = x1, shape = proc), color = 'red', size = pt.size) +
-  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1), color = "black", level = 0) +
-  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x1, color = dist, shape = proc), size = pt.size) +
-  labs(x = "", y = expression("x"[1]), color = "Distance:\nObjective\nSpace") +
-  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
-                     expand = c(0.01, 0.01)) +
-  guides(shape = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
-g2 = ggplot() +
-  geom_point(data = filter(GPar.all, dist >  1), mapping = aes(x = theta, y = x2, shape = proc), color = 'red', size = pt.size) +
-  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2), color = "black", level = 0) +
-  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x2, color = dist, shape = proc), size = pt.size) +
-  labs(x = "Trade-Off", y = expression("x"[2]), color = "", shape = 'Collection\nProcess') +
-  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
-                     expand = c(0.01, 0.01)) +
-  guides(color = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
-g1 / g2
-
-# Approximate the Pareto front with a smoothed line using a Savitzky-Golay filter
-Pfront.x1 = loess(x1 ~ theta, data = data.frame(theta = filter(GPar.all, dist == 0)$theta, 
-                                                x1 = filter(GPar.all, dist == 0)$x1))
-Pfront.x2 = loess(x2 ~ theta,data = data.frame(theta = filter(GPar.all, dist == 0)$theta, 
-                                               x2 = filter(GPar.all, dist == 0)$x2))
-
-# Store the information in a dataframe for visualization
-plt = data.frame(theta = seq(from = 0, to = 100, length.out = 100))
-res1 = predict(object = Pfront.x1, newdata = plt)
-res2 = predict(object = Pfront.x2, newdata = plt)
-plt$x1 = unname(res1); plt$x2 = unname(res2)
-# Check the Savitzky–Golay filter smoothing quality
-gx1 = ggplot() +
-  geom_path(plt, mapping = aes(x = theta, y = x1)) +
-  geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1))
-gx2 = ggplot() +
-  geom_path(plt, mapping = aes(x = theta, y = x2)) +
-  geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2))
-gx1 / gx2
-
-# Apply the model to find the linear distance (regression)
-GPar.all$x1.loess.Err = abs(GPar.all$x1 - predict(object = Pfront.x1, newdata = GPar.all$theta))
-GPar.all$x2.loess.Err = abs(GPar.all$x2 - predict(object = Pfront.x2, newdata = GPar.all$theta))
-
-# Calculate the correlation coefficient of the log(objective distance) with the linear distance
-x1.cor = cor(x = filter(GPar.all, dist > 0)$x1.loess.Err, 
-             y = (filter(GPar.all, dist > 0)$dist), 
-             method = 'pearson')
-x2.cor = cor(x = filter(GPar.all, dist > 0)$x2.loess.Err, 
-             y = (filter(GPar.all, dist > 0)$dist), 
-             method = 'pearson')
-# Calculate the slope of the lienar relationship
-x1.slp = lm((dist) ~ x1.loess.Err, data = filter(GPar.all, dist > 0))
-x2.slp = lm((dist) ~ x2.loess.Err, data = filter(GPar.all, dist > 0))
-x1.slp = unname(x1.slp$coefficients[2]); x2.slp = unname(x2.slp$coefficients[2])
-
-sz = 3
-# Store information in a dataframe for plotting
-GPar.cor.plt = data.frame(obj.dist = rep(GPar.all$dist, 2),
-                          inp.dist = c(GPar.all$x1.loess.Err, GPar.all$x2.loess.Err),
-                          var = c(rep('x1', nrow(GPar.all)), rep('x2', nrow(GPar.all))),
-                          region = rep(GPar.all$region, 2),
-                          val = c(GPar.all$x1, GPar.all$x2))
-var.labs <- c(paste('x1, r = ', round(x1.cor, 3), '; slope = ', round(x1.slp, 3)), 
-              paste('x2, r = ', round(x2.cor, 3), '; slope = ', round(x2.slp, 3)))
-names(var.labs) <- c("x1", "x2")
-
-ggplot(GPar.cor.plt) +
-  geom_point(mapping = aes(x = inp.dist, y = (obj.dist), shape = region, color = val), size = sz) +
-  facet_grid(~var, labeller = labeller(var = var.labs)) + 
-  labs(x = 'Distance: Input Space', y = expression('log'[10]*' Distance: Objective Space'), shape = 'Priority',
-       color = 'Input Value')
-```
-
-This method has the problem of being biased by the sample points, rather than describing the model's output, which is the more important metric.
-It is also a regression description, and therefore does not indicate any information related to whether it meets or fails the selection criteria.
-
-7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about the most important input variable.
-
-From the above calculations, the most important variable is x1, as it has a stronger relationship between distance in the objective space and distance in the input space (i.e. a larger perturbation in the input will lead to a less optimal result).
-
-For the purposes of illustration, both P[accept | $x_1$] and P[accept | $x_2$] will be shown to show how the regression is consistent with the probabilities.
 The conditional probability is calculated by marginalization of the GP probabilities. From the GP, the value of P[accept | $x_1, x_2$] can be calculated, and the relationship between P[accept | $x_1, x_2$] and  P[accept | $x_1$] is the integral:
 
 P[accept | $x_1$] = integral( P[accept | $x_1, x_2$]  P[$x_2$] $dx_2$ )
 
 In the absence of data to inform the distribution of $x_2$, this distribution is set as a uniform distribution on the range used in the optimization.
 
-8. Calculate the 25th and 75th quantile of the 1-variable conditional probability estimate. The area between these two curves represents the variance due to all of the other variables in question.
+8. Calculate the variance in the probability of the 1-variable conditional probability estimate. This variance represents the contribution due to all of the other variables in question.
 
-The 25th and 75th percentiles were selected because they provide a good approximation of the variance without picking up noise due to sampling or being saturated by the bounds of probability at 0 or 1.
-As a result, there is more likely to be a distinction between different variables, but it is also large enough to detect.
-These percentiles can be manipulated as needed to avoid saturation depending on the problem, so long as they are the same for all variables.
+The integral equates to a mean value, which can be estimated by Monte Carlo sampling. The variance in this estimate is the variance among the samples.
 
-9. Determine the normalized areas between these percentiles for all 1-variable conditionals. The most important variable is the one that has the smallest area, i.e. the other variables have small impact on whether or not the result meets the selection criteria.
+9. The feature importance metric is the range of the probability divided by the average of the variance. The greater the range of probabilities, the more the single variable can influence the likelihood, but this is relative to the amount that the other variables contribute.
 
+```{r Feature Importance: 1-Variable Marginalization}
+# Load data
+GPar.start = read.csv(file = 'GPar_all_start.csv')
+GPar.adapt = read.csv(file = 'GPar_Accept_Delta1.csv')
+GPar.front = read.csv(file = 'GPar_fnt_start.csv')
+# Compare to a random sample set
+nsamp = nrow(GPar.adapt) - nrow(GPar.start)
+GPar.rando = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
+                        x2 = runif(n = nsamp, min = 0, max = 5))
+GPar.rando$f1 = f1(x1 = GPar.rando$x1, x2 = GPar.rando$x2)
+GPar.rando$f2 = f2(x1 = GPar.rando$x1, x2 = GPar.rando$x2)
+# Fill in the remaining calculations: normalized outputs, distance, theta, order
+GPar.rando = n.obj(GPar.data = GPar.rando, GPar.front = GPar.front)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(GPar.rando)) %dopar%
+  n.dist(f1.norm = GPar.rando$f1.norm[row], f2.norm = GPar.rando$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+GPar.rando$dist = unlist(dist)
+GPar.rando$theta = atan(GPar.rando$f2.norm/GPar.rando$f1.norm)*180/pi*10/9
+GPar.rando$order = seq(from = max(GPar.start$order) + 1, to = max(GPar.start$order) + nsamp, by = 1)
+GPar.rando = rbind(GPar.start[, names(GPar.start) %in% names(GPar.rando)], GPar.rando)
 
-```{r Marginalization}
 # Use the final GP model with the full dataset
-mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'dist')
+mod.dist.start = fill.sample.mod(GPar.data = GPar.start, input.name = c('x1', 'x2'), output.name = 'dist')
+mod.dist.adapt = fill.sample.mod(GPar.data = GPar.adapt, input.name = c('x1', 'x2'), output.name = 'dist')
+mod.dist.rando = fill.sample.mod(GPar.data = GPar.rando, input.name = c('x1', 'x2'), output.name = 'dist')
 
-# Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
-resolution = 50; MCsamp = 2000
-x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
-x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
-x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+# Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 1500 samples each.
+Infer.dist.start = marginal.dist(mod.dist.start)
+Infer.dist.adapt = marginal.dist(mod.dist.adapt)
+Infer.dist.rando = marginal.dist(mod.dist.rando)
 
-Infer.x1 = data.frame(); Infer.x2 = data.frame()
-
-for(i in 1:resolution){
-  # x1
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
-  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
-                                        prob = mean(fill.frame$p.del1), 
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x1', ncond = 'None'))  
-  # x2
-  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
-  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        prob = mean(fill.frame$p.del1),
-                                        var = 'x2', ncond = 'None'))
-}
+delta.tru = read.csv('ExpectedMarginal_delta.csv')
 
 ggplot() +
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  theme_bw()
+  geom_path(data = delta.tru,        mapping = aes(x = x, y = prob+psd, color = 'tru'), linetype = 2) +
+  geom_path(data = delta.tru,        mapping = aes(x = x, y = prob-psd, color = 'tru'), linetype = 2) +
+  geom_path(data = Infer.dist.start, mapping = aes(x = x, y = prob, color = 'start')) +
+  geom_path(data = Infer.dist.adapt, mapping = aes(x = x, y = prob, color = 'adapt')) +
+  geom_path(data = Infer.dist.rando, mapping = aes(x = x, y = prob, color = 'rando')) +
+  facet_grid(var~.) +
+  labs(x = 'Input Variable', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'),
+       color = 'Dataset') +
+  scale_color_manual(labels = c('tru' = 'Expected Probability', 
+                                  'start' = 'Before Sampling', 
+                                  'adapt' = 'Adaptive Sampling', 'rando' = 'Random Sampling'),
+                       values = c('tru' = 'grey40', 'start' = '#e41a1c', 'adapt' = '#377eb8', 'rando' = '#4daf4a'),
+                       breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1))))
 
-# Plot with percentiles
-ggplot() +
-  # Percentiles as an area
-  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
-                              y = c(Infer.x1$p25, rev(Infer.x1$p75))),
-            mapping = aes(x = x, y = y, fill = 'x1'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
-                              y = c(Infer.x2$p25, rev(Infer.x2$p75))),
-            mapping = aes(x = x, y = y, fill = 'x2'), alpha = 0.25) +
+# Coefficients of determination.
+expect1 = filter(delta.tru, var == 'x1')$prob
+expect2 = filter(delta.tru, var == 'x2')$prob
+data.frame(method = c('Before Sampling', 'Adaptive Sampling', 'Random Sampling'),
+           R2.x1 = c(cor(x = filter(Infer.dist.start, var == 'x1')$prob, y = expect1, method = 'pearson')^2, 
+             cor(x = filter(Infer.dist.adapt, var == 'x1')$prob, y = expect1, method = 'pearson')^2,
+             cor(x = filter(Infer.dist.rando, var == 'x1')$prob, y = expect1, method = 'pearson')^2),
+           R2.x2 = c(cor(x = filter(Infer.dist.start, var == 'x2')$prob, y = expect2, method = 'pearson')^2, 
+             cor(x = filter(Infer.dist.adapt, var == 'x2')$prob, y = expect2, method = 'pearson')^2,
+             cor(x = filter(Infer.dist.rando, var == 'x2')$prob, y = expect2, method = 'pearson')^2)
+           )
 
-  # Mean values as a line
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  theme_bw() + guides(fill = FALSE)
 
-# Relative importance: inverse of the area under the curve, normalized units
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
-                      resolution/sum(Infer.x2$p75 - Infer.x2$p25)),
-           var = c('x1', 'x2'))) +
+# Relative importance: inverse of the area under the curve, normalized units, 
+# adjusted by the range of the probabilities' means
+Infer.x1 = filter(Infer.dist.adapt, var == 'x1')
+Infer.x2 = filter(Infer.dist.adapt, var == 'x2')
+Import.delta = data.frame(import = c(diff(range(Infer.x1$prob))*nrow(Infer.x1)/sum(Infer.x1$psd), 
+                                     diff(range(Infer.x2$prob))*nrow(Infer.x1)/sum(Infer.x2$psd)),
+                          var = c('x1', 'x2'),
+                          typ = 'delta')
+# Uncertainty in the calculation based on the Monte Carlo error
+Import.delta$sd = sqrt(c(max(Infer.x1$prob)*(1-max(Infer.x1$prob)) + min(Infer.x1$prob)*(1-min(Infer.x1$prob)) * 
+                      diff(range(Infer.x1$prob)),
+                    max(Infer.x2$prob)*(1-max(Infer.x2$prob)) + min(Infer.x2$prob)*(1-min(Infer.x2$prob)) * 
+                      diff(range(Infer.x2$prob)) )/1500 + 
+                  c(var(Infer.x1$psd), var(Infer.x2$psd))/nrow(Infer.x1) )
+  
+ggplot(Import.delta) +
   geom_col(mapping = aes(x = var, y = import, fill = var)) +
   labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if '*delta*' < 1')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '')) + 
-  scale_fill_manual(values = c('purple3', 'orange'))
+       subtitle = expression('Pareto Distance Criteria')) +
+  scale_y_continuous(breaks = c(), expand = expansion(mult = c(0, .1))) + 
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]))) + 
+  scale_fill_manual(values = c('#7fc97f', '#beaed4'))
 
-# Remove the percentiles for later
-Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25')]
-Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25')]
+
+# Store the data for importance ranking comparison later
+Infer.plt = rbind(Infer.x1, Infer.x2);
+# write.csv(Infer.plt, 'Marginals_delta.csv')
+delta.tru$cat = 'tru';          Infer.dist.start$cat = 'start'
+Infer.dist.adapt$cat = 'adapt'; Infer.dist.rando$cat = 'rando'
+write.csv(rbind(delta.tru[, names(delta.tru) %in% names(Infer.dist.start)],
+      Infer.dist.start[, names(Infer.dist.start) %in% names(delta.tru)],
+      Infer.dist.adapt[, names(Infer.dist.adapt) %in% names(delta.tru)],
+      Infer.dist.rando[, names(Infer.dist.rando) %in% names(delta.tru)]), 'Marginals_delta_tru.csv')
+
 ```
 
-Consistent with the correlation coefficients, the probability of acceptance when only $x_1$ has a higher and sharper peak than $x_2$, but in this case, it shows the importance for a specific goal rather than the general trends.
-This becomes more important when considering other selection criteria (below).
+Due to the simplicity of the test system, the marginals all fall within the confidence interval of the expected probability from marginalization of the true function.
 
-10. Calculate the same conditional probability, but given the that the most important variable falls within its optimal range and the second most important variable is known.
-11. Repeat step 10 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
+The importance ranking suggests that the first variable $x_1$ is more important than the second.
+
+## IV: Suggested ranges
+
+10. For the most important variable, determine the input values that give the peak response. This is the suggested input range.
+11. For the next most important variable, calculate the conditional probability if this variable is known precisely, but the most important is known to be within its suggested range.
+12. Repeat step 11 by continuing to constrain the optimal range of the previous variables until all conditional probabilities have been found. This sequential analysis describes the characteristics of the most promising inputs for the near-Pareto set.
 
 In this case, with only 2 inputs, only one iteration needs to be performed, ie. accept | $x_2, x_1 = x_{1,opt}$
 
-To account for possible uncertainty, the conditional for $x_1$ will be within its optimal region, defined by the values of $x_1$ with at least half of the max probability.
+To account for possible uncertainty in the estimate of the optimal $x_1$, the conditional for $x_1$ will be within its optimal region, defined by the values of $x_1$ with at least half of the max probability.
 
-For illustrative purposes, the inverse will also be shown (accept | $x_1, x_2 = x_{2,opt}$). This may be useful is, for instance, $x_2$ is easier to measure.
+For illustrative purposes, the other conditional will also be shown (accept | $x_1, x_2 = x_{2,opt}$). This may be useful if, for instance, $x_2$ is easier to measure.
 
 ```{r Partial Conditional Probabilities}
+# Remove the percentiles for later
+Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25', 'psd')]
+Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25', 'psd')]
 # Detrmining the ranges
 p.target1 = 0.5*max(Infer.x1$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
@@ -889,13 +1084,15 @@ ggplot(Infer.diff) +
 
 ```
 
-In this case, due to symmetry, there is similarity between x1 and x2's behavior as single variables and when conditioned on the other. However, it is evident that the probability of acceptance for $x_2$ increases more when $x_1$ is known than $x_1$ does when $x_2$ is known, suggesting the relative importance of $x_1$ compared to $x_2$.
-
+As expected based on the importance ranking, conditioning $x_2$ on $x_1$ leads to a larger improvement in the probability of acceptance than the other way around.
 
 ## Alternative Acceptance Criteria
 For the purpose of illustration, the above method will be repeated with two other acceptance criteria:
 * Objective function values below a specific threshold.
 * Within a specific normalized distance of the utopia point and a specified prioritization of the two objective functions.
+
+The first criteria is analogous to a design problem with specific constraints that must be met, and the location of the Pareto frontier is irrelevant to these goals.
+The second criteria defines a system with a predefined prioritization of objectives, and defines proximity to optimality not on the Pareto frontier, but on the utopia point.
 
 ### Threshold cutoff
 For simplicity, the cutoff values are the normalized values of 1 for both objectives. This is criteria, the acceptable points are those that fall within the normalized box defined by the utopia point (0,0) and the pseudo-nadir point (1,1).
@@ -916,68 +1113,11 @@ GPar.front = GPar.front[,nm]
 ```
 
 ```{r Treshold: First iteration, message=FALSE, warning=FALSE}
-fill.sample.mod = function(GPar.data, input.name, output.name){
-  # Calculate the GP model to use. 
-  # Using the km function, but applies checks on the system to make sure that 
-  # the model uncertainty matches expectations based on GP, ie. it did not
-  # fail to converge.
-  
-  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
-  # of the standard deviation are of the same order of magnitude. This is easiest
-  # checked if the difference between the 10th and 90th percentile
-  # is larger than the difference between the 25th and 75th.
-  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
-  while(log10(pt90/pt10) <= log10(pt75/pt25)){
-    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
-                 covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
-                 control = list(trace = FALSE, # Turn off tracking to simplify output
-                                pop.size = 50), # Increase robustness
-                 nugget = 1e-6, # Avoid eigenvalues of 0
-                 )
-    
-    # Randomly sample 200 points from the search space
-    pt = 200; i = 1
-    lims = range(GPar.data[,input.name[i]])
-    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
-    for(i in 2:length(input.name)){
-      lims = range(GPar.data[,input.name[i]])
-      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
-    }
-    names(samp) = input.name
-    
-    # Find model output to find the percentile ranks for this iteration
-    res = predict(object = mod.out, newdata = samp, type = 'UK')
-    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
-    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
-  }
-  return(mod.out)
-}
-fill.sample.obj2 = function(x, model.f1, model.f2){
-  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), 
-  # and the normalized distance of (f1, f2) to the Pareto front
-  # the function will output the objective function evaluated at x = (x1, x2)
-  
-  # Evaluate the Kriging model function at x 
-  res.f1 = predict(object = model.f1, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
-  res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
-  
-  # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * 
-    pnorm(q = 0, mean = res.f2$mean - 1, sd = res.f2$sd)
-  
-  # Variance based on propagation of errors, assuming independent measures
-  sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2)
-
-  # Objective result
-  return(sd*prob*(1-prob))
-}
-
 # Search for the first point
 mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f1.norm')
 mod.f2 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f2.norm')
 GA.pred = ga(type = 'real-valued',
-             fitness = function(x){fill.sample.obj2(x, model.f1 = mod.f1, model.f2 = mod.f2)},
+             fitness = function(x){fill.sample.cutoff(x, model.f1 = mod.f1, model.f2 = mod.f2)},
              lower = c(0, 0), upper = c(5, 5),
              popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
              parallel = 2)
@@ -989,15 +1129,9 @@ GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
 GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
 GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
 # Fill in the remaining caluclations: normalized outputs, distance, theta, order
-GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
-cl <- makeCluster(2)
-registerDoParallel(cl)
-dist = foreach(row = 1:nrow(GPar.new)) %dopar%
-  n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
-stopCluster(cl)
-GPar.new$dist = unlist(dist)
-GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
-GPar.new$order = max(GPar.all$order) + 1
+res = fill.sample.update(GPar.front.old = GPar.front, GPar.data = GPar.all, GPar.new = GPar.new)
+GPar.all = res$data
+GPar.front = res$front
 
 # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
 start.fit = max(GA.pred@fitness)
@@ -1097,14 +1231,11 @@ g1 + g2 + g3
 budget = 20
 next.fit = start.fit
 while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
-  # Add the  new point to the dataset
-  GPar.all = rbind(GPar.all, GPar.new)
-  
   # Create a Kriging model for the distance
   mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f1.norm')
   mod.f2 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f2.norm')
   GA.pred = ga(type = 'real-valued',
-               fitness = function(x){fill.sample.obj2(x, model.f1 = mod.f1, model.f2 = mod.f2)},
+               fitness = function(x){fill.sample.cutoff(x, model.f1 = mod.f1, model.f2 = mod.f2)},
                lower = c(0, 0), upper = c(5, 5),
                popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
                parallel = 2)
@@ -1118,22 +1249,16 @@ while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
   GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
   GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
   
-  # Fill in the remaining caluclations: normalized outputs, distance, theta, order
-  GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
-  cl <- makeCluster(2)
-  registerDoParallel(cl)
-  dist = foreach(row = 1:nrow(GPar.new)) %dopar%
-    n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
-  stopCluster(cl)
-  GPar.new$dist = unlist(dist)
-  GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
-  GPar.new$order = max(GPar.all$order) + 1
+  # Fill in the remaining calculations: normalized outputs, distance, theta, order
+  res = fill.sample.update(GPar.front.old = GPar.front, GPar.data = GPar.all, GPar.new = GPar.new)
+  GPar.all = res$data
+  GPar.front = res$front
   
   # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
   next.fit = max(GA.pred@fitness)
 }
 
-GPar.all = rbind(GPar.all, GPar.new)
+
 write.csv(GPar.all, 'GPar_Accept_Threshold.csv')
 
 rm(budget, n.samples)
@@ -1141,6 +1266,7 @@ rm(budget, n.samples)
 
 ```{r Treshold: Visualize Iterations}
 # Plot results on top of the most recent Kriging model
+GPar.all = read.csv(file = 'GPar_Accept_Threshold.csv')
 # Create a Kriging model for the distance
 mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f1.norm')
 mod.f2 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f2.norm')
@@ -1222,190 +1348,122 @@ g4 + g5 + g6
 rm(g1, g2, g3, g4, g5, g6)
 ```
 
-As indicated by this acceptance criteria, the boundary of the set it well defined with just the Pareto frontier, so additional iterations are not as necessary. Continuing with the procedure to show the feature importance and acceptance probability procedures.
+For this acceptance criteria, the boundary of the classifier is well defined with just the Pareto frontier, so additional iterations are not as necessary. Sampling tended to prioritize exploration over exploitation for this reason.
+Continuing with the procedure to show the feature importance and acceptance probability procedures.
 
-```{r Threshold Feature Importance: Correlation Coefficient and Slope}
+```{r Threshold: Feature Importance}
 # Load data
-GPar.all = read.csv(file = 'GPar_Accept_Threshold.csv')
+GPar.start = read.csv(file = 'GPar_all_start.csv')
+GPar.adapt = read.csv(file = 'GPar_Accept_Threshold.csv')
 GPar.front = read.csv(file = 'GPar_fnt_start.csv')
-# Remove leading indices: the names are:
-nm = c("x1",  "x2", "f1", "f2", "order",  "f1.norm", "f2.norm", "dist", "theta")
-GPar.all = GPar.all[,nm]
-nm = c("x1",  "x2", "f1", "f2",  "f1.norm", "f2.norm")
-GPar.front = GPar.front[,nm]
+# Compare to a random sample set
+nsamp = nrow(GPar.adapt) - nrow(GPar.start)
+GPar.rando = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
+                        x2 = runif(n = nsamp, min = 0, max = 5))
+GPar.rando$f1 = f1(x1 = GPar.rando$x1, x2 = GPar.rando$x2)
+GPar.rando$f2 = f2(x1 = GPar.rando$x1, x2 = GPar.rando$x2)
+# Fill in the remaining calculations: normalized outputs, distance, theta, order
+GPar.rando = n.obj(GPar.data = GPar.rando, GPar.front = GPar.front)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(GPar.rando)) %dopar%
+  n.dist(f1.norm = GPar.rando$f1.norm[row], f2.norm = GPar.rando$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+GPar.rando$dist = unlist(dist)
+GPar.rando$theta = atan(GPar.rando$f2.norm/GPar.rando$f1.norm)*180/pi*10/9
+GPar.rando$order = seq(from = max(GPar.start$order) + 1, to = max(GPar.start$order) + nsamp, by = 1)
+GPar.rando = rbind(GPar.start[, names(GPar.start) %in% names(GPar.rando)], GPar.rando)
 
-# Define the process used to collect the point
-GPar.all$proc = 'Initial'
-GPar.all$proc[GPar.all$order > 0] = 'Pareto'
-GPar.all$proc[GPar.all$order > Pareto.budget] = 'Post'
-# Break up the prioritization into favoring f1, f2, or a balance of the two
-GPar.all$region = "f1"
-GPar.all$region[GPar.all$theta < 200/3] = "50:50"
-GPar.all$region[GPar.all$theta < 100/3] = "f2"
-
-pt.size = 3
-g1 = ggplot() +
-  geom_point(data = filter(GPar.all, dist > 1), mapping = aes(x = theta, y = x1, shape = proc), color = 'red', size = pt.size) +
-  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1), color = "black", level = 0) +
-  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x1, color = dist, shape = proc), size = pt.size) +
-  labs(x = "", y = expression("x"[1]), color = "Distance:\nObjective\nSpace") +
-  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
-                     expand = c(0.01, 0.01)) +
-  guides(shape = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
-g2 = ggplot() +
-  geom_point(data = filter(GPar.all, dist >  1), mapping = aes(x = theta, y = x2, shape = proc), color = 'red', size = pt.size) +
-  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2), color = "black", level = 0) +
-  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x2, color = dist, shape = proc), size = pt.size) +
-  labs(x = "Trade-Off", y = expression("x"[2]), color = "", shape = 'Collection\nProcess') +
-  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
-                     expand = c(0.01, 0.01)) +
-  guides(color = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
-g1 / g2
-
-# Approximate the Pareto front with a smoothed line using a Savitzky-Golay filter
-Pfront.x1 = loess(x1 ~ theta, data = data.frame(theta = filter(GPar.all, dist == 0)$theta, 
-                                                x1 = filter(GPar.all, dist == 0)$x1))
-Pfront.x2 = loess(x2 ~ theta,data = data.frame(theta = filter(GPar.all, dist == 0)$theta, 
-                                               x2 = filter(GPar.all, dist == 0)$x2))
-
-# Store the information in a dataframe for visualization
-plt = data.frame(theta = seq(from = 0, to = 100, length.out = 100))
-res1 = predict(object = Pfront.x1, newdata = plt)
-res2 = predict(object = Pfront.x2, newdata = plt)
-plt$x1 = unname(res1); plt$x2 = unname(res2)
-# Check the Savitzky–Golay filter smoothing quality
-gx1 = ggplot() +
-  geom_path(plt, mapping = aes(x = theta, y = x1)) +
-  geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1))
-gx2 = ggplot() +
-  geom_path(plt, mapping = aes(x = theta, y = x2)) +
-  geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2))
-gx1 / gx2
-
-# Apply the model to find the linear distance (regression)
-GPar.all$x1.loess.Err = abs(GPar.all$x1 - predict(object = Pfront.x1, newdata = GPar.all$theta))
-GPar.all$x2.loess.Err = abs(GPar.all$x2 - predict(object = Pfront.x2, newdata = GPar.all$theta))
-
-# Calculate the correlation coefficient of the log(objective distance) with the linear distance
-x1.cor = cor(x = filter(GPar.all, dist > 0)$x1.loess.Err, 
-             y = (filter(GPar.all, dist > 0)$dist), 
-             method = 'pearson')
-x2.cor = cor(x = filter(GPar.all, dist > 0)$x2.loess.Err, 
-             y = (filter(GPar.all, dist > 0)$dist), 
-             method = 'pearson')
-# Calculate the slope of the lienar relationship
-x1.slp = lm((dist) ~ x1.loess.Err, data = filter(GPar.all, dist > 0))
-x2.slp = lm((dist) ~ x2.loess.Err, data = filter(GPar.all, dist > 0))
-x1.slp = unname(x1.slp$coefficients[2]); x2.slp = unname(x2.slp$coefficients[2])
-
-sz = 3
-# Store information in a dataframe for plotting
-GPar.cor.plt = data.frame(obj.dist = rep(GPar.all$dist, 2),
-                          inp.dist = c(GPar.all$x1.loess.Err, GPar.all$x2.loess.Err),
-                          var = c(rep('x1', nrow(GPar.all)), rep('x2', nrow(GPar.all))),
-                          region = rep(GPar.all$region, 2),
-                          val = c(GPar.all$x1, GPar.all$x2))
-var.labs <- c(paste('x1, r = ', round(x1.cor, 3), '; slope = ', round(x1.slp, 3)), 
-              paste('x2, r = ', round(x2.cor, 3), '; slope = ', round(x2.slp, 3)))
-names(var.labs) <- c("x1", "x2")
-
-ggplot(GPar.cor.plt) +
-  geom_point(mapping = aes(x = inp.dist, y = (obj.dist), shape = region, color = val), size = sz) +
-  facet_grid(~var, labeller = labeller(var = var.labs)) + 
-  labs(x = 'Distance: Input Space', y = expression('log'[10]*' Distance: Objective Space'), shape = 'Priority',
-       color = 'Input Value')
-```
-
-Since the selection criteria are dependent on two different variables, it is possible that this regression and slope does not match the actual importance metrics.
-A probability-based metric is used instead.
-
-```{r Threshold: Marginalization}
 # Use the final GP model with the full dataset
-mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f1.norm')
-mod.f2 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'f2.norm')
+mod.f1.start = fill.sample.mod(GPar.data = GPar.start, input.name = c('x1', 'x2'), output.name = 'f1.norm')
+mod.f1.adapt = fill.sample.mod(GPar.data = GPar.adapt, input.name = c('x1', 'x2'), output.name = 'f1.norm')
+mod.f1.rando = fill.sample.mod(GPar.data = GPar.rando, input.name = c('x1', 'x2'), output.name = 'f1.norm')
+
+mod.f2.start = fill.sample.mod(GPar.data = GPar.start, input.name = c('x1', 'x2'), output.name = 'f2.norm')
+mod.f2.adapt = fill.sample.mod(GPar.data = GPar.adapt, input.name = c('x1', 'x2'), output.name = 'f2.norm')
+mod.f2.rando = fill.sample.mod(GPar.data = GPar.rando, input.name = c('x1', 'x2'), output.name = 'f2.norm')
 
 # Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
-resolution = 50; MCsamp = 1500
-x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
-x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
-x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+Infer.cut.start = marginal.cut(mod.f1.start, mod.f2.start)
+Infer.cut.adapt = marginal.cut(mod.f1.adapt, mod.f2.adapt)
+Infer.cut.rando = marginal.cut(mod.f1.rando, mod.f2.rando)
 
-Infer.x1 = data.frame(); Infer.x2 = data.frame()
-
-for(i in 1:resolution){
-  # x1
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
-  res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x1', ncond = 'None'))  
-  # x2
-  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
-  res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), 
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x2', ncond = 'None'))
-}
+cutof.tru = read.csv('ExpectedMarginal_cutof.csv')
 
 ggplot() +
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  theme_bw()
+  geom_path(data = cutof.tru,       mapping = aes(x = x, y = prob+psd, color = 'tru'), linetype = 2) +
+  geom_path(data = cutof.tru,       mapping = aes(x = x, y = prob-psd, color = 'tru'), linetype = 2) +
+  geom_path(data = Infer.cut.start, mapping = aes(x = x, y = prob, color = 'start')) +
+  geom_path(data = Infer.cut.adapt, mapping = aes(x = x, y = prob, color = 'adapt')) +
+  geom_path(data = Infer.cut.rando, mapping = aes(x = x, y = prob, color = 'rando')) +
+  facet_grid(var~.) +
+  labs(x = 'Input Variable', y = 'Probability of Acceptance', subtitle = expression('Accept if '*delta*' < 1'),
+       color = 'Dataset') +
+  scale_color_manual(labels = c('tru' = 'Expected Probability', 
+                                  'start' = 'Before Sampling', 
+                                  'adapt' = 'Adaptive Sampling', 'rando' = 'Random Sampling'),
+                       values = c('tru' = 'grey40', 'start' = '#377eb8', 'adapt' = '#e41a1c', 'rando' = '#4daf4a'),
+                       breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1))))
 
-# Plot with percentiles
-ggplot() +
-  # Percentiles as an area
-  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
-                              y = c(Infer.x1$p25, rev(Infer.x1$p75))),
-            mapping = aes(x = x, y = y, fill = 'x1'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
-                              y = c(Infer.x2$p25, rev(Infer.x2$p75))),
-            mapping = aes(x = x, y = y, fill = 'x2'), alpha = 0.25) +
+# Coefficients of determination. Expected values are at double the resolution
+expect1 = filter(cutof.tru, var == 'x1')$prob
+expect2 = filter(cutof.tru, var == 'x2')$prob
+data.frame(method = c('Before Sampling', 'Adaptive Sampling', 'Random Sampling'),
+           R2.x1 = c(cor(x = filter(Infer.cut.start, var == 'x1')$prob, y = expect1, method = 'pearson')^2, 
+             cor(x = filter(Infer.cut.adapt, var == 'x1')$prob, y = expect1, method = 'pearson')^2,
+             cor(x = filter(Infer.cut.rando, var == 'x1')$prob, y = expect1, method = 'pearson')^2),
+           R2.x2 = c(cor(x = filter(Infer.cut.start, var == 'x2')$prob, y = expect2, method = 'pearson')^2, 
+             cor(x = filter(Infer.cut.adapt, var == 'x2')$prob, y = expect2, method = 'pearson')^2,
+             cor(x = filter(Infer.cut.rando, var == 'x2')$prob, y = expect2, method = 'pearson')^2)
+           )
 
-  # Mean values as a line
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if f'[1]*'* < 1, f'[2]*'* < 1')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  theme_bw() + guides(fill = FALSE)
 
-# Relative importance: inverse of the area under the curve, normalized units
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
-                      resolution/sum(Infer.x2$p75 - Infer.x2$p25)),
-           var = c('x1', 'x2'))) +
+# Relative importance: inverse of the area under the curve, normalized units, 
+# adjusted by the range of the probabilities' means
+Infer.x1 = filter(Infer.cut.adapt, var == 'x1')
+Infer.x2 = filter(Infer.cut.adapt, var == 'x2')
+Import.cutof = data.frame(import = c(diff(range(Infer.x1$prob))*nrow(Infer.x1)/sum(Infer.x1$psd), 
+                                     diff(range(Infer.x2$prob))*nrow(Infer.x2)/sum(Infer.x2$psd)),
+                          var = c('x1', 'x2'),
+                          typ = 'cutof')
+Import.cutof$sd = sqrt(c(max(Infer.x1$prob)*(1-max(Infer.x1$prob)) + min(Infer.x1$prob)*(1-min(Infer.x1$prob)) * 
+                      diff(range(Infer.x1$prob)),
+                    max(Infer.x2$prob)*(1-max(Infer.x2$prob)) + min(Infer.x2$prob)*(1-min(Infer.x2$prob)) * 
+                      diff(range(Infer.x2$prob)) )/1500 + 
+                  c(var(Infer.x1$psd), var(Infer.x2$psd))/nrow(Infer.x1) )
+
+ggplot(Import.cutof) +
   geom_col(mapping = aes(x = var, y = import, fill = var)) +
   labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if '*delta*' < 1')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '')) + 
-  scale_fill_manual(values = c('purple3', 'orange'))
+       subtitle = expression('Cutoff Criteria')) +
+  scale_y_continuous(breaks = c(), expand = expansion(mult = c(0, .1))) + 
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]))) + 
+  scale_fill_manual(values = c('#7fc97f', '#beaed4'))
 
-# Remove the percentiles for later
-Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25')]
-Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25')]
 
+# Store the data for importance ranking comparison later
+Infer.plt = rbind(Infer.x1, Infer.x2);
+# write.csv(Infer.plt, 'Marginals_cutof.csv')
+cutof.tru$cat = 'tru';         Infer.cut.start$cat = 'start'
+Infer.cut.adapt$cat = 'adapt'; Infer.cut.rando$cat = 'rando'
+write.csv(rbind(cutof.tru[, names(cutof.tru) %in% names(Infer.cut.start)],
+      Infer.cut.start[, names(Infer.cut.start) %in% names(cutof.tru)],
+      Infer.cut.adapt[, names(Infer.cut.adapt) %in% names(cutof.tru)],
+      Infer.cut.rando[, names(Infer.cut.rando) %in% names(cutof.tru)]), 'Marginals_cutof.csv')
 
 ```
 
-The peak in the single-variable marginalization indicates that $x_1$ is, in fact, more important, as even without knowledge of $x_2$, the probability of acceptance can be as high as 0.6.
-Compared to the other criteria, though, it shows that $x_1$ is even more important, as highlighted by the smaller variance. 
-This is because $x_1$ has a narrower set of values that it can occupy and still have a probability of being accepted (roughly 0.8 to 2.6) compared to $x_2$ (roughly 0 to 3.2).
+Like the previous selection criteria, the marginals all generally fit within the confidence interval from direct evaluation of the function, so the marginals provide little insight into the benefits of adaptive sampling.
+
+Evaluating the probabilities when conditioned on optimal values (suggested ranges), as above.
 
 ```{r Threshold: Partial Conditional Probabilities}
-# Detrmining the ranges
+# Remove the percentiles for later
+Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25', 'psd')]
+Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25', 'psd')]
+
+# Determining the ranges
 p.target1 = 0.5*max(Infer.x1$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
 x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
@@ -1491,10 +1549,10 @@ ggplot(Infer.diff) +
 
 ```
 
-Consistent with the feature importance ranking, conditioning $x_1$ on $x_2$ has less improvement than conditioning $x_2$ on $x_1$.
+As with the previous selection criteria, conditioning $x_2$ on $x_1$ led to the greatest improvement in the probability, consistent with the importance ranking.
 
 ### Utopia Distance and Prioritization
-Since the utopia point is set to (0,0), the distance to the utopia point is simple to calculate from the normalized coordinates. Acceptable points are those that prioritize the first objective by at least 80%, which can be determined by the angle theta.
+Since the utopia point is set to (0,0), the distance to the utopia point is simple to calculate from the normalized coordinates. Acceptable points are those that prioritize the first objective by at least 20%, which can be determined by the angle theta.
 
 Load the original dataset.
 
@@ -1512,67 +1570,12 @@ GPar.front = GPar.front[,nm]
 ```
 
 ```{r Utopia Distance: First Iteration, message=FALSE, warning=FALSE}
-fill.sample.mod = function(GPar.data, input.name, output.name){
-  # Calculate the GP model to use. 
-  # Using the km function, but applies checks on the system to make sure that 
-  # the model uncertainty matches expectations based on GP, ie. it did not
-  # fail to converge.
-  
-  # Based on testing, the model is bad when the 10% percentile and 90% percentile 
-  # of the standard deviation are of the same order of magnitude. This is easiest
-  # checked if the difference between the 10th and 90th percentile
-  # is larger than the difference between the 25th and 75th.
-  pt10 = 1; pt90 = 1; pt25 = 1; pt75 = 1
-  while(log10(pt90/pt10) <= log10(pt75/pt25)){
-    mod.out = km(design = GPar.data[, input.name], response = GPar.data[, output.name], 
-                 covtyp = 'gauss', # Gaussian uncertainty
-                 optim.method = 'gen', # Genetic algorithm optimization
-                 control = list(trace = FALSE, # Turn off tracking to simplify output
-                                pop.size = 50), # Increase robustness
-                 nugget = 1e-6, # Avoid eigenvalues of 0
-                 )
-    
-    # Randomly sample 200 points from the search space
-    pt = 200; i = 1
-    lims = range(GPar.data[,input.name[i]])
-    samp = data.frame(runif(n = pt, min = lims[1], max = lims[2]))
-    for(i in 2:length(input.name)){
-      lims = range(GPar.data[,input.name[i]])
-      samp[,i] = runif(n = pt, min = lims[1], max = lims[2])
-    }
-    names(samp) = input.name
-    
-    # Find model output to find the percentile ranks for this iteration
-    res = predict(object = mod.out, newdata = samp, type = 'UK')
-    pt10 = quantile(res$sd, 0.10); pt90 = quantile(res$sd, 0.90)
-    pt25 = quantile(res$sd, 0.25); pt75 = quantile(res$sd, 0.75)
-  }
-  return(mod.out)
-}
-fill.sample.obj3 = function(x, model.f1, model.f2){
-  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
-  # the function will output the objective function evaluated at x = (x1, x2)
-  
-  # Evaluate the Kriging model function at x 
-  res.f1 = predict(object = model.f1, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
-  res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2]), type = 'UK')
-  
-  # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * (1 - pnorm(q = 0, mean = res.f2$mean - 20, sd = res.f2$sd))
-  
-  # Variance based on propagation of errors
-  sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2) 
-
-  # Objective result
-  return(sd*prob*(1-prob))
-}
-
 # Search for the first point
 GPar.all$rad = sqrt(GPar.all$f1.norm^2 + GPar.all$f2.norm^2)
 mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'rad')
 mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'theta')
 GA.pred = ga(type = 'real-valued',
-             fitness = function(x){fill.sample.obj3(x, model.f1 = mod.rad, model.f2 = mod.ang)},
+             fitness = function(x){fill.sample.radan(x, model.f1 = mod.rad, model.f2 = mod.ang)},
              lower = c(0, 0), upper = c(5, 5),
              popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
              parallel = 2)
@@ -1583,17 +1586,11 @@ point.next = GA.pred@solution[1,]
 GPar.new = data.frame(x1 = point.next[1], x2 = point.next[2])
 GPar.new$f1 = f1(x1 = GPar.new$x1, x2 = GPar.new$x2)
 GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
-# Fill in the remaining caluclations: normalized outputs, distance, theta, order
-GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
-cl <- makeCluster(2)
-registerDoParallel(cl)
-dist = foreach(row = 1:nrow(GPar.new)) %dopar%
-  n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
-stopCluster(cl)
-GPar.new$dist = unlist(dist)
-GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
-GPar.new$order = max(GPar.all$order) + 1
-GPar.new$rad = sqrt(GPar.new$f1.norm^2 + GPar.new$f2.norm^2)
+# Fill in the remaining calculations: normalized outputs, distance, theta, order
+res = fill.sample.update(GPar.front.old = GPar.front, GPar.data = GPar.all, GPar.new = GPar.new)
+GPar.all = res$data
+GPar.front = res$front
+GPar.all$rad = sqrt(GPar.all$f1.norm^2 + GPar.all$f2.norm^2)
 
 # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
 start.fit = max(GA.pred@fitness)
@@ -1606,7 +1603,7 @@ mod.rad.init = mod.rad
 mod.ang.init = mod.ang
 
 # Grid of the relevant region to visualize
-lower = c(0, 0); upper = c(5,5)
+lower = c(0, 0); upper = c(5, 5)
 fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = 50), 
                         x2 = seq(from = lower[2], to = upper[2], length.out = 50))
 fine.grid = fine.grid[,1:2]
@@ -1687,14 +1684,11 @@ g1 + g2 + g3
 budget = 20
 next.fit = start.fit
 while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
-  # Add the  new point to the dataset
-  GPar.all = rbind(GPar.all, GPar.new)
-  
   # Create a Kriging model for the distance
   mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'rad')
   mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'theta')
   GA.pred = ga(type = 'real-valued',
-               fitness = function(x){fill.sample.obj3(x, model.f1 = mod.rad, model.f2 = mod.ang)},
+               fitness = function(x){fill.sample.radan(x, model.f1 = mod.rad, model.f2 = mod.ang)},
                lower = c(0, 0), upper = c(5, 5),
                popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
                parallel = 2)
@@ -1709,30 +1703,24 @@ while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
   GPar.new$f2 = f2(x1 = GPar.new$x1, x2 = GPar.new$x2)
   
   # Fill in the remaining caluclations: normalized outputs, distance, theta, order
-  GPar.new = n.obj(GPar.data = GPar.new, GPar.front = GPar.front)
-  cl <- makeCluster(2)
-  registerDoParallel(cl)
-  dist = foreach(row = 1:nrow(GPar.new)) %dopar%
-    n.dist(f1.norm = GPar.new$f1.norm[row], f2.norm = GPar.new$f2.norm[row], GPar.front = GPar.front)
-  stopCluster(cl)
-  GPar.new$dist = unlist(dist)
-  GPar.new$theta = atan(GPar.new$f2.norm/GPar.new$f1.norm)*180/pi*10/9
-  GPar.new$order = max(GPar.all$order) + 1
-  GPar.new$rad = sqrt(GPar.new$f1.norm^2 + GPar.new$f2.norm^2)
+  res = fill.sample.update(GPar.front.old = GPar.front, GPar.data = GPar.all, GPar.new = GPar.new)
+  GPar.all = res$data
+  GPar.front = res$front
+  GPar.all$rad = sqrt(GPar.all$f1.norm^2 + GPar.all$f2.norm^2)
   
   # The cutoff point for the loop is 20 additional points or when the fitness value is less than half of this starting fitness value
   next.fit = max(GA.pred@fitness)
 }
 
-GPar.all = rbind(GPar.all, GPar.new)
 
 write.csv(GPar.all, 'GPar_Accept_Radius.csv')
 
-rm(budget, n.samples)
+# rm(budget)
 ```
 
 ```{r}
 # Plot results on top of the most recent Kriging model
+GPar.all = read.csv(file = 'GPar_Accept_Radius.csv')
 mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'rad')
 mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'theta')
 
@@ -1816,191 +1804,121 @@ rm(g1, g2, g3, g4, g5, g6)
 
 Fewer points were needed to reach convergence due to a relatively narrow uncertainty band to start.
 
-```{r Utopia distance Feature Importance: Correlation Coefficient and Slope}
+```{r Utopia distance Feature Importance}
 # Load data
-GPar.all = read.csv(file = 'GPar_Accept_Radius.csv')
+GPar.start = read.csv(file = 'GPar_all_start.csv')
+GPar.adapt = read.csv(file = 'GPar_Accept_Radius.csv')
 GPar.front = read.csv(file = 'GPar_fnt_start.csv')
-# Remove leading indices: the names are:
-nm = c("x1",  "x2", "f1", "f2", "order",  "f1.norm", "f2.norm", "dist", "theta", "rad")
-GPar.all = GPar.all[,nm]
-nm = c("x1",  "x2", "f1", "f2",  "f1.norm", "f2.norm")
-GPar.front = GPar.front[,nm]
+# Compare to a random sample set
+nsamp = nrow(GPar.adapt) - nrow(GPar.start)
+GPar.rando = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
+                        x2 = runif(n = nsamp, min = 0, max = 5))
+GPar.rando$f1 = f1(x1 = GPar.rando$x1, x2 = GPar.rando$x2)
+GPar.rando$f2 = f2(x1 = GPar.rando$x1, x2 = GPar.rando$x2)
+# Fill in the remaining calculations: normalized outputs, distance, theta, order
+GPar.rando = n.obj(GPar.data = GPar.rando, GPar.front = GPar.front)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+dist = foreach(row = 1:nrow(GPar.rando)) %dopar%
+  n.dist(f1.norm = GPar.rando$f1.norm[row], f2.norm = GPar.rando$f2.norm[row], GPar.front = GPar.front)
+stopCluster(cl)
+GPar.rando$dist = unlist(dist)
+GPar.rando$theta = atan(GPar.rando$f2.norm/GPar.rando$f1.norm)*180/pi*10/9
+GPar.rando$order = seq(from = max(GPar.start$order) + 1, to = max(GPar.start$order) + nsamp, by = 1)
+GPar.rando = rbind(GPar.start[, names(GPar.start) %in% names(GPar.rando)], GPar.rando)
 
-# Define the process used to collect the point
-GPar.all$proc = 'Initial'
-GPar.all$proc[GPar.all$order > 0] = 'Pareto'
-GPar.all$proc[GPar.all$order > Pareto.budget] = 'Post'
-# Break up the prioritization into favoring f1, f2, or a balance of the two
-GPar.all$region = "f1"
-GPar.all$region[GPar.all$theta < 200/3] = "50:50"
-GPar.all$region[GPar.all$theta < 100/3] = "f2"
+# Explicit radius variable
+GPar.start$rad = sqrt(GPar.start$f1.norm^2 + GPar.start$f2.norm)
+GPar.adapt$rad = sqrt(GPar.adapt$f1.norm^2 + GPar.adapt$f2.norm)
+GPar.rando$rad = sqrt(GPar.rando$f1.norm^2 + GPar.rando$f2.norm)
 
-pt.size = 3
-g1 = ggplot() +
-  geom_point(data = filter(GPar.all, dist > 1), mapping = aes(x = theta, y = x1, shape = proc), color = 'red', size = pt.size) +
-  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1), color = "black", level = 0) +
-  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x1, color = dist, shape = proc), size = pt.size) +
-  labs(x = "", y = expression("x"[1]), color = "Distance:\nObjective\nSpace") +
-  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
-                     expand = c(0.01, 0.01)) +
-  guides(shape = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
-g2 = ggplot() +
-  geom_point(data = filter(GPar.all, dist >  1), mapping = aes(x = theta, y = x2, shape = proc), color = 'red', size = pt.size) +
-  geom_smooth(data = filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2), color = "black", level = 0) +
-  geom_point(data = filter(GPar.all, dist <= 1), mapping = aes(x = theta, y = x2, color = dist, shape = proc), size = pt.size) +
-  labs(x = "Trade-Off", y = expression("x"[2]), color = "", shape = 'Collection\nProcess') +
-  scale_x_continuous(breaks = c(0, 25, 50, 75, 100), labels = c(expression("f"[2]*" min"), "", "50:50", "", expression("f"[1]*" min")), 
-                     expand = c(0.01, 0.01)) +
-  guides(color = FALSE) + theme_bw() + scale_y_continuous(expand = c(0.05, 0.05), limits = c(0, 5))
-g1 / g2
-
-# Approximate the Pareto front with a smoothed line using a Savitzky-Golay filter
-Pfront.x1 = loess(x1 ~ theta, data = data.frame(theta = filter(GPar.all, dist == 0)$theta, 
-                                                x1 = filter(GPar.all, dist == 0)$x1))
-Pfront.x2 = loess(x2 ~ theta,data = data.frame(theta = filter(GPar.all, dist == 0)$theta, 
-                                               x2 = filter(GPar.all, dist == 0)$x2))
-
-# Store the information in a dataframe for visualization
-plt = data.frame(theta = seq(from = 0, to = 100, length.out = 100))
-res1 = predict(object = Pfront.x1, newdata = plt)
-res2 = predict(object = Pfront.x2, newdata = plt)
-plt$x1 = unname(res1); plt$x2 = unname(res2)
-# Check the Savitzky–Golay filter smoothing quality
-gx1 = ggplot() +
-  geom_path(plt, mapping = aes(x = theta, y = x1)) +
-  geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x1))
-gx2 = ggplot() +
-  geom_path(plt, mapping = aes(x = theta, y = x2)) +
-  geom_point(filter(GPar.all, dist == 0), mapping = aes(x = theta, y = x2))
-gx1 / gx2
-
-# Apply the model to find the linear distance (regression)
-GPar.all$x1.loess.Err = abs(GPar.all$x1 - predict(object = Pfront.x1, newdata = GPar.all$theta))
-GPar.all$x2.loess.Err = abs(GPar.all$x2 - predict(object = Pfront.x2, newdata = GPar.all$theta))
-
-# Calculate the correlation coefficient of the log(objective distance) with the linear distance
-x1.cor = cor(x = filter(GPar.all, dist > 0)$x1.loess.Err, 
-             y = (filter(GPar.all, dist > 0)$dist), 
-             method = 'pearson')
-x2.cor = cor(x = filter(GPar.all, dist > 0)$x2.loess.Err, 
-             y = (filter(GPar.all, dist > 0)$dist), 
-             method = 'pearson')
-# Calculate the slope of the lienar relationship
-x1.slp = lm((dist) ~ x1.loess.Err, data = filter(GPar.all, dist > 0))
-x2.slp = lm((dist) ~ x2.loess.Err, data = filter(GPar.all, dist > 0))
-x1.slp = unname(x1.slp$coefficients[2]); x2.slp = unname(x2.slp$coefficients[2])
-
-sz = 3
-# Store information in a dataframe for plotting
-GPar.cor.plt = data.frame(obj.dist = rep(GPar.all$dist, 2),
-                          inp.dist = c(GPar.all$x1.loess.Err, GPar.all$x2.loess.Err),
-                          var = c(rep('x1', nrow(GPar.all)), rep('x2', nrow(GPar.all))),
-                          region = rep(GPar.all$region, 2),
-                          val = c(GPar.all$x1, GPar.all$x2))
-var.labs <- c(paste('x1, r = ', round(x1.cor, 3), '; slope = ', round(x1.slp, 3)), 
-              paste('x2, r = ', round(x2.cor, 3), '; slope = ', round(x2.slp, 3)))
-names(var.labs) <- c("x1", "x2")
-
-ggplot(GPar.cor.plt) +
-  geom_point(mapping = aes(x = inp.dist, y = (obj.dist), shape = region, color = val), size = sz) +
-  facet_grid(~var, labeller = labeller(var = var.labs)) + 
-  labs(x = 'Distance: Input Space', y = expression('log'[10]*' Distance: Objective Space'), shape = 'Priority',
-       color = 'Input Value')
-```
-
-The regressions and slopes are largely the same for all datasets due to the dominance of points from the original starting design and not the boundary refinement search, as well as being a reflection of the data and not the model.
-
-```{r Utopia distance: Marginalization}
 # Use the final GP model with the full dataset
-mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'rad')
-mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2'), output.name = 'theta')
+mod.rad.start = fill.sample.mod(GPar.data = GPar.start, input.name = c('x1', 'x2'), output.name = 'rad')
+mod.rad.adapt = fill.sample.mod(GPar.data = GPar.adapt, input.name = c('x1', 'x2'), output.name = 'rad')
+mod.rad.rando = fill.sample.mod(GPar.data = GPar.rando, input.name = c('x1', 'x2'), output.name = 'rad')
+
+mod.ang.start = fill.sample.mod(GPar.data = GPar.start, input.name = c('x1', 'x2'), output.name = 'theta')
+mod.ang.adapt = fill.sample.mod(GPar.data = GPar.adapt, input.name = c('x1', 'x2'), output.name = 'theta')
+mod.ang.rando = fill.sample.mod(GPar.data = GPar.rando, input.name = c('x1', 'x2'), output.name = 'theta')
 
 # Obtain marginalized probabilities with a fine resolution grid (50 points). Calculate the integral with a Monte Carlo sampling of 500 samples each.
-resolution = 50; MCsamp = 2500
-x1.rng = range(GPar.all$x1); x2.rng = range(GPar.all$x2)
-x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
-x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
+Infer.rad.start = marginal.rad(mod.rad.start, mod.ang.start)
+Infer.rad.adapt = marginal.rad(mod.rad.adapt, mod.ang.adapt)
+Infer.rad.rando = marginal.rad(mod.rad.rando, mod.ang.rando)
 
-Infer.x1 = data.frame(); Infer.x2 = data.frame()
-#####
-for(i in 1:resolution){
-  # x1
-  fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
-  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
-                                        prob = mean(fill.frame$p.del1), 
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        var = 'x1', ncond = 'None'))  
-
-  # x2
-  fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
-  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
-                                        p25 = quantile(x = fill.frame$p.del1, probs = 0.25),
-                                        p75 = quantile(x = fill.frame$p.del1, probs = 0.75),
-                                        prob = mean(fill.frame$p.del1),
-                                        var = 'x2', ncond = 'None'))
-}
+radan.tru = read.csv('ExpectedMarginal_radan.csv')
 
 ggplot() +
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if r < 1, f'[1]*' priority > 80%')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  theme_bw()
+  geom_path(data = radan.tru,        mapping = aes(x = x, y = prob+psd, color = 'tru'), linetype = 2) +
+  geom_path(data = radan.tru,        mapping = aes(x = x, y = prob-psd, color = 'tru'), linetype = 2) +
+  geom_path(data = Infer.rad.start, mapping = aes(x = x, y = prob, color = 'start')) +
+  geom_path(data = Infer.rad.rando, mapping = aes(x = x, y = prob, color = 'rando')) +
+  geom_path(data = Infer.rad.adapt, mapping = aes(x = x, y = prob, color = 'adapt')) +
+  facet_grid(var~.) +
+  labs(x = 'Input Variable', y = 'Probability of Acceptance', subtitle = expression('Utopia Distance Criteria'),
+       color = 'Dataset') +
+  scale_color_manual(labels = c('tru' = 'Expected Probability', 
+                                  'start' = 'Before Sampling', 
+                                  'adapt' = 'Adaptive Sampling', 'rando' = 'Random Sampling'),
+                       values = c('tru' = 'grey40', 'start' = '#377eb8', 'adapt' = '#e41a1c', 'rando' = '#4daf4a'),
+                       breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1))))
 
-# Plot with percentiles
-ggplot() +
-  # Percentiles as an area
-  geom_polygon(data = data.frame(x = c(Infer.x1$x, rev(Infer.x1$x)),
-                              y = c(Infer.x1$p25, rev(Infer.x1$p75))),
-            mapping = aes(x = x, y = y, fill = 'x1'), alpha = 0.25) +
-  geom_polygon(data = data.frame(x = c(Infer.x2$x, rev(Infer.x2$x)),
-                              y = c(Infer.x2$p25, rev(Infer.x2$p75))),
-            mapping = aes(x = x, y = y, fill = 'x2'), alpha = 0.25) +
+# Coefficients of determination. Expected values are at double the resolution
+expect1 = filter(radan.tru, var == 'x1')$prob
+expect2 = filter(radan.tru, var == 'x2')$prob
+data.frame(method = c('Before Sampling', 'Adaptive Sampling', 'Random Sampling'),
+           R2.x1 = c(cor(x = filter(Infer.rad.start, var == 'x1')$prob, y = expect1, method = 'pearson')^2, 
+             cor(x = filter(Infer.rad.adapt, var == 'x1')$prob, y = expect1, method = 'pearson')^2,
+             cor(x = filter(Infer.rad.rando, var == 'x1')$prob, y = expect1, method = 'pearson')^2),
+           R2.x2 = c(cor(x = filter(Infer.rad.start, var == 'x2')$prob, y = expect2, method = 'pearson')^2, 
+             cor(x = filter(Infer.rad.adapt, var == 'x2')$prob, y = expect2, method = 'pearson')^2,
+             cor(x = filter(Infer.rad.rando, var == 'x2')$prob, y = expect2, method = 'pearson')^2)
+           )
 
-  # Mean values as a line
-  geom_path(data = Infer.x1, mapping = aes(x = x, y = prob, color = 'x1')) +
-  geom_path(data = Infer.x2, mapping = aes(x = x, y = prob, color = 'x2')) +
-  labs(x = expression('x'), y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if r < 1, f'[1]*' priority > 80%')) +
-  scale_color_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  scale_fill_manual(name = 'Variable', values = c('x1' = 'red', 'x2' = 'blue'), 
-                    labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2]))) +
-  theme_bw() + guides(fill = FALSE)
 
-# Relative importance: inverse of the area under the curve, normalized units
-ggplot(data.frame(import = c(resolution/sum(Infer.x1$p75 - Infer.x1$p25), 
-                      resolution/sum(Infer.x2$p75 - Infer.x2$p25)),
-           var = c('x1', 'x2'))) +
+# Relative importance: inverse of the area under the curve, normalized units, 
+# adjusted by the range of the probabilities' means
+Infer.x1 = filter(Infer.rad.adapt, var == 'x1')
+Infer.x2 = filter(Infer.rad.adapt, var == 'x2')
+Import.radan = data.frame(import = c(diff(range(Infer.x1$prob))*nrow(Infer.x1)/sum(Infer.x1$psd), 
+                                     diff(range(Infer.x2$prob))*nrow(Infer.x2)/sum(Infer.x2$psd)),
+                          var = c('x1', 'x2'),
+                          typ = 'radan')
+Import.radan$sd = sqrt(c(max(Infer.x1$prob)*(1-max(Infer.x1$prob)) + min(Infer.x1$prob)*(1-min(Infer.x1$prob)) * 
+                      diff(range(Infer.x1$prob)),
+                    max(Infer.x2$prob)*(1-max(Infer.x2$prob)) + min(Infer.x2$prob)*(1-min(Infer.x2$prob)) * 
+                      diff(range(Infer.x2$prob)) )/1500 + 
+                  c(var(Infer.x1$psd), var(Infer.x2$psd))/nrow(Infer.x1) )
+
+ggplot(Import.radan) +
   geom_col(mapping = aes(x = var, y = import, fill = var)) +
   labs(x = '', y = 'Relative Importance', fill = 'Variable', 
-       subtitle = expression('Accept if r < 1, f'[1]*' priority > 80%')) +
-  scale_y_continuous(breaks = 0) + scale_x_discrete(labels = c('', '')) + 
-  scale_fill_manual(values = c('purple3', 'orange'))
+       subtitle = expression('Utopia Distance Criteria')) +
+  scale_y_continuous(breaks = c(), expand = expansion(mult = c(0, .1))) + 
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]))) + 
+  scale_fill_manual(values = c('#7fc97f', '#beaed4'))
 
-# Remove the percentiles for later
-Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25')]
-Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25')]
+
+# Store the data for importance ranking comparison later
+Infer.plt = rbind(Infer.x1, Infer.x2);
+# write.csv(Infer.plt, 'Marginals_radan.csv')
+radan.tru$cat = 'tru';         Infer.rad.start$cat = 'start'
+Infer.rad.rando$cat = 'adapt'; Infer.rad.adapt$cat = 'rando'
+write.csv(rbind(radan.tru[, names(radan.tru) %in% names(Infer.rad.start)],
+      Infer.rad.start[, names(Infer.rad.start) %in% names(radan.tru)],
+      Infer.rad.rando[, names(Infer.rad.rando) %in% names(radan.tru)],
+      Infer.rad.adapt[, names(Infer.rad.adapt) %in% names(radan.tru)]), 'Marginals_radan.csv')
+
 
 ```
 
-This highlights the rationale for using percentiles instead of the variance, as the mean value sometimes does not fall between the 25th and 75th percentiles.
-This indicates that the distribution is non-Gaussian, and therefore it is likely that the variance would reflect the skewness, potentially being higher than the mean.
-Using percentiles is guaranteed to be a better reflection of the distribution, and therefore a better estimate for how much variability there is due to the random sampling in the Monte Carlo.
-
 ```{r Utopia distance: Partial Conditional Probabilities}
-# Detrmining the ranges
+# Remove the percentiles for later
+Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25', 'psd')]
+Infer.x2 = Infer.x2[,!names(Infer.x2) %in% c('p75', 'p25', 'psd')]
+
+# Determining the ranges
 p.target1 = 0.5*max(Infer.x1$prob)
 # Since the probability distribution for this function has a single peak, the easiest method is to find the cutoffs for this acceptance.
 x1.lims = range(filter(Infer.x1, prob > p.target1)$x)
@@ -2044,7 +1962,7 @@ if(x2.lims[2] < max(Infer.x2$x)){
 }
 
 # Marginalize over the specific region of x1
-resolution = 50; MCsamp = 2500
+resolution = 50; MCsamp = 1500
 x1.seq = seq(from = min(x1.rng), to = max(x1.rng), length.out = resolution)
 x2.seq = seq(from = min(x2.rng), to = max(x2.rng), length.out = resolution)
 
@@ -2053,36 +1971,31 @@ Infer.x2.x1 = data.frame(); Infer.x1.x2 = data.frame()
 for(i in 1:resolution){
   # x2 | x1
   fill.frame = data.frame(x2 = x2.seq[i], x1 = runif(n = MCsamp, min = min(x1.lims), max = max(x1.lims)))
-  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
-  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], 
-                                              prob = mean(fill.frame$p.del1),
-                                              var = 'x2', ncond = '| x1'))
-
+  res1 = predict(object = mod.rad.adapt, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.ang.adapt, newdata = fill.frame, type = 'UK')
+  fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  Infer.x2.x1 = rbind(Infer.x2.x1, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), var = 'x2', ncond = 1))
   # x1 | x2
   fill.frame = data.frame(x1 = x1.seq[i], x2 = runif(n = MCsamp, min = min(x2.lims), max = max(x2.lims)))
-  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
-  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
+  res1 = predict(object = mod.rad.adapt, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.ang.adapt, newdata = fill.frame, type = 'UK')
   fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
-  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i], 
-                                              prob = mean(fill.frame$p.del1),
-                                              var = 'x1', ncond = '| x2'))
+  Infer.x1.x2 = rbind(Infer.x1.x2, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), var = 'x1', ncond = 1))
 }
 
 # Combine results for visualization
-ggplot(rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1)) +
-  geom_path(mapping = aes(x = x, y = prob, color = ncond)) +
+Infer.plt = rbind(Infer.x1, Infer.x2, Infer.x1.x2, Infer.x2.x1);
+ggplot(Infer.plt) +
+  geom_path(mapping = aes(x = x, y = prob, color = as.factor(ncond))) +
   facet_wrap(var~., nrow = 2) + 
-  labs(x = '', y = 'Probability of Acceptance', 
-       subtitle = expression('Accept if r < 1, f'[1]*' priority < 80%'), color = '') +
+  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Accept if r < 1, f'[1]*' priority < 80%'), 
+       color = '') +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
 # See the improvement due to conditioning
 Infer.diff = data.frame(x = rep(Infer.x1$x, 2),
-                        var = c(rep('x1 | x2', nrow(Infer.x1)), rep('x2 | x1', nrow(Infer.x1))),
+                        var = c(rep('x1', nrow(Infer.x1)), rep('x2', nrow(Infer.x1))),
                         prob = c(Infer.x1.x2$prob - Infer.x1$prob, Infer.x2.x1$prob - Infer.x2$prob))
 ggplot(Infer.diff) +
   geom_path(mapping = aes(x = x, y = prob, color = var)) +
@@ -2091,7 +2004,11 @@ ggplot(Infer.diff) +
   scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
   theme_bw()
 
+# rm(Infer.diff, Infer.plt)
 ```
+
+Like the previous selection criteria, the improvement to the probabilities is related to the variable importance ranking.
+Another note: the probabilities for $x_2$ show the fact that the probabilities should be multimodal, consistent with the description of the accepted region, which has a concavity in it associated with the prioritization of $f_1$ over $f_2$.
 
 ## Comparison of Acceptance Criteria
 Comparison of the boundaries to show how changing the acceptance criteria changes the shape of the near-Pareto set
@@ -2106,7 +2023,7 @@ GPar.front = read.csv(file = 'GPar_fnt_start.csv')
 
 ##
 # Grid of the relevant region to visualize
-lower = c(0, 0); upper = c(3.5,3.5); grid.sz = 100 # Based on previous samples, no boundary is greater than 3.5
+lower = c(0, 0); upper = c(5,5); grid.sz = 100 # Based on previous samples, no boundary is greater than 3.5
 fine.grid = expand.grid(x1 = seq(from = lower[1], to = upper[1], length.out = grid.sz), 
                         x2 = seq(from = lower[2], to = upper[2], length.out = grid.sz))
 fine.grid = fine.grid[,1:2]
@@ -2155,12 +2072,15 @@ fine.grid$ang.sd = res$sd
 fine.grid$prob.radan = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
 
-sep = 0.25
+sep = 0
 ggplot() +
   # Boundaries: +/- some separation from 0.5
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), breaks = c(0.5 + sep, 0.5 - sep)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), breaks = c(0.5 + sep, 0.5 - sep)) +
-  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.delta, color = 'delta'), 
+               breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.cutof, color = 'cutof'), 
+               breaks = c(0.5 + sep, 0.5 - sep)) +
+  geom_contour(data = fine.grid, mapping = aes(x = x1, y = x2, z = prob.radan, color = 'radan'), 
+               breaks = c(0.5 + sep, 0.5 - sep)) +
   # Pareto frontier
   geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = 'black') + 
   geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2, color = 'Pareto'), level = 0.95) + 
@@ -2171,8 +2091,184 @@ ggplot() +
                                 'Pareto' = expression('Pareto Front')),
                      breaks = c('delta', 'cutof', 'radan', 'Pareto')) +
   theme_classic() + theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 3.5)) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
   guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
 
 
 ```
+
+Comparison of importance rankings
+
+```{r Comparison: Relative Importance}
+# Normalize so they all have the same maximum
+Import.delta$r.import = Import.delta$import/max(Import.delta$import)
+Import.cutof$r.import = Import.cutof$import/max(Import.cutof$import)
+Import.radan$r.import = Import.radan$import/max(Import.radan$import)
+# Update names for plotting
+Import.delta$typ = 'Pareto Distance'
+Import.cutof$typ = 'Threshold Cutoff'
+Import.radan$typ = 'Utopia Distance'
+Import = rbind(Import.delta, Import.cutof, Import.radan)
+
+ggplot(Import) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = import+sd, ymin = import-sd), width = 0.5) +
+  facet_wrap(~typ) +
+  labs(x = 'Variable', y = 'Relative Importance') +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]))) +
+  scale_y_continuous(expand = expansion(mult = c(0, .1))) +
+  theme_bw() +
+  scale_fill_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])), name = '')
+
+```
+
+It appears that the absolute values are largely irrelevant, as there is no clear interpretation of what an importance metric of 2.5 means compared to a metric of 1.5.
+The fact that these ratios are unbounded on the upper range indicates that comparison of relative importance for different systems should be normalized for comparison, and only the relative differences matter.
+The difference among selection criteria indicates that the importance is not the importance a particular variable has on the outcome of the objectives (which is held constant), but rather the the outcome of the classifier.
+
+## Feature importance method comparison
+
+Using Strumbelj et al. (2014)'s Monte Carlo estimation to calculate the Shapley values.
+
+$$\phi_j = mean(\hat{f}(\bar{x}) - \hat{f}(\bar{z}))$$
+where the vector components of $\bar{x}$ and $\bar{z}$ are related as follows:
+
+$$x_i = z_i \forall i \neq j$$
+i.e. the importance of variable $j$ is related to the variation that it would cause if it was not controlled.
+
+In this case, $\hat{f}$ gives the probability that the point satisfies the acceptance criteria.
+
+```{r Functions: Shapley values}
+# Function evaluations: output the probability
+f.delta = function(x, mod.dist){
+  fill.frame = data.frame(x1 = x$x1, x2 = x$x2)
+  res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
+  p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
+  return(p.del1)
+}
+f.cutof = function(x, mod.f1, mod.f2){
+  fill.frame = data.frame(x1 = x$x1, x2 = x$x2)
+  res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
+  p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+  return(p.del1)
+}
+f.radan = function(x, mod.rad, mod.ang){
+  fill.frame = data.frame(x1 = x$x1, x2 = x$x2)
+  res1 = predict(object = mod.rad, newdata = fill.frame, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = fill.frame, type = 'UK')
+  p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  return(p.del1)
+}
+
+# Calculating the Shapley values and their standard error
+shap = function(p.x, p.z1, p.z2, nsamp){
+  # Standard error = standard error of the mean, each mean is of nsamp samples
+  # Convert probabilities into a matrix with nsamp rows
+  p.x  = matrix(data = p.x,  nrow = nsamp)
+  p.z1 = matrix(data = p.z1, nrow = nsamp)
+  p.z2 = matrix(data = p.z2, nrow = nsamp)
+  
+  # x1 Shapley values
+  x1.m = apply(p.x - p.z1, 2, mean)
+  x1.shap = mean(x1.m)
+  x1.s = sd(x1.m)
+  
+  # x1 Shapley values
+  x2.m = apply(p.x - p.z2, 2, mean)
+  x2.shap = mean(x2.m)
+  x2.s = sd(x2.m)
+  return(c(x1.shap, x2.shap, x1.s, x2.s))
+}
+```
+
+```{r Shapley Value Calculation}
+nsamp = 1500*50 # Same number of points used in the calculation for the marginals
+# Create random vectors x and z
+x = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
+               x2 = runif(n = nsamp, min = 0, max = 5))
+z.x1 = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
+               x2 = x$x2)
+z.x2 = data.frame(x1 = x$x1,
+               x2 = runif(n = nsamp, min = 0, max = 5))
+
+# Shapley values for x1
+# p.x  = f.delta(x = x,    mod.dist = mod.dist.adapt)
+# p.z1 = f.delta(x = z.x1, mod.dist = mod.dist.adapt)
+# p.z2 = f.delta(x = z.x2, mod.dist = mod.dist.adapt)
+s = shap(p.x, p.z1, p.z2, nsamp = 1500)
+shap.delta = s[1:2]; shap.delta.s = s[3:4]
+# shap.delta   = c(mean(p.x - p.z1), mean(p.x - p.z2))
+# shap.delta.s = c(sd(p.x - p.z1),   sd(p.x - p.z2))
+
+p.x  = f.cutof(x = x,    mod.f1 = mod.f1.adapt, mod.f2 = mod.f1.adapt)
+p.z1 = f.cutof(x = z.x1, mod.f1 = mod.f1.adapt, mod.f2 = mod.f1.adapt)
+p.z2 = f.cutof(x = z.x2, mod.f1 = mod.f1.adapt, mod.f2 = mod.f1.adapt)
+s = shap(p.x, p.z1, p.z2, nsamp = 1500)
+shap.cutof = s[1:2]; shap.cutof.s = s[3:4]
+# shap.cutof   = c(mean(p.x - p.z1), mean(p.x - p.z2))
+# shap.cutof.s = c(sd(p.x - p.z1),   sd(p.x - p.z2))
+
+p.x  = f.radan(x = x,    mod.rad = mod.rad.adapt, mod.ang = mod.ang.adapt)
+p.z1 = f.radan(x = z.x1, mod.rad = mod.rad.adapt, mod.ang = mod.ang.adapt)
+p.z2 = f.radan(x = z.x2, mod.rad = mod.rad.adapt, mod.ang = mod.ang.adapt)
+s = shap(p.x, p.z1, p.z2, nsamp = 1500)
+shap.radan = s[1:2]; shap.radan.s = s[3:4]
+# shap.radan   = c(mean(p.x - p.z1), mean(p.x - p.z2))
+# shap.radan.s = c(sd(p.x - p.z1),   sd(p.x - p.z2))
+
+Shap = data.frame(import = c(shap.delta, shap.cutof, shap.radan),
+                  r.import = c(shap.delta/max(abs(shap.delta)), shap.cutof/max(abs(shap.cutof)),
+                               shap.radan/max(abs(shap.radan))),
+                  sd = c(shap.delta.s, shap.cutof.s, shap.radan.s),
+           var = c('x1', 'x2'),
+           typ = Import$typ)
+
+ggplot(Shap) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = import+sd, ymin = import-sd), width = 0.5) +
+  facet_wrap(~typ) +
+  labs(x = 'Variable', y = 'Shapley Value') +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]))) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0))) +
+  theme_bw() +
+  scale_fill_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])), name = '')
+
+(ggplot(Import) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = import+sd, ymin = import-sd), width = 0.5) +
+  facet_wrap(~typ) +
+  labs(x = 'Variable', y = 'Relative Importance') +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]))) +
+  scale_y_continuous(expand = expansion(mult = c(0, .1))) +
+  theme_bw() +
+  scale_fill_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])), name = '')) /
+(ggplot(Shap) +
+  geom_col(mapping = aes(x = var, y = (import), fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymax = import+sd, ymin = import-sd), width = 0.5) +
+  facet_wrap(~typ) +
+  labs(x = 'Variable', y = 'Shapley Value') +
+  scale_x_discrete(labels = c(expression('x'[1]), expression('x'[2]))) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +
+  theme_bw() +
+  scale_fill_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])), name = '')
+)
+
+# rm(x, z.x1, z.x2, p.x, p.z1, p.z2)
+
+# Store the importance rankings
+Import$method = 'Marginal'
+Shap$method = 'Shapley'
+write.csv(rbind(Import, Shap), 'Importance.csv')
+```
+
+From the Shapley value calculations:
+* The variance is very large, despite using the same number of calculations as our method based on marginalization.
+* The Shapley values show that the impact of all variables can be negative, indicating that on average, changing either x1 or x2 will lead to a decrease in the probability of being accepted.
+* The relative magnitude of $x_1$ and $x_2$ are consistent with the previous importance rankings in that $x_1$ typically has a larger magnitude Shapley value.
+
+Overall, the Shapley values are not particularly useful in determining which variable is most important for meeting the selection criterion because of the high variance.
+
+
+

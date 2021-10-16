@@ -10,9 +10,9 @@ output: html_notebook
 
 # Description
 This notebook performs preliminary calculations on a simulated CO2 capture process driven by PCET pH swings.
-The work assumes that the redox molecule is a quinone (ie. a 2 electron/2 proton PCET process), and restricts the search to only combinations of properties that a quinone is likely to have.
+The work assumes that the redox molecule is a quinone (or, more generally, a 2 electron/2 proton PCET process with the possibility of deprotonation in the reduced state), and restricts the search to only combinations of properties that a quinone is likely to have based on available data.
 
-Specifically, this particular notebook determines:
+Specifically, this particular notebook determines the following preparator calculations:
 
 * the ranges of the variables based on existing data
 * penalty functions for the energy and/or flux
@@ -25,7 +25,7 @@ Specifically, this particular notebook determines:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-Clear the workspace and define the functions.
+Clear the workspace and load the packages.
 
 ```{r Load Packages}
 # Setup
@@ -46,20 +46,20 @@ library(GA)
 ```
 
 ## Parameter space
-Data for restricting the quinone features is based on results from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
+Data for restricting the quinone features is based on data from Huynh et al. J Am Chem Soc. 2016 December 14; 138(49): 15903–15910. doi:10.1021/jacs.6b05797.
 
-Remove points that are not likely to be stable within the electrochemcial window of water. For the process:
-Q + 2e- + 2H+ <-> QH2
-We can roughly assume that the reduction reaction is competing with hydrogen evolution
-2H+ + 2e- <-> H2
+Remove points that are not likely to be stable within the electrochemcial window of water. For the process
+$Q + 2e^- + 2H^+ <-> QH_2$
+we can roughly assume that the reduction reaction is competing with hydrogen evolution
+$2H^+ + 2e^- <-> H_2$
 and the oxidation reaction is competing with oxygen evolution
-2H2O + 4OH- <-> O2 + 4e-
+$2H_2O + 4OH^- <-> O_2 + 4e^-$
 
 Both of these reactions are pH dependent, so the cutoff values are not obvious. 
-At the extreme, the reduction potential of hydrogen evolution will be at its highest (most likely to compete with the quinone reduction) at the lowest pH, which would typically be at the pH where carbonic acid makes up > 90% of the CO2 speciation (pH = 5.33).
-Similarly, the reduction potential of oxygen evolution will be at its lowest at the highest pH, which would be just above the hydroquinone's buffer region (the higher of its pKas + 1).
+At the extreme, the reduction potential of hydrogen evolution will be at its highest (most likely to compete with the quinone reduction) at the lowest pH, which would typically be at the pH where carbonic acid makes up > 90% of the CO2 speciation (pH < 5.33).
+Similarly, the reduction potential of oxygen evolution will be at its lowest at the highest pH, which would be around the hydroquinone's buffer region. As a conservative estimate, assume it is the higher of its pKas + 1.
 
-Practically, the quinone electrochemistry has much faster kinetics than either gas evolution reaction in the absence of a specific water-splitting catalyst, so a tolerance of about 200 mV will be added to accommodate.
+Practically, the quinone electrochemistry has much faster kinetics than either gas evolution reaction in the absence of a specific water-splitting catalyst, so using these potentials as a bound should limit the gas evolution reactions sufficiently.
 
 ```{r}
 # Load data and correlation plot package
@@ -110,7 +110,9 @@ rm(h2.evo, i, j, o2.evo, cor.mat)
 ```
 
 While all four variables are strongly co-correlated, this is largely irrelevant because the thermodynamic and kinetic analyses do not rely on the reduction potential besides assuming that gas evolution does not occur.
-There is a Bronsted-like relationship between the reduction potential and the reaction rate of the deprotonated hydroquinone nucleophilically attacking the CO2 [Simpson & Durand 1990, doi: 10.1016/0013-4686(90)85012-C], but this is not likely to be the dominant mechanism because the reaction with OH- is approximately 10 to 100 times faster in water.
+There is a Bronsted-like relationship between the reduction potential and the reaction rate of the deprotonated hydroquinone nucleophilically attacking the CO2 [Simpson & Durand 1990, doi: 10.1016/0013-4686(90)85012-C], but this is not likely to be the dominant mechanism because the reaction with $OH^-$ is approximately 10 to 100 times faster in water aqueous environments.
+
+Because the pKas are co-correlated, to make sampling easier, I convert the system into a free variable pKa and the difference between them. This conversion leads to a rectangular input space, rather than a parallelogram shape.
 To determine which pKa will be the free variable and which will be represented by an error term of the linear regression, the relative normalized standard deviations of the errors were compared. 
 
 ```{r}
@@ -152,7 +154,7 @@ rm(fit.ln, x, var)
 
 ```
 
-The variance alone show very little difference between the choice, which pKa1 being the free variable having a slightly better response.
+The variance alone show very little difference between the choices, which pKa1 being the free variable having a slightly better response.
 This is confirmed by the distribution of the residuals (omitting the single outlier), which shows that having pKa1 as the free variable gives a distribution closer to a normal distribution.
 Therefore, the range of pKas is:
 
@@ -162,7 +164,7 @@ pKa2 = f(pKa1) + error
 While the error for pKa2 is nearly Gaussian in shape, the mathematical description works better if it is sampled from a uniform distribution. From the data, 98% of the data is captured within an error of -3.9 to +5.5.
 
 This range of pKas has 2 problems:
-* It is very unlikely that the second pKa is lower than the first. Only one measurement violates this criteria (ie. is below red dotted line) within measurement error.
+* It is very unlikely that the second pKa is lower than the first. Only one measurement violates this criteria (ie. is below the lower of the red dotted lines) within measurement error.
 * The pH of the process is not likely to extend below 3 because the primary acid in question is carbonic acid. This means that pKa values below 2 are effectively the same and do not need to be sampled further. Therefore, the lower bound for pKa1 can be increased to reduce the search space.
 
 The refined search space is:
@@ -175,24 +177,26 @@ This construction reduces the size of the search space, and thus requires fewer 
 
 ## Objective Functions
 
-The objective function for energy demand solves the set of equilibrium equations across the range of charge and gas transfers based on four state variables: 
+The objective function for energy demand solves the set of equilibrium equations across the range of charge and gas transfers based on four variables defining the state of the system: 
 total dissolved inorganic carbon (DIC), state of charge (xA), partial pressure of CO2 (pCO2), and solution pH.
 
 The minimum energy demand assumes all charge is passed at the Nernst potential, which is updated as charge passes through the system.
 The energy demand assumes anti-symmetric operation, ie. quinone reduction at the cathode and hydroquinone oxidation at the anode.
-Charge balance of the anolyte and catholyte are assumed to be the result of the background electrolyte travelling across an ion selective membrane.
+Charge balance of the anolyte and catholyte are assumed to be the result of the background electrolyte traveling across an ion selective membrane.
 The gas transfers are assumed to be separate stages from the electrochemical stages, purely for the sake of simplicity. 
 This estimate for the minimum energy is a slight overestimate because of over-pressurization of the CO2; coupling the gas transfer steps with the appropriate electrochemical steps decreases the minimum energy by approximately a factor of 2.
-The function can accommodate feed CO2 gases of any partial pressure, but this study is interested in 3 applications: coal flue gas (15v% feed to 1.5v% lean), air revitalization (2000 ppm to 1000 ppm), and direct air capture (400 ppm to 250 ppm).
+The function can accommodate feed CO2 gases of any partial pressure, but this study is interested in application to coal flue gas (15v% feed to 1.5v% lean).
+
+### Explicit and derived functions
 
 This code is broken down into explicit functions and derived functions.
 Explicit functions are a series of sub-functions which solve for one of the four state variables using knowledge of the other three state variables and the solution conditions. 
 These functions solve the set of chemical equilibrium, mass, and charge balance equations for the bulk solution.
-Derived functions use the information from the explicit functions to determine relevant information for determining the energy demand and CO2 flux.
+Derived functions use the information from the explicit functions to determine relevant information for determining the energy demand and CO2 flux but are not themselves the energy demand or flux.
 
 For the purpose of generalization, these equations are written with the variables 'beta1' and 'beta2' which describe the deprotonated hydroquinone's affinity for CO2, forming an organic carbonate. 
 This species is ignored in this particular notebook for the above-stated reason (slow kinetics), and therefore both variables are set to 0.
-These variables are included because other compounds have been proposed to capture CO2 primarily through that mechanism, and thus they could also be studied with this script.
+These variables are included because other compounds have been proposed to capture CO2 primarily through that mechanism, and thus they could also be studied with this set of functions.
 
 ```{r PCET Explicit functions}
 # Direct explicit functions
@@ -406,14 +410,16 @@ pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
 ```
 
 
-Penalty function: logistic weighting function such that for values where 90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
+### Penalty function
+The penalty function is a logistic weighting function such that for values where 90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
 The hyperparameters L, k, and x0 of the logistic component of the weighting function were tuned by fitting to a variety of minimum lean gas pressures on the range of 0.016 to 2.5 atm and then selected as the modal value.
 The logistic function was tuned such that the growth rate steepness captured the range of 0 to 90% capture; when no CO2 could be captured, the weight is applied fully.
 
 A penalty function is not necessary for the flux because insufficient capture would manifest as negative fluxes. It may still show up in the Pareto frontier, but it can easily be filtered out, unlike the cases with the energy demand.
 
-Further tuning of the exact value of L is based on the minimumm energy demand for the specific lean gas minimum.
+Further tuning of the exact value of L is based on the minimum energy demand for the specific lean gas minimum.
 
+An initial test of the simplest weighting function using only the ratio of the work of separations as the maximum weight:
 ```{r}
 GPar.all = read.csv(file = 'GPar_WeightTuningSet.csv')
 
@@ -447,7 +453,7 @@ ggplot(filter(GPar.all, Energy.kJ.mol*weight < 100)) +
 
 ```
 
-Simple weighted energy is not enough of a penalty; the minimum energy for systems that do not capture >90% of the CO2 are still showing lower energy demands. 
+Simple weighted energy is not enough of a penalty; the minimum energy for systems that do not capture >90% of the CO2 are still showing lower energy demands (very high lean gas pressures are ~0 kJ/mol C)
 
 Using the complete expression for minimum energy demand instead of the simplified form, which makes a number of assumptions about negliglbe terms.
 
@@ -556,7 +562,8 @@ ggplot(filter(GPar.all, Energy.kJ.mol*weight2 < 100)) +
 
 ```
 
-While better, using the complete energy is not fixed upon this correction in that the minimum energy is still at a value where the flux would be negative. Amplifying an additional multiplicative factor to amplify the weight:
+While better when using the complete expression, using the complete weight expression does not completely correct the fact that the minimum in the energy occurs at a condition when less than 90% of the CO2 was removed.
+Amplifying an additional multiplicative factor to amplify the weight:
 
 ```{r}
 weight.fun3 = function(pCO2.lean){
@@ -648,7 +655,7 @@ ggplot(filter(GPar.all, Energy.kJ.mol*weight3 < 100)) +
 
 ```
 
-Multiplying the logarithmic term by a factor of 25 appears to be sufficiently large to adjust the energies without overshooting the weight.
+Multiplying the logarithmic term by a factor of 25 appears to be sufficiently large to adjust the energies without overshooting the weight and negatively impacting the energy demands of conditions that do capture enough CO2.
 
 ```{r}
 rm(weight.fun, weight.fun2, weight.fun3, GPar.all)
@@ -913,7 +920,6 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
 
 ```
 
-
 To work with GPareto, the two objective functions need to combined, and the input should be a matrix, not a dataframe. I account for this with a wrapper function to simplify the process.
 
 ```{r}
@@ -961,7 +967,7 @@ PCET.obj.flu = function(inputs){
 
 ```
 
-# Target values
+## Target values
 
 For both the energy and flux, the most logical comparison is to the industry standard of 30wt% MEA.
 
@@ -980,8 +986,8 @@ using the following constants (same source or listed above in the function):
 * reaction rate constant = 7570 L/mol*s
 * reactor mass transfer coefficient (as above) = 0.1 cm/s (assume a fast design)
 
-hatta number = sqrt( D k C) / kL
-E = 1 + D*cMEA / (stoichio * Dco2 * Cco2)
+$Ha = \sqrt{ D k C} / k_L$
+$E = 1 + D*c_{MEA} / (z * D_{CO_2} * C_{CO_2})$
 
 ```{r}
 C.MEA = 5

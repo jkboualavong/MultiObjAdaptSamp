@@ -17,17 +17,17 @@ The intention is for this procedure to be applied to optimization problems where
 * I. Setup: find the Pareto frontier of the 2D optimization problem
 1. Solve objective functions with a space filling method to obtain an initial set of data.
 2. Use GPareto to find the Pareto front.
-3. Calculatate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics will be used to establish the acceptable suboptimal performance and the relative importance of each input variable.
+3. Calculate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics are used in the selection criteria that define acceptable suboptimal performance and the relative importance of each input variable.
 
 * II. Acceptable suboptimal performance (the "near-Pareto set")
 4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
-5. Using Gaussian processes, create a new objective called the "sample utility" function that describes the probability of meeting the desired distance and objective function criteria, multiplied by the variance.
-6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or the sample utility function maximum drops below a specified threshold, often relative to first maximum.
+5. Using Gaussian processes, create a new objective called the "total uncertainty" function that describes the uncertainty in classifying the performance (acceptable or unacceptable) multiplied by the uncertainty in the actual value of the selection criteria functions.
+6. Sample new points iteratively by maximizing the total uncertainty function. Repeat until the computational budget has been expended or the total uncertainty function maximum drops below a specified threshold, often relative to first iteration.
 
 * III. Feature importance of each input variable
 7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about that input variable.
 8. Calculate the variance in the probability of the 1-variable conditional probability estimate. This variance represents the contribution due to all of the other variables in question.
-9. The feature importance metric is the range of the probability divided by the integral of the variance. The greater the range of probabilities, the more the single variable can drive the likelihood, but this should be normalized by the amount that the other variables contribute.
+9. The feature importance metric is the range of the probability divided by the average of the variance. The greater the range of probabilities, the more the single variable can influence the likelihood, but this is relative to the amount that the other variables contribute.
 
 * IV: Suggested ranges
 10. For the most important variable, determine the input values that give the peak response. This is the suggested input range.
@@ -528,9 +528,11 @@ write.csv(GPar.all, file = 'GPar_all_data.csv')
 write.csv(GPar.front, file = 'GPar_fnt_data.csv')
 ```
 
-3. Calculatate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics will be used to establish the acceptable suboptimal performance and the relative importance of each input variable.
+3. Calculate the normalized distance in the objective space and f1/f2 prioritization of each point to the Pareto front. These two metrics are used in the selection criteria that define acceptable suboptimal performance and the relative importance of each input variable.
 
-Normalization is defined such that (0,0) is the utopia point and (1,0) and (0,1) are the single-objective optimizations. The prioitization is the angle $\theta$ made between the point in the normalized objective space and the x-axis, i.e. the axis of purely prioritizing objective 2. This angle is re-mapped to a percentage from 0 to 100% prioritization of objective 2. The distance between each point and the Pareto front is the distance in the normalized space
+Normalization is defined such that (0,0) is the utopia point and (1,0) and (0,1) are the single-objective optimization. 
+The prioritization is the angle $\theta$ made between the point in the normalized objective space and the x-axis, i.e. the axis of purely prioritizing objective 2. This angle is re-mapped to a percentage from 0 to 100% prioritization of objective 2. 
+The distance between each point and the Pareto front is the distance in the normalized space.
 
 ```{r Map to Normalized Objective Space}
 GPar.all = read.csv(file = 'GPar_all_data.csv')
@@ -627,7 +629,7 @@ rm(gplt.start, gplt.GPar, gplt.Norm)
 ## II. Acceptable suboptimal performance (the "near-Pareto set")
 4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
 
-For this example, defines $\delta$ as the distance between the point and the point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 1$.
+For this example, define $\delta$ as the distance between the point and a point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 1$.
 
 ```{r Load data: Accept Distance less than 1}
 # Load data
@@ -642,11 +644,11 @@ GPar.front = GPar.front[,nm]
 
 ```
 
-5. Using Gaussian processes, create a new objective called the "sample utility" function that describes the probability of meeting the desired distance and objective function criteria, multiplied by the variance.
+5. Using Gaussian processes, create a new objective called the "total uncertainty" function that describes the uncertainty in classifying the performance (acceptable or unacceptable) multiplied by the uncertainty in the actual value of the selection criteria functions.
 
-The sample utility function prioritizes points that are likely to describe the boundary (normalized distance equal to 1) with the greatest model uncertainty at the time. 
-When the point is sampled, this means information gained is maximized. 
-Points on the boundary have intermediate acceptance probabilities, ie. close to 0.5, while points with the greatest model uncertainty have the greatest standard error. 
+The total uncertainty function prioritizes points that are likely to describe the boundary (in this selection criterion: normalized distance equal to 1) with the greatest model uncertainty at the time. 
+When a point is sampled, these uncertainties become zero because the result becomes known, indicating that the point that would lead to the most information gain would be the point where the total uncertainty is maximized.
+Points on the boundary have intermediate acceptance probabilities, ie. close to 0.5, while points with the greatest model uncertainty have the greatest standard error.
 Therefore, the utility function can be estimated as the product of the standard error, the probability of being accepted, and the probability of being rejected.
 
 Visualize the first iteration to show that it actually samples the point that is most useful
@@ -749,9 +751,10 @@ g1 + g2 + g3
 
 ```
 
-6. Sample new points iteratively by maximizing the sample utility function. Repeat until the computational budget has been expended or the sample utility function maximum drops below a specified threshold, often relative to first maximum.
+6. Sample new points iteratively by maximizing the total uncertainty function. Repeat until the computational budget has been expended or the total uncertainty function maximum drops below a specified threshold, often relative to first iteration.
 
-The threshold is when the sample utility function's maximum falls below 5% of the sample utility of the first iteration.
+The cutoff threshold is when the sample utility function's maximum falls below 5% of the sample utility of the first iteration, or when the budget has been expended.
+For consistency with the Pareto frontier search, the budget is set to 20 (10 times the nubmer of dimensions).
 
 ```{r Iteration loop: Accept distance less than 1, message=FALSE, warning=FALSE}
 budget = 20
@@ -868,12 +871,8 @@ g4 + g5 + g6
 
 
 ## III. Feature importance of each input variable
-
 7. Calculate the conditional probability that a point will fall within the near-Pareto set given only information about that input variable.
 
-From the above calculations, the most important variable is x1, as it has a stronger relationship between distance in the objective space and distance in the input space (i.e. a larger perturbation in the input will lead to a less optimal result).
-
-For the purposes of illustration, both P[accept | $x_1$] and P[accept | $x_2$] will be shown to show how the regression is consistent with the probabilities.
 The conditional probability is calculated by marginalization of the GP probabilities. From the GP, the value of P[accept | $x_1, x_2$] can be calculated, and the relationship between P[accept | $x_1, x_2$] and  P[accept | $x_1$] is the integral:
 
 P[accept | $x_1$] = integral( P[accept | $x_1, x_2$]  P[$x_2$] $dx_2$ )
@@ -882,7 +881,9 @@ In the absence of data to inform the distribution of $x_2$, this distribution is
 
 8. Calculate the variance in the probability of the 1-variable conditional probability estimate. This variance represents the contribution due to all of the other variables in question.
 
-9. The feature importance metric is the range of the probability divided by the integral of the variance. The greater the range of probabilities, the more the single variable can drive the likelihood, but this should be normalized by the amount that the other variables contribute.
+The integral equates to a mean value, which can be estimated by Monte Carlo sampling. The variance in this estimate is the variance among the samples.
+
+9. The feature importance metric is the range of the probability divided by the average of the variance. The greater the range of probabilities, the more the single variable can influence the likelihood, but this is relative to the amount that the other variables contribute.
 
 ```{r Feature Importance: 1-Variable Marginalization}
 # Load data
@@ -984,7 +985,7 @@ write.csv(rbind(delta.tru[, names(delta.tru) %in% names(Infer.dist.start)],
 
 ```
 
-While adaptive sampling improves the results compared to without any additional samples, random sampling actually appears to improve the result more for $x_1$.
+While adaptive sampling improves the results compared to without any additional samples, random sampling sometimes appears to improve the result more for $x_1$.
 The expected behavior, where adaptive sampling leads to a better estimate than random sampling, is true for $x_2$.
 This is largely due to issues with the estimation of the Pareto front, leading to propagation of errors in the distance and therefore in the resulting models.
 
@@ -1080,9 +1081,9 @@ Recalculating the expected marginalization based on the estimated Pareto front (
 
 In this case, with only 2 inputs, only one iteration needs to be performed, ie. accept | $x_2, x_1 = x_{1,opt}$
 
-To account for possible uncertainty, the conditional for $x_1$ will be within its optimal region, defined by the values of $x_1$ with at least half of the max probability.
+To account for possible uncertainty in the estimate of the optimal $x_1$, the conditional for $x_1$ will be within its optimal region, defined by the values of $x_1$ with at least half of the max probability.
 
-For illustrative purposes, the inverse will also be shown (accept | $x_1, x_2 = x_{2,opt}$). This may be useful is, for instance, $x_2$ is easier to measure.
+For illustrative purposes, the other conditional will also be shown (accept | $x_1, x_2 = x_{2,opt}$). This may be useful if, for instance, $x_2$ is easier to measure.
 
 ```{r Partial Conditional Probabilities}
 # Remove the percentiles for later
@@ -1182,12 +1183,15 @@ ggplot(Infer.diff) +
 
 ```
 
-As expected, conditioning $x_2$ on $x_1$ leads to a larger improvement in the probability of acceptance than the other way around.
+As expected from the importance ranking, conditioning $x_2$ on $x_1$ leads to a larger improvement in the probability of acceptance than the other way around.
 
 ## Alternative Acceptance Criteria
 For the purpose of illustration, the above method will be repeated with two other acceptance criteria:
 * Objective function values below a specific threshold.
 * Within a specific normalized distance of the utopia point and a specified prioritization of the two objective functions.
+
+The first criteria is analogous to a design problem with specific constraints that must be met, and the location of the Pareto frontier is irrelevant to these goals.
+The second criteria defines a system with a predefined prioritization of objectives, and defines proximity to optimality not on the Pareto frontier, but on the utopia point.
 
 ### Threshold cutoff
 For simplicity, the cutoff values are the normalized values of 1 for both objectives. This is criteria, the acceptable points are those that fall within the normalized box defined by the utopia point (0,0) and the pseudo-nadir point (1,1).
@@ -1443,7 +1447,7 @@ g4 + g5 + g6
 rm(g1, g2, g3, g4, g5, g6)
 ```
 
-As indicated by this acceptance criteria, the boundary of the set it well defined with just the Pareto frontier, so additional iterations are not as necessary. Continuing with the procedure to show the feature importance and acceptance probability procedures.
+As indicated by this acceptance criteria, the boundary of the set is well defined with just the Pareto frontier, so additional iterations are not as necessary. Continuing with the procedure to show the feature importance and acceptance probability procedures.
 
 ```{r Threshold: Feature Importance}
 # Load data
@@ -1549,7 +1553,7 @@ write.csv(rbind(cutof.tru[, names(cutof.tru) %in% names(Infer.cut.start)],
 ```
 
 Unlike with the Pareto distance criteria, these cutoff criteria did not have the propagation of error from bad estimates of the Pareto front.
-In general, it appears the local maximum that happens when $x_3 = 3$ causes issues for both criteria in their marginals.
+In general, it appears the local maximum that happens when $x_2 = 3$ causes issues for estimating their marginals, with a consistent underestimate.
 Additionally, the feature importance criteria shows that the relative importance is almost nearly balanced, showcasing how the selection criteria can alter the relative importance.
 
 The peak in the single-variable marginalization indicates that $x_1$ is, in fact, more important, as even without knowledge of $x_2$, the probability of acceptance can be as high as 0.6.
@@ -1647,7 +1651,7 @@ ggplot(Infer.diff) +
 ```
 
 ### Utopia Distance and Prioritization
-Since the utopia point is set to (0,0), the distance to the utopia point is simple to calculate from the normalized coordinates. Acceptable points are those that prioritize the first objective by at least 80%, which can be determined by the angle theta.
+Since the utopia point is set to (0,0), the distance to the utopia point is simple to calculate from the normalized coordinates. Acceptable points are those that prioritize the first objective by at least 20%, which can be determined by the angle theta.
 
 Load the original dataset.
 
@@ -1897,8 +1901,6 @@ g4 + g5 + g6
 rm(g1, g2, g3, g4, g5, g6)
 ```
 
-Fewer points were needed to reach convergence due to a relatively narrow uncertainty band to start.
-
 ```{r Utopia distance Feature Importance}
 # Load data
 GPar.start = read.csv(file = 'GPar_all_start.csv')
@@ -2008,6 +2010,9 @@ write.csv(rbind(radan.tru[, names(radan.tru) %in% names(Infer.rad.start)],
 
 ```
 
+The marginalized probability here is generally an underestimate of the expected probability, particularly for $x_2$. Adaptive sampling appears to qualitatively improve the results, but the difference is small.
+The relative importance of $x_1$ and $x_2$ flip in this criteria, showing how the relative importance is dependent on the question being asked.
+
 ```{r Utopia distance: Partial Conditional Probabilities}
 # Remove the percentiles for later
 Infer.x1 = Infer.x1[,!names(Infer.x1) %in% c('p75', 'p25', 'psd')]
@@ -2101,6 +2106,7 @@ ggplot(Infer.diff) +
 
 # rm(Infer.diff, Infer.plt)
 ```
+Oddly, while the importance ranking for $x_2$ was greater than that of $x_1$, conditioning $x_2$ on $x_1$ still led to the greatest improvement. However, the fact that the importance rankigns were very similar to each other may play a part in it; propagating the uncertainty in the uncertainty estimates would be helpful in discerning if the difference is actually substantial enough to claim that $x_2$ was in fact more important.
 
 ## Comparison of Acceptance Criteria
 Comparison of the boundaries to show how changing the acceptance criteria changes the shape of the near-Pareto set
@@ -2271,50 +2277,6 @@ shap = function(p.x, p.z1, p.z2, nsamp){
   return(c(x1.shap, x2.shap, x1.s, x2.s))
 }
 ```
-
-
-```{r}
-GPar.adapt = read.csv(file = 'GPar_Accept_Delta1.csv')
-mod.dist.adapt = fill.sample.mod(GPar.data = GPar.adapt, input.name = c('x1', 'x2'), output.name = 'dist')
-
-shap = function(x, nsamp, mod.dist){
-  # Calculate shapley value for each point in x
-  p.x = f.delta(x = x, mod.dist = mod.dist)
-  x1.shap = c(); x2.shap = c()
-  for(i in 1:nrow(x)){
-    x1 = x$x1[i]; x2 = x$x2[i];
-    z1 = data.frame(x1 = x1, x2 = runif(n = nsamp, min = 0, max = 5))
-    z2 = data.frame(x2 = x2, x1 = runif(n = nsamp, min = 0, max = 5))
-    
-    # Calculate
-    p.z1 = f.delta(x = z1, mod.dist = mod.dist)
-    p.z2 = f.delta(x = z2, mod.dist = mod.dist)
-    
-    # Mean difference
-    x1.shap = c(x1.shap, mean(p.x[i] - p.z1))
-    x2.shap = c(x2.shap, mean(p.x[i] - p.z2))
-  }
-  
-  
-  return(c(mean(x1.shap), mean(x2.shap), sd(x1.shap), sd(x2.shap)))
-}
-
-nsamp = 1500; nmean = 50
-x = data.frame(x1 = runif(n = nmean, min = 0, max = 5),
-               x2 = runif(n = nmean, min = 0, max = 5))
-# p.x = f.delta(x = x, mod.dist = mod.dist.adapt)
-res = shap(x = x, nsamp = nsamp, mod.dist = mod.dist.adapt)
-
-```
-
-```{r}
-
-ggplot(data.frame(shap.delta = res[1:2], shap.delta.s = res[3:4], var = c('x1', 'x2'))) +
-  geom_col(mapping = aes(x = var, y = shap.delta)) +
-  geom_errorbar(mapping = aes(x = var, ymin = shap.delta - shap.delta.s, ymax = shap.delta + shap.delta.s))
-
-```
-
 
 ```{r Shapley Value Calculation}
 nsamp = 1500*50 # Same number of points used in the calculation for the marginals
