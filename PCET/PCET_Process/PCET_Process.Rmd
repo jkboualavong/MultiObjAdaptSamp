@@ -523,7 +523,7 @@ Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
   base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
   
   # Interface CO2 concentration - assume 90% capture from the inlet
-  CO2.int = 0.1*pCO2.in*kH
+  CO2.int = pCO2.in*kH
   
   # Hatta number: reaction rate / mass transfer rate
   Ha = sqrt(Dco2*base*k.rate)/kL
@@ -572,7 +572,7 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
     soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
 
     # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
-    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    soln41$delC = (pCO2.in - out.pCO2)*kH
     # Flux: delC * kL * E, assume kL = 0.1 cm/s
     # Unit conversion: L to cm3, cm2 to m2
     flux = soln41$delC*soln41$E*0.1 * (1/1e3) * (100^2)
@@ -758,7 +758,7 @@ For the purposes of initial interpretation, any acid or base concentration below
 
 The selection criteria for a competitive result:
 * energy demand < ~35 kJ/mol C to be competitive with temperature-swing processes
-* flux > 1/10th of the flux of MEA capture processes (calculated to be ~2.2 mmol/m2*s)
+* flux > 1/10th of the flux of MEA capture processes (calculated to be ~22 mmol/m2*s)
 
 ```{r Optimal Capture Marginals: Setup}
 # Load dataset
@@ -788,18 +788,18 @@ ggplot(filter(GPar.nat, Energy.kJ.mol < 150, Flux.mol.m2s > 0)) +
 
 # Regions of interest
 # Region 1: acceptable results: based on MEA
-reg.full = data.frame(min.flux = 0.22e-3,
+reg.full = data.frame(min.flux = 2.2e-3,
                      max.flux = max(GPar.front$Flux.mol.m2s),
                      min.ener = min(GPar.front$Energy.kJ.mol), max.ener = 33)
-# Region 2: the right-hand side of high flux but moderate energy, i.e. flux > 2.2 mmol/m2s. Increase the energy above 45 to capture the Pareto front there
-reg.flux = data.frame(min.flux = 2e-3, max.flux = max(GPar.front$Flux.mol.m2s),
+# Region 2: the right-hand side of high flux but moderate energy, i.e. flux > 22 mmol/m2s. Increase the energy above 45 to capture the Pareto front there
+reg.flux = data.frame(min.flux = 22e-3, max.flux = max(GPar.front$Flux.mol.m2s),
                      min.ener = min(GPar.front$Energy.kJ.mol),
                      max.ener = 45)
 # Region 3: the bottom section of low energy but moderate flux
-reg.ener = data.frame(min.flux = 0.22e-3,
+reg.ener = data.frame(min.flux = 2.2e-3,
                      max.flux = max(GPar.front$Flux.mol.m2s), 
                      min.ener = min(GPar.front$Energy.kJ.mol),
-                     max.ener = mean(range(filter(GPar.front, Flux.mol.m2s < 2.4e-3)$Energy.kJ.mol)))
+                     max.ener = mean(range(filter(GPar.front, Flux.mol.m2s < 24e-3)$Energy.kJ.mol)))
 # Plotting
 ggplot() +
   geom_rect(reg.full, 
@@ -954,7 +954,7 @@ for(i in 1:length(mod.ener.a.rel)){
   p.capt[,i] = (1 - pnorm(q = 0, mean = fill.f$mean, sd = fill.f$sd))
   # Repeat with base
   fill.e = predict(mod.ener.b.rel[[i]], newdata = rand.samp, type = 'UK')
-  ener[,i+length(mod.ener.a.rel)] = fill$mean
+  ener[,i+length(mod.ener.a.rel)] = fill.e$mean
   fill.f = predict(mod.flux.b.rel[[i]], newdata = rand.samp, type = 'UK')
   flux[,i+length(mod.ener.a.rel)] = fill.f$mean
   p.acpt[,i+length(mod.ener.a.rel)] = 
@@ -2807,14 +2807,14 @@ Specific points of interest are:
 
 * Point near the maximum flux
   * pka1 = 12.7, pka2 = 16, A = 10^-0.5, Acid = 10^-6
-* Point near the concavity in the Pareto front
-  * pka1 = 5.7, pka2 = 11, A = 10^-0.5, Acid = 10^-7
 * Point near the minimum energy demand
   * pka1 = 4.9, pka2 = 9.2, A = 10^-0.7, Acid = 10^-2
 
 * Peak performance according to the 1D conditional marginals
 * Poor performance according to those marginals, exchanging one of the variables
 
+* Poor performance as defined empirically by: 
+  pKa1 = 4.92, pka2 = 9.49, {Q} = 23 mM, {HX} = 6.6 mM
 
 ```{r Process Tracking: Points of interest}
 # Load data
@@ -2839,17 +2839,18 @@ GPar.nat$typ.none = GPar.nat$typ
 GPar.nat$typ.none[GPar.nat$Na.A < -7] = 'None'
 
 # Target points based on the Pareto front
-test.sys = data.frame(pka1 = c(region.pk$pka1[7],  7.35,   region.pk$pka1[12]),
-                      pka2 = c(region.pk$pka2[7],   11.25, region.pk$pka2[12]),
-                      logA = c(region.pk$logA[7],   0.5,   region.pk$logA[12]),
-                      Na.A = c(region.pk$Na.A[7],   -1,    region.pk$Na.A[12]),
-                      acid = c(region.pk$typ[7],   -1,     region.pk$typ[12]),
-                      label = c('Global High Flux', 'Local High Flux', 'Low Energy') )
+# pKa1 = 4.92, pka2 = 9.49, {Q} = 23 mM, {HX} = 6.6 mM
+test.sys = data.frame(pka1 = c(region.pk$pka1[7],  7.35,   region.pk$pka1[9], 4.92),
+                      pka2 = c(region.pk$pka2[7],   11.25, region.pk$pka2[9], 9.49),
+                      logA = c(region.pk$logA[7],   0.5,   region.pk$logA[9], -1.63),
+                      Na.A = c(region.pk$Na.A[7],   -1,    region.pk$Na.A[9], -2.18),
+                      acid = c(region.pk$typ[7],   -1,     region.pk$typ[9], -1),
+                      label = c('Global High Flux', 'Local High Flux', 'Low Energy', 'Bad Result') )
 # # Target points based on the marginals - best, worst, and 1-variable exchanges
-exch.sys = data.frame(pka1 = rep(reg.full.ranges$pka1.pk.st[2], 5), 
-                      pka2 = rep(reg.full.ranges$pka2.pk.st[2], 5), 
-                      logA = rep(reg.full.ranges$logA.pk.st[2], 5),
-                      Na.A = rep(reg.full.ranges$Na.A.pk.st[2], 5), acid = rep(1, 5))
+exch.sys = data.frame(pka1 = rep(reg.full.ranges$pka1.pk.wk[1], 5), 
+                      pka2 = rep(reg.full.ranges$pka2.pk.wk[1], 5), 
+                      logA = rep(reg.full.ranges$logA.pk.wk[1], 5),
+                      Na.A = rep(reg.full.ranges$Na.A.pk.wk[1], 5), acid = rep(1, 5))
 poor = c(reg.full.ranges$pka1.lo.st[2], reg.full.ranges$pka2.lo.st[2], 
          reg.full.ranges$logA.lo.st[2], reg.full.ranges$Na.A.lo.st[2])
 wt = 0.45 # Weighted average so it does not move too far; interested in relatively small perturbations
@@ -2863,13 +2864,7 @@ exch.sys$label = c('Bad pka1', 'Bad pka2', 'Bad {Quinone}', 'Bad {pH Correction}
 test.sys = rbind(test.sys, exch.sys)
 rm(exch.sys)
 
-# Add a target point based on the existing data: higher than desired energy, lower flux, but still captures CO2
-new = filter(GPar.nat, Energy.kJ.mol > 25, Energy.kJ.mol < 40, Flux.mol.m2s > 0, Flux.mol.m2s < 0.1*max(GPar.front$Flux.mol.m2s))
-new$label = 'Bad Result'
-new$acid = -1
-if(new$typ == '+Base'){new$acid = 1}
-test.sys = rbind(test.sys, new[, names(new) %in% names(test.sys)])
-
+# Solve results
 res = PCET.obj.flu(inputs = as.matrix(test.sys[,c('pka1', 'pka2', 'logA', 'Na.A', 'acid')]))
 test.sys$Energy.kJ.mol = res[1:nrow(test.sys)]
 test.sys$Flux.mol.m2s = res[(nrow(test.sys)+1):length(res)]
@@ -2909,7 +2904,7 @@ ggplot() +
   geom_point(filter(GPar.nat, Energy.kJ.mol < 50, Flux.mol.m2s > 0), 
              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), size = sz, color = 'black', alpha = 0.5) +
   # Good points of interest
-  geom_point(data = filter(test.sys)[c(1, 3, 8),], 
+  geom_point(data = filter(test.sys)[c(1, 3, 4, 9),], 
   # geom_point(data = filter(test.sys)[c(1:3, 8),], 
              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = label, shape = label), 
              size = 3) +
@@ -2928,11 +2923,11 @@ g.points = ggplot() +
   geom_point(filter(GPar.nat, Energy.kJ.mol < 50, Flux.mol.m2s > 0), 
              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol), size = sz, color = 'black', alpha = 0.25) +
   # Single variable changes: draw arrow from original spot
-  geom_segment(data = filter(test.sys, Energy.kJ.mol <= 100, Flux.mol.m2s >= 0)[-c(1:3, 8),], 
+  geom_segment(data = filter(test.sys, Energy.kJ.mol <= 100, Flux.mol.m2s >= 0)[-c(1:3, 9),], 
              mapping = aes(x = test.sys$Flux.mol.m2s[8]*1e3, y = test.sys$Energy.kJ.mol[8], 
                            xend = Flux.mol.m2s*1e3, yend = Energy.kJ.mol, color = label), 
              arrow = arrow(length = unit(0.25, "cm"))) +
-  geom_point(data = filter(test.sys, Energy.kJ.mol <= 100, Flux.mol.m2s >= 0)[-c(1:3, 8),], 
+  geom_point(data = filter(test.sys, Energy.kJ.mol <= 100, Flux.mol.m2s >= 0)[-c(1:3, 9),], 
              mapping = aes(x = Flux.mol.m2s*1e3, y = Energy.kJ.mol, color = label), 
              shape = 19, size = 3) +
   labs(x = expression('CO2 Flux (mmol/m'^2*' s)'), y = expression('Energy Demand (kJ'['e']*'/mol C)'), 
@@ -2942,7 +2937,7 @@ g.points = ggplot() +
   guides(shape = FALSE, color = guide_legend(override.aes = list(shape = 19, linetype = NA), reverse = TRUE))
 
 # Distance of peak probability to single-variable changes
-test.plt = test.sys[-c(1:3, 8),]
+test.plt = test.sys[-c(1:3, 9),]
 g.dist = ggplot(test.plt[order(test.plt$dist, decreasing = TRUE),]) +
   geom_col(mapping = aes(x = 1:nrow(test.plt), 
                          y = log10(dist), fill = label)) +
@@ -3054,7 +3049,7 @@ plt.demo.state(test.sys = test.sys, i = 5)
 plt.demo.state(test.sys = test.sys, i = 6)
 plt.demo.state(test.sys = test.sys, i = 7)
 plt.demo.state(test.sys = test.sys, i = 8)
-
+plt.demo.state(test.sys = test.sys, i = 9)
 ```
 
 Important cycles to export for formal plotting:
@@ -3079,7 +3074,7 @@ write.csv(test.data, 'CycleProcess_HighFlux.csv')
 write.csv(E.test, 'CycleVoltage_HighFlux.csv')
 
 # Peak prediction
-i = 8
+i = 9
 test.data = PCET.cycle(pka1 = test.sys$pka1[i], pka2 = test.sys$pka2[i],
                        logA = test.sys$logA[i], Na.A = test.sys$Na[i],
                        acid = test.sys$acid[i])
@@ -3092,7 +3087,7 @@ write.csv(E.test, 'CycleVoltage_PeakPredict.csv')
 
 
 # Bad result
-i = 9
+i = 4
 test.data = PCET.cycle(pka1 = test.sys$pka1[i], pka2 = test.sys$pka2[i],
                        logA = test.sys$logA[i], Na.A = test.sys$Na[i],
                        acid = test.sys$acid[i])
@@ -3104,7 +3099,7 @@ write.csv(test.data, 'CycleProcess_PoorPredict.csv')
 write.csv(E.test, 'CycleVoltage_PoorPredict.csv')
 
 # Export points of interest
-write.csv(test.sys[c(1, 8, 9), !names(test.sys) %in% 'dist'], 'Cycle_PointsOfInterest.csv')
+write.csv(test.sys[c(1, 4, 9), !names(test.sys) %in% 'dist'], 'Cycle_PointsOfInterest.csv')
 
 ```
 
@@ -3118,6 +3113,7 @@ plt.demo.E(test.sys = test.sys, i = 5)
 plt.demo.E(test.sys = test.sys, i = 6)
 plt.demo.E(test.sys = test.sys, i = 7)
 plt.demo.E(test.sys = test.sys, i = 8)
+plt.demo.E(test.sys = test.sys, i = 9)
 
 ```
 

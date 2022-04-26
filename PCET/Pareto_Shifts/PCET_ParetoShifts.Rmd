@@ -482,7 +482,7 @@ Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
   base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
   
   # Interface CO2 concentration - assume 90% capture from the inlet
-  CO2.int = 0.1*pCO2.in*kH
+  CO2.int = pCO2.in*kH
   
   # Hatta number: reaction rate / mass transfer rate
   Ha = sqrt(Dco2*base*k.rate)/kL
@@ -531,7 +531,7 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
     soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
 
     # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
-    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    soln41$delC = (pCO2.in - out.pCO2)*kH
     # Flux: delC * kL * E, assume kL = 0.1 cm/s
     # Unit conversion: L to cm3, cm2 to m2
     flux = soln41$delC*soln41$E*0.1 * (1/1e3) * (100^2)
