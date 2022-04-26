@@ -269,7 +269,7 @@ pCO2.lean = function(Na, A, beta1, beta2, k1, k2, pCO2.out){
 
 
 ### Penalty function
-The penalty function is a logistic weighting function such that for values where >90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
+The penalty function is a logistic weighting function such that for values where <90% of the CO2 is captured, the weight is 1, but when less CO2 is captured, the weight increases based on the relative change on the minimum work of separation.
 See the preparatory script (../Prep/) for details on its construction.
 A penalty function is not necessary for the flux because insufficient capture would manifest as negative fluxes. It may still show up in the Pareto frontier, but it can easily be filtered out, unlike the cases with the energy demand.
 
@@ -468,8 +468,8 @@ Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
   OH = kw/H
   base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
   
-  # Interface CO2 concentration - assume 90% capture from the inlet
-  CO2.int = 0.1*pCO2.in*kH
+  # Interface CO2 concentration
+  CO2.int = pCO2.in*kH
   
   # Hatta number: reaction rate / mass transfer rate
   Ha = sqrt(Dco2*base*k.rate)/kL
@@ -517,8 +517,8 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
                          At = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, Na = Na)
     soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
 
-    # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
-    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    # Calculate the concentration difference between the interface and the bulk.
+    soln41$delC = (pCO2.in - out.pCO2)*kH
     # Flux: delC * kL * E, assume kL = 0.1 cm/s
     # Unit conversion: L to cm3, cm2 to m2
     flux = soln41$delC*soln41$E*0.1 * (1/1e3) * (100^2)
@@ -685,14 +685,14 @@ GPareto did not provide a very well defined Pareto frontier, although it did pro
 
 # Requirements for CO2 capture
 
-A substantial fraction of points were not able to satisfy the 90% capture constraint, as noted by their negative CO2 flux. 
-The first step is to see if the size of the search space can be reduced for future optimization to only the 90% capture conditions.
-This will be done by making a GP model of the kinetic rate, adaptively sampling points near the flux of 0 (signifying 90% capture), then marginalizating the probability that the result has positive flux.
+A substantial fraction of points were not able to capture any carbon, as noted by their negative CO2 flux. 
+The first step is to see if the size of the search space can be reduced for future optimization to only those that capture CO2.
+This will be done by making a GP model of the kinetic rate, adaptively sampling points near the flux of 0 (signifying any amount of capture), then marginalizating the probability that the result has positive flux.
 
 The GP model sometimes does not converge, leading to a model that is unrepresentative. 
 The following function checks that the resulting model has adequate variance variability and outputs only models that make sense for the training data.
 
-```{r 90% Capture Refinement Functions}
+```{r CO2 Capture Refinement Functions}
 fill.sample.mod = function(GPar.data, input.name, output.name){
   # Calculate the GP model to use. 
   # Using the km function, but applies checks on the system to make sure that 
@@ -792,7 +792,7 @@ fill.sample.nec = function(GPar.data){
 
 Applying the functions with an iterative adaptive sampling method
 
-```{r 90% Capture Refinement Iterations, warning=FALSE, message=FALSE}
+```{r CO2 Capture Refinement Iterations, warning=FALSE, message=FALSE}
 # Load data
 GPar.all = read.csv(file = 'GPar_all_data.csv')
 # Remove indices
@@ -819,13 +819,13 @@ write.csv(GPar.all, file = 'GPar_90Cap_data.csv')
 ```
 
 
-```{r 90% Capture Refinement Iteration Visualization}
+```{r CO2 Capture Refinement Iteration Visualization}
 # Plot the results to show refinement
 GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
 ggplot(filter(GPar.all, Energy.kJ.mol < 100)) +
   geom_point(mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol, color = (order > 100))) +
   facet_wrap(~(Flux.mol.m2s > 0), scales = 'free_x') +
-  labs(x = 'CO2 flux at 90% capture (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
+  labs(x = 'CO2 flux (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
   scale_color_manual(labels = c('Initial', 'Refinement'), values = c('red', 'blue'), name = '')
 
 # Show on a log scale (separating the positive and negative fluxes) to see how low the magnitude of the flux can be
@@ -833,7 +833,7 @@ ggplot(filter(GPar.all, Energy.kJ.mol < 100)) +
   geom_point(mapping = aes(x = abs(Flux.mol.m2s), y = Energy.kJ.mol, color = (order > 100))) +
   facet_wrap(~(Flux.mol.m2s > 0), scales = 'free_x') +
   scale_x_log10() +
-  labs(x = 'CO2 flux at 90% capture (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
+  labs(x = 'CO2 flux (mol/m^2/s)', y = 'Energy demand (kJ/mol C)') +
   scale_color_manual(labels = c('Initial', 'Refinement'), values = c('red', 'blue'), name = '')
 
 # Display the characteristics of points with very high flux
@@ -879,7 +879,7 @@ g4 = ggplot() +
 rm(g1, g2, g3, g4)
 ```
 
-In addition to refining knowledge of the boundary where the flux is zero (90% capture), I show the distribution of "good" points (above 10^-4 mol/m2/s flux) and "bad" points (no flux).
+In addition to refining knowledge of the boundary where the flux is zero, I show the distribution of "good" points (above 10^-4 mol/m2/s flux) and "bad" points (no flux).
 The distinct differences between the two suggests that high and low flux conditions are very distinct in their pKa and concentration profiles, but the amount of acid or base is not a substantial factor.
 
 After performing the marginalization to determine if the search space can be constrained, the Pareto front will be re-calculated with this new information.
@@ -890,7 +890,7 @@ For marginalization, assume a uniform distribution.
 While this is unrealistic, it is just to establish a constraint on the bounds rather than to identify real compounds.
 Additionally, the interest is in removing the conditions that have a <5% likelihood of capturing >90% CO2, regardless of the other variables.
 
-```{r 90% Capture Marginalization}
+```{r CO2Capture Marginalization}
 GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
 mod.flux = fill.sample.mod(GPar.data = GPar.all, input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
                            output.name = 'Flux.mol.m2s')
@@ -966,24 +966,24 @@ g1 = ggplot(kin.constrain) +
   geom_line(mapping = aes(x = pka1, y = p.pka1)) +
   geom_line(mapping = aes(x = pka1, y = h.pka1), linetype = 2) +
   geom_line(mapping = aes(x = pka1, y = l.pka1), linetype = 2) +
-  labs(x = 'pKa1', y = 'Probability of >90% Capture')
+  labs(x = 'pKa1', y = 'Probability of CO2 Capture')
 g2 = ggplot(kin.constrain) +
   geom_line(mapping = aes(x = pka2, y = p.pka2)) +
   geom_line(mapping = aes(x = pka2, y = h.pka2), linetype = 2) +
   geom_line(mapping = aes(x = pka2, y = l.pka2), linetype = 2) +
-  labs(x = 'pKa2 - pKa1', y = 'Probability of >90% Capture')
+  labs(x = 'pKa2 - pKa1', y = 'Probability of CO2 Capture')
 g3 = ggplot(kin.constrain) +
   geom_line(mapping = aes(x = 10^logA, y = p.logA)) +
   geom_line(mapping = aes(x = 10^logA, y = h.logA), linetype = 2) +
   geom_line(mapping = aes(x = 10^logA, y = l.logA), linetype = 2) +
-  labs(x = 'Quinone Concentration', y = 'Probability of >90% Capture') +
+  labs(x = 'Quinone Concentration', y = 'Probability of CO2 Capture') +
   scale_x_log10()
 g4 = ggplot(kin.constrain) +
   geom_line(mapping = aes(x = 10^Na.A, y = p.Na.A)) +
   geom_line(mapping = aes(x = 10^Na.A, y = h.Na.A), linetype = 2) +
   geom_line(mapping = aes(x = 10^Na.A, y = l.Na.A), linetype = 2) +
   scale_x_log10() +
-  labs(x = 'Na/Quinone Concentration Ratio', y = 'Probability of >90% Capture')
+  labs(x = 'Na/Quinone Concentration Ratio', y = 'Probability of CO2 Capture')
 
 (g1 + g3) / (g2 + g4)
 rm(g1, g2, g3, g4)
@@ -1001,7 +1001,7 @@ While these cannot be used to remove areas of the search space from sampling, it
 One possible improvement to this presentation is to marginalize against 2 variables instead of just 1. 
 It is likely that the combination of both pKas or of both concentrations is what matters, and this may provide more insight into restricting the space further since many inputs are co-correlated.
 
-```{r 90% Capture 2D Marginal}
+```{r CO2 Capture 2D Marginal}
 GPar.all = read.csv(file = 'GPar_90Cap_data.csv')
 mod.flux = fill.sample.mod(GPar.data = GPar.all, input.name = c('pka1', 'pka2', 'logA', 'Na.A'),
                            output.name = 'Flux.mol.m2s')
@@ -1169,7 +1169,7 @@ test[,2] = -test[,2]
 par.front = t(nondominated_points(points = t(test)))
 par.front[,2] = -par.front[,2]
 ggplot() +
-  geom_vline(xintercept = 0.22e-3, linetype = 2) +
+  geom_vline(xintercept = 2.2e-3, linetype = 2) +
   geom_point(filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100),
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
   # New front
@@ -1268,7 +1268,7 @@ fill.sample.obj.opt = function(x, model.flux, model.ener){
   # flux is faster than 10% of the maximum (which still meets the energy criteria)
   E.cutof = log10(33); #kJ/mol C, log scale to account for multiple order of magnitude span
   # F.cutof = 0.1*max(filter(GPar.all, Energy.kJ.mol < 40)$Flux.mol.m2s)
-  F.cutof = 0.22e-3
+  F.cutof = 22e-3
 
   prob = c(1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd) *
              pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
@@ -1367,7 +1367,7 @@ GPar.front = read.csv(file = 'GPar_fnt_data_90CapOpt.csv')
 ggplot() +
   # Bounds
   geom_hline(yintercept =  33, linetype = 2) +
-  geom_vline(xintercept = 0.22e-3, linetype = 2) +
+  geom_vline(xintercept = 2.2e-3, linetype = 2) +
   # Data
   geom_point(data = filter(GPar.all, Flux.mol.m2s > -0.1, Energy.kJ.mol < 100, order <= 200), 
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
@@ -1381,7 +1381,7 @@ ggplot() +
 ggplot() +
   # Bounds
   geom_hline(yintercept =  33, linetype = 2) +
-  geom_vline(xintercept = 0.22e-3, linetype = 2) +
+  geom_vline(xintercept = 2.2e-3, linetype = 2) +
   # Data
   geom_point(data = filter(GPar.all, Flux.mol.m2s > 0, Energy.kJ.mol < 100, order <= 200), 
              mapping = aes(x = Flux.mol.m2s, y = Energy.kJ.mol)) +
@@ -1405,7 +1405,7 @@ Since the natural forms of the variables are easier to interpret, the feature im
 
 ```{r Optimal Capture Marginals Natural GP Model: 2D}
 E.cutof = log10(33); #kJ/mol C, log units
-F.cutof = 0.22e-3
+F.cutof = 2.2e-3
 
 # Natural variables conversion
 GPar.nat = GPar.all
@@ -1553,7 +1553,7 @@ The 2D marginal highlights two key features:
 # Define the cutoff values
 E.cutof = log10(33); #kJ/mol C, log units
 # F.cutof = 0.1*max(GPar.all$Flux.mol.m2s)
-F.cutof = 0.22e-3
+F.cutof = 2.2e-3
 
 # Set up the marginalization
 resolution = 50; MCsamp = 2000
@@ -1718,13 +1718,13 @@ ggplot(import[order(import$rank, decreasing = TRUE),]) +
 
 Applying the refinement process to further refine information about high fluxes and low energy regions independently.
 
-The high flux region is fluxes above 2.2 mmol/m^2*s, while the low energy region is below 20 kJ/mol:
+The high flux region is fluxes above 22 mmol/m^2*s, while the low energy region is below 20 kJ/mol:
 
 ```{r Refinement Subregions}
 GPar.all = read.csv(file = 'GPar_90CapOpt_data.csv')
 GPar.front = read.csv(file = 'GPar_fnt_data_90CapOpt.csv')
 
-region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 2.2e-3,
+region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 22e-3,
                      ener.max = 45, ener.min = min(GPar.front$Energy.kJ.mol)
                      )
 
@@ -1780,7 +1780,7 @@ fill.sample.sub.flux = function(x, model.flux, model.ener){
   # Want the probability that the energy is below 40 kJ/mol C, 
   # flux is faster than 10% of the maximum (which still meets the energy criteria)
   E.cutof = log10(45); #kJ/mol C, log scale to account for multiple order of magnitude span
-  F.cutof = 2.2e-3 # mol/m2s, flux at which there is a concavity in the Pareto front
+  F.cutof = 22e-3 # mol/m2s, flux at which there is a concavity in the Pareto front
 
   prob = c(1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd) *
              pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
@@ -1815,7 +1815,7 @@ fill.sample.sub.ener = function(x, model.flux, model.ener){
   # flux is faster than 10% of the maximum (which still meets the energy criteria)
   E.cutof = log10(20); # approximately halfway between the minimum energy and the top of the concavity in the Pareto front
   # F.cutof = 0.1*max(GPar.front$Flux.mol.m2s)
-  F.cutof = 0.22e-3
+  F.cutof = 2.2e-3
   
   prob = c(1 - pnorm(q = 0, mean = res.flux$mean - F.cutof, sd = res.flux$sd) *
              pnorm(q = 0, mean = res.ener$mean - E.cutof, sd = res.ener$sd)
@@ -1932,7 +1932,7 @@ write.csv(GPar.front, file = 'GPar_fnt_data_SubRef.csv')
 GPar.all = read.csv(file = 'GPar_SubRef_data.csv')
 GPar.front = read.csv(file = 'GPar_fnt_data_SubRef.csv')
 
-region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 2.2e-3,
+region.flux = data.frame(flux.max = max(GPar.front$Flux.mol.m2s), flux.min = 22e-3,
                      ener.max = 45, ener.min = min(GPar.front$Energy.kJ.mol)
                      )
 
