@@ -859,7 +859,7 @@ Enhance.factor = function(pH, pCO2.in, A, k1, k2, beta1, beta2, pCO2){
   base = OH + A*(2*k1*k2 + H*k1) / (H^2 + H*k1 + k1*k2*(1 + beta1*pCO2 + beta2*pCO2^2))
   
   # Interface CO2 concentration - assume 90% capture from the inlet
-  CO2.int = 0.1*pCO2.in*kH
+  CO2.int = pCO2.in*kH
   
   # Hatta number: reaction rate / mass transfer rate
   Ha = sqrt(Dco2*base*k.rate)/kL
@@ -908,7 +908,7 @@ kinetic.force = function(k1, k2, beta1, beta2, A.tot, Na, pCO2.in, pCO2.out){
     soln41$E = Enhance.factor(pH = soln41$pH, pCO2.in = pCO2.in, A = A.tot, k1 = k1, k2 = k2, beta1 = beta1, beta2 = beta2, pCO2 = soln41$p.CO2)
 
     # Calculate the concentration difference between the interface and the bulk. Assuming 90% capture
-    soln41$delC = (0.1*pCO2.in - out.pCO2)*kH
+    soln41$delC = (pCO2.in - out.pCO2)*kH
     # Flux: delC * kL * E, assume kL = 0.1 cm/s as in the enhancement factor calculation
     # Unit conversion: L to cm3, cm2 to m2
     flux = soln41$delC*soln41$E*0.1 * (1/1e3) * (100^2)
@@ -986,6 +986,8 @@ using the following constants (same source or listed above in the function):
 * reaction rate constant = 7570 L/mol*s
 * reactor mass transfer coefficient (as above) = 0.1 cm/s (assume a fast design)
 
+Empirically, 30wt% MEA solutions absorb approximately 0.5~0.6 mol CO2/mol MEA at 0.13~0.15 atm [Puxty 2009], although at 10% of that pressure, the loading is bounded by a pinch point at around 0.225 mol/mol [Richner 2015].
+
 $Ha = \sqrt{ D k C} / k_L$
 $E = 1 + D*c_{MEA} / (z * D_{CO_2} * C_{CO_2})$
 
@@ -993,7 +995,7 @@ $E = 1 + D*c_{MEA} / (z * D_{CO_2} * C_{CO_2})$
 C.MEA = 5
 D.CO2 = 0.5e-5
 D.MEA = D.CO2
-C.CO2 = 0.034*(1 - 0.90)*0.15
+C.CO2 = 0.034*0.15
 k = 7570
 kL = 0.1
 # Calculate the Hatta number
@@ -1004,7 +1006,8 @@ Ei = 1 + D.MEA*C.MEA / (1 + D.CO2 * C.CO2)
 Ha
 Ei
 # From these values, this is the fast pseudo-first order reaction regime, so the flux can be estimated as
-flux = sqrt(D.CO2 * k * C.MEA) * C.CO2 * (1/1e3) * (100^2) # Since concentration was in mol/L, converting to mol/m^2*s
+flux = sqrt(D.CO2 * k * C.MEA) * (C.CO2) * (1/1e3) * (100^2) 
+# Since concentration was in mol/L, converting to mol/m^2*s
 flux*1e3 # in mmol/m^2*s for comparison
 
 ```

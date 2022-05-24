@@ -1414,7 +1414,11 @@ g.typ2 = ggplot(err.svm.radan) +
   theme_bw() + labs(x = '', y = 'False Negative\nError Rate')
 
 (g.rate + guides(fill = FALSE)) / g.typ1 / (g.typ2 + guides(fill = FALSE))
+<<<<<<< HEAD
 write.csv(err.svm.cutof, 'SVM_error_radan.csv', row.names = F)
+=======
+write.csv(err.svm.radan, 'SVM_error_radan.csv')
+>>>>>>> 8b5dd646b357717224c690ad50b6dfca26ff2f1c
 
 rm(err.paret, err.adapt, err.rando, g.rate, g.typ1, g.typ2)
 
