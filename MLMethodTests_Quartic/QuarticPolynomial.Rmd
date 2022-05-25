@@ -197,9 +197,12 @@ data.paret$rad = sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2)
 # Compare to the estimate of the Pareto frontier
 GPar.front = read.csv(file = '../Ex_Quartic/GPar_fnt_start.csv')
 
-# # Add a random samples to simulate the effect of sample size rather than adaptive sampling
+# Add a random samples to simulate the effect of sample size rather than adaptive sampling
+# Have it stored so for consistency, but also create multiple random sample sets
+# to get a sense of the variance
 if(file.exists('GPar_Random.csv') == FALSE){
   nsamp = max(nrow(data.delta), nrow(data.cutof), nrow(data.radan)) - nrow(data.paret)
+  nsamp = nsamp*10 # Collect more than needed for sample size variance testing
   data.rando = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
                           x2 = runif(n = nsamp, min = 0, max = 5))
   data.rando$f1 = f1(x1 = data.rando$x1, x2 = data.rando$x2)
@@ -221,6 +224,7 @@ if(file.exists('GPar_Random.csv') == FALSE){
   write.csv(data.rando, file = 'GPar_Random.csv', row.names = F)
 }
 data.rando = read.csv(file = 'GPar_Random.csv')
+data.rando = data.rando[1:nrow(data.delta),] # Keep same sample size for initial testing
 
 ##
 # Grid of the relevant region to visualize and compare
@@ -690,7 +694,6 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
   res.rad  = predict(object = mod.rad, newdata = fine.grid[, c('x1', 'x2')], type = "UK")
   res.ang  = predict(object = mod.ang, newdata = fine.grid[, c('x1', 'x2')], type = "UK")
 
-  
   # Calculate the error likelihoods
   test.vector$prob.delta = pnorm(q = 0, mean = res.dist$mean - 1, sd = res.dist$sd)
   test.vector$prob.cutof = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * 
@@ -698,7 +701,6 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
   test.vector$prob.radan = pnorm(q = 0, mean = res.rad$mean - 1, sd = res.rad$sd) * 
     (1 - pnorm(q = 0, mean = res.ang$mean - 20, sd = res.ang$sd))
   
-  # return(test.vector)
   # Calculate total, false positive, and false negative error rates
   tot.err = c(mean(c(1 - dplyr::filter(test.vector, delta == 1)$prob.delta, 
                        dplyr::filter(test.vector, delta == 0)$prob.delta)),
@@ -706,7 +708,7 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
                        dplyr::filter(test.vector, cutof == 0)$prob.cutof)),
             mean(c(1 - dplyr::filter(test.vector, radan == 1)$prob.radan, 
                        dplyr::filter(test.vector, radan == 0)$prob.radan)))
-  tot.unc = sqrt(tot.err*(1-tot.err)/nrow(test.vector))
+  # tot.unc = sqrt(tot.err*(1-tot.err)/nrow(test.vector))
   
   neg.err = 
     c(sum(1 - dplyr::filter(test.vector, delta == 1)$prob.delta)*
@@ -720,7 +722,7 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
       sum(1 - dplyr::filter(test.vector, radan == 1)$prob.radan)*
         nrow(dplyr::filter(test.vector, radan == 1))/nrow(test.vector)^2/
         mean(1 - test.vector$prob.radan))
-  neg.unc = sqrt(neg.err*(1-neg.err) / nrow(test.vector))
+  # neg.unc = sqrt(neg.err*(1-neg.err) / nrow(test.vector))
   
   pos.err = 
     c(sum(dplyr::filter(test.vector, delta == 0)$prob.delta)*
@@ -734,24 +736,31 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
       sum(dplyr::filter(test.vector, radan == 0)$prob.radan)*
         nrow(dplyr::filter(test.vector, radan == 0))/nrow(test.vector)^2/
         mean(test.vector$prob.radan))
-  pos.unc = sqrt(pos.err*(1-pos.err) / nrow(test.vector))
+  # pos.unc = sqrt(pos.err*(1-pos.err) / nrow(test.vector))
   
-  # Due to rare instances of positive and/or negative conditions, set the maximum
-  # error to be the same as the value itself
-  pos.unc[pos.unc > pos.err] = pos.err[pos.unc > pos.err]
-  neg.unc[neg.unc > neg.err] = neg.err[neg.unc > neg.err]
+  # For the purposes of data visualization and bounding of a probability, frame 
+  # the uncertainty as the upper and lower bound (+/- SD) such that is it always
+  # bounded between 0 and 1
+  # tot.min = tot.err - tot.unc; tot.max = tot.err + tot.unc
+  # pos.min = pos.err - pos.unc; pos.max = pos.err + pos.unc
+  # neg.min = neg.err - neg.unc; neg.max = neg.err + neg.unc
+  # tot.min[tot.min < 0] = 0; tot.max[tot.max > 1] = 1
+  # pos.min[pos.min < 0] = 0; pos.max[pos.max > 1] = 1
+  # neg.min[neg.min < 0] = 0; neg.max[neg.max > 1] = 1
   
   return(data.frame(err = c(tot.err, neg.err, pos.err), 
-            unc = c(tot.unc, neg.unc, pos.unc), 
+            # unc.min = c(tot.min, neg.min, pos.min), 
+            # unc.max = c(tot.max, neg.max, pos.max), 
             class = c('Pareto Distance', 'Threshold Cutoff', 'Utopia Distance'),
             typ = c(rep('Total', 3), rep('False Negative', 3), 
                     rep('False Positive', 3))))
 }
 
-
 test.vec = fine.grid[, names(fine.grid) %in% 
                           c('x1', 'x2', 'delta', 'cutof', 'radan')]
 
+# Using the full random dataset to get its variance
+data.rando = read.csv(file = 'GPar_Random.csv')
 
 nsamp = seq(from = nrow(data.paret) + 1, to = nrow(data.delta), by = 1)
 # Starting point - no samples
@@ -759,8 +768,9 @@ res = mod.err.n(data.dist = data.paret, data.f = data.paret, data.rad = data.par
                 test.vector = test.vec)
 res$n = 0
 res$samp = 'Random'
+res$unc.min = res$err; res$unc.max = res$err
 res$err.n = 1
-res$unc.n = 0
+res$unc.min.n = 1; res$unc.max.n = 1
 err0 = res
 res$samp = 'Adaptive'
 
@@ -775,18 +785,35 @@ doParallel::registerDoParallel(cl = my.cluster)
 
 err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
   # Random samples
-  rando = data.rando[1:i,]
-  res = mod.err.n(data.dist = rando, data.f = rando, data.rad = rando, 
-                  test.vector = test.vec)
-  # Labelling
-  res$n = i - nrow(data.paret)
-  res$samp = 'Random'
-  # Normalized to the starting state
-  res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  # Store
-  err = res
-  
+  nset = i - nrow(data.paret)
+  res.rando = data.frame()
+  for(j in 1:30){ 
+    # Collect multiple random datasets to get a sense of the variance
+    rando = data.rando[c(1:nrow(data.paret), 
+                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
+    res = mod.err.n(data.dist = rando, data.f = rando, data.rad = rando, 
+                    test.vector = test.vec)
+    # Normalized to the starting state
+    res$err.n = res$err/err0$err
+    res.rando = rbind(res.rando, res)
+  }
+  err = data.frame()
+  # Uncertainty correction based on the variance - in this case want the 95% CI
+  for(cls in unique(res.rando$class)){
+    for(tp in unique(res.rando$typ)){
+      sub = dplyr::filter(res.rando, class == cls, typ == tp)
+      err = rbind(err, data.frame(
+          err = median(sub$err),  err.n = median(sub$err.n),
+          unc.min = quantile(x = sub$err, probs = 0.025), 
+          unc.max = quantile(x = sub$err, probs = 0.975), 
+          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
+          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
+          class = cls, typ = tp,
+          n = i - nrow(data.paret),
+          samp = 'Random'))
+    }
+  }
+
   # Adaptive samples
   delta = data.delta[1:i,]
   cutof = data.cutof[1:i,]
@@ -796,21 +823,30 @@ err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
   res$n = i - nrow(data.paret)
   res$samp = 'Adaptive'
   res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
+  # Set the "uncertainty" to zero - the Monte Carlo error is relatively small,
+  # and doesn't quite represent the same error as above
+  res$unc.min = res$err
+  res$unc.max = res$err
+  res$unc.min.n = res$err.n
+  res$unc.max.n = res$err.n
+  
+  # res$unc.min.n = res$unc.min/err0$err
+  # res$unc.max.n = res$unc.max/err0$err
+  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
   rbind(err, res)
 }
 
 err.n = rbind(err0, res, err.n)
 err.n
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, ymin = err - unc, ymax = err + unc, 
+  geom_errorbar(mapping = aes(x = n, ymin = unc.min, ymax = unc.max, y = err, 
                     color = samp), width = 0.5) +
   geom_point(mapping = aes(x = n, y = err, color = samp)) +
   facet_wrap(factor(typ, levels = c('Total', 'False Positive', 
               'False Negative'))~class, scales = 'free_y') +
   labs(x = 'Additional Samples', y = 'Error Rate')
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, ymin = err.n - unc.n, ymax = err.n + unc.n, 
+  geom_errorbar(mapping = aes(x = n, ymin = unc.min.n, ymax = unc.max.n, y = err, 
                     color = samp), width = 0.5) +
   geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
   facet_grid(factor(typ, levels = c('Total', 'False Positive', 
@@ -885,9 +921,12 @@ SVM.err = function(fine.input, mod.list){
   # fine.input$sig = predict(object = mod.list$sig, newdata = fine.input[,c('x1', 'x2')])
   
   # Error rate
-  rad = nrow(filter(fine.input, cat == 0, rad == 1)) + nrow(filter(fine.input, cat == 1, rad == 0))
-  lin = nrow(filter(fine.input, cat == 0, lin == 1)) + nrow(filter(fine.input, cat == 1, lin == 0))
-  pol = nrow(filter(fine.input, cat == 0, pol == 1)) + nrow(filter(fine.input, cat == 1, pol == 0))
+  rad = nrow(dplyr::filter(fine.input, cat == 0, rad == 1)) + 
+    nrow(dplyr::filter(fine.input, cat == 1, rad == 0))
+  lin = nrow(dplyr::filter(fine.input, cat == 0, lin == 1)) + 
+    nrow(dplyr::filter(fine.input, cat == 1, lin == 0))
+  pol = nrow(dplyr::filter(fine.input, cat == 0, pol == 1)) + 
+    nrow(dplyr::filter(fine.input, cat == 1, pol == 0))
   # sig = nrow(filter(fine.input, cat == 0, sig == 1)) + nrow(filter(fine.input, cat == 1, sig == 0))
   # rate = c(rad, lin, pol, sig)/nrow(fine.input)
   rate = c(rad, lin, pol)/nrow(fine.input)
@@ -896,24 +935,30 @@ SVM.err = function(fine.input, mod.list){
   
   # Type I error = P[should reject | accepted] = P[both] P[should reject] / P[accepted]
   typ1 =
-    c(nrow(filter(fine.input, cat == 0, rad == 1))*nrow(filter(fine.input, cat == 0))/nrow(fine.input)/
-        nrow(filter(fine.input, rad == 1)),
-      nrow(filter(fine.input, cat == 0, lin == 1))*nrow(filter(fine.input, cat == 0))/nrow(fine.input)/
-        nrow(filter(fine.input, lin == 1)),
-      nrow(filter(fine.input, cat == 0, pol == 1))*nrow(filter(fine.input, cat == 0))/nrow(fine.input)/
-        nrow(filter(fine.input, pol == 1)))#,
+    c(nrow(dplyr::filter(fine.input, cat == 0, rad == 1))*
+        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, rad == 1)),
+      nrow(dplyr::filter(fine.input, cat == 0, lin == 1))*
+        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, lin == 1)),
+      nrow(dplyr::filter(fine.input, cat == 0, pol == 1))*
+        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, pol == 1)))#,
       # nrow(filter(fine.input, cat == 0, sig == 1))*nrow(filter(fine.input, cat == 0))/nrow(fine.input)/
         # nrow(filter(fine.input, sig == 1)) )
   typ1.err = sqrt(typ1*(1-typ1) / nrow(fine.input))  
   
   # Type II error = P[should accept | rejected] = P[both] P[should accept] / P[rejected]
   typ2 =
-    c(nrow(filter(fine.input, cat == 1, rad == 0))*nrow(filter(fine.input, cat == 1))/nrow(fine.input)/
-        nrow(filter(fine.input, rad == 0)),
-      nrow(filter(fine.input, cat == 1, lin == 0))*nrow(filter(fine.input, cat == 1))/nrow(fine.input)/
-        nrow(filter(fine.input, lin == 0)),
-      nrow(filter(fine.input, cat == 1, pol == 0))*nrow(filter(fine.input, cat == 1))/nrow(fine.input)/
-        nrow(filter(fine.input, pol == 0)))#,
+    c(nrow(dplyr::filter(fine.input, cat == 1, rad == 0))*
+        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, rad == 0)),
+      nrow(dplyr::filter(fine.input, cat == 1, lin == 0))*
+        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, lin == 0)),
+      nrow(dplyr::filter(fine.input, cat == 1, pol == 0))*
+        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, pol == 0)))#,
       # nrow(filter(fine.input, cat == 1, sig == 0))*nrow(filter(fine.input, cat == 1))/nrow(fine.input)/
         # nrow(filter(fine.input, sig == 0)) )
   typ2.err = sqrt(typ2*(1-typ2) / nrow(fine.input))
@@ -984,25 +1029,6 @@ SVM.shap = function(mod){
                     method = c('Shapley-pol', 'Shapley-pol', 
                                'Shapley-rad', 'Shapley-rad')))
 }
-SVM.err.n = function(fine.input, input.data){
-  mod.list = SVM.mod.all(input.data = input.data)
-  err = SVM.err(fine.input = fine.input, mod.list = mod.list)
-  # return(err)
-  # Additional processing to make it consistent with the other convention
-  err.n = data.frame(
-    method = err$method,
-    err = c(err$rate, err$typ1,     err$typ2),
-    unc = c(err$err,  err$typ1.err, err$typ2.err),
-    typ = c(rep('Total', nrow(err)), rep('False Positive', nrow(err)), 
-            rep('False Negative', nrow(err)))
-  )
-  # Place limiter on uncertainty
-  err.n$unc[err.n$unc > err.n$err] = err.n$err[err.n$unc > err.n$err]
-  # Lower bound of 1e-8
-  err.n$unc[err.n$unc < 1e-8] = 1e-8
-  err.n$err[err.n$err < 1e-8] = 1e-8
-  return(err.n)
-}
 
 ```
 
@@ -1010,6 +1036,7 @@ SVM.err.n = function(fine.input, input.data){
 data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
 data.delta = read.csv('../Ex_Quartic/GPar_Accept_Delta1.csv')
 data.rando = read.csv(file = 'GPar_Random.csv')
+data.rando = data.rando[1:nrow(data.paret), ]
 
 # Define acceptance
 data.paret$cat = 0; data.delta$cat = 0; data.rando$cat = 0; fine.grid$cat = 0
@@ -1177,11 +1204,11 @@ ggplot(coefdet) +
 Single variable marginals are visually similar to the expected value, but calculating the coefficient of determination shows that the GP method is more consistent regardless of dataset and it demonstrates the expected improvement with increased sampling near the boundary.
 The SVM methods overall cannot capture the boundary very well, leading to classification errors.
 
-
 ```{r SVM: Threshold}
 data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
 data.cutof = read.csv('../Ex_Quartic/GPar_Accept_Threshold.csv')
 data.rando = read.csv(file = 'GPar_Random.csv')
+data.rando = data.rando[1:nrow(data.paret), ]
 
 # Define acceptance
 data.paret$cat = 0; data.cutof$cat = 0; data.rando$cat = 0; fine.grid$cat = 0
@@ -1345,6 +1372,7 @@ ggplot(coefdet) +
 data.paret = read.csv(file = '../Ex_Quartic/GPar_all_start.csv')
 data.radan = read.csv('../Ex_Quartic/GPar_Accept_Radius.csv')
 data.rando = read.csv(file = 'GPar_Random.csv')
+data.rando = data.rando[1:nrow(data.paret), ]
 
 # Define acceptance
 data.paret$cat = 0; data.radan$cat = 0; data.rando$cat = 0; fine.grid$cat = 0
@@ -1414,11 +1442,7 @@ g.typ2 = ggplot(err.svm.radan) +
   theme_bw() + labs(x = '', y = 'False Negative\nError Rate')
 
 (g.rate + guides(fill = FALSE)) / g.typ1 / (g.typ2 + guides(fill = FALSE))
-<<<<<<< HEAD
 write.csv(err.svm.cutof, 'SVM_error_radan.csv', row.names = F)
-=======
-write.csv(err.svm.radan, 'SVM_error_radan.csv')
->>>>>>> 8b5dd646b357717224c690ad50b6dfca26ff2f1c
 
 rm(err.paret, err.adapt, err.rando, g.rate, g.typ1, g.typ2)
 
@@ -1511,6 +1535,29 @@ ggplot(coefdet) +
 
 Alternative Metric: Accuracy as n samples are collected
 
+```{r}
+SVM.err.n = function(fine.input, input.data){
+  mod.list = SVM.mod.all(input.data = input.data)
+  err = SVM.err(fine.input = fine.input, mod.list = mod.list)
+  # return(err)
+  # Additional processing to make it consistent with the other convention
+  err.n = data.frame(
+    method = err$method,
+    err = c(err$rate, err$typ1,     err$typ2),
+    # unc = c(err$err,  err$typ1.err, err$typ2.err),
+    typ = c(rep('Total', nrow(err)), rep('False Positive', nrow(err)), 
+            rep('False Negative', nrow(err)))
+  )
+  # Place limiter on uncertainty
+  # err.n$unc[err.n$unc > err.n$err] = err.n$err[err.n$unc > err.n$err]
+  # Lower bound of 1e-8 to avoid NaN values later
+  # err.n$unc[err.n$unc < 1e-8] = 1e-8
+  err.n$err[err.n$err < 1e-8] = 1e-8
+  return(err.n)
+}
+
+```
+
 ```{r SVM: N Sample Effect - Pareto distance}
 # Pareto Distance
 data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
@@ -1531,8 +1578,15 @@ nsamp = seq(from = nrow(data.paret)+1, to = nrow(data.delta), by = 1)
 err0 = SVM.err.n(fine.input = fine.grid, input.data = data.paret)
 
 # Effect of sampling
-err.n = data.frame()
-for(i in nsamp){
+n.cores <- parallel::detectCores() - 1
+my.cluster <- parallel::makeCluster(
+  n.cores,
+  type = "PSOCK"
+  )
+doParallel::registerDoParallel(cl = my.cluster)
+foreach::getDoParRegistered()
+
+err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
   # Adaptive
   res = SVM.err.n(fine.input = fine.grid, input.data = data.delta[1:i,])
   # Labels
@@ -1541,42 +1595,68 @@ for(i in nsamp){
   res$samp = 'Adaptive'
   # Normalized errors
   res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  err.n = rbind(err.n, res)
+  res$unc.min = res$err;     res$unc.max = res$err
+  res$unc.min.n = res$err.n; res$unc.max.n = res$err.n
+  err.adapt = res
+  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
+  # err.n = rbind(err.n, res)
   
-  # Random
-  res = SVM.err.n(fine.input = fine.grid, input.data = data.rando[1:i,])
-  # Labels
-  res$n = i-nrow(data.paret)
-  res$class = 'Pareto Distance'
-  res$samp = 'Random'
-  # Normalized errors
-  res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  err.n = rbind(err.n, res)
+  # Random samples
+  nset = i - nrow(data.paret)
+  res.rando = data.frame()
+  for(j in 1:30){ 
+    # Collect multiple random datasets to get a sense of the variance
+    rando = data.rando[c(1:nrow(data.paret), 
+                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
+    res = SVM.err.n(fine.input = fine.grid, input.data = rando)
+    # Normalized to the starting state
+    res$err.n = res$err/err0$err
+    res.rando = rbind(res.rando, res)
+  }
+  err.rando = data.frame()
+  # Uncertainty correction based on the variance - in this case want the 95% CI
+  for(met in unique(res.rando$method)){
+    for(tp in unique(res.rando$typ)){
+      sub = dplyr::filter(res.rando, method == met, typ == tp)
+      err.rando = rbind(err.rando, data.frame(
+          err = median(sub$err),  err.n = median(sub$err.n),
+          unc.min = quantile(x = sub$err, probs = 0.025), 
+          unc.max = quantile(x = sub$err, probs = 0.975), 
+          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
+          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
+          class = 'Pareto Distance', typ = tp, method = met,
+          n = i - nrow(data.paret),
+          samp = 'Random'))
+    }
+  }
+  rbind(err.adapt, err.rando)
 }
-rm(res)
+parallel::stopCluster(cl = my.cluster)
+
 # err.n
 # Combine with 0 state
 err0$n = 0
 err0$class = 'Pareto Distance'
 err0$samp = 'Adaptive'
 err0$err.n = 1
-err0$unc.n = 0
+err0$unc.max   = err0$err; err0$unc.min   = err0$err
+err0$unc.max.n = 1;        err0$unc.min.n = 1
 err.n = rbind(err0, err.n)
 err0$samp = 'Random'
 err.n = rbind(err0, err.n)
 
 # Plotting
-err.n
+# err.n
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = err.n - unc.n,
-                              ymax = err.n + unc.n, color = samp)) +
+  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = unc.min.n, ymax = unc.max.n,
+                              color = samp)) +
+  geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
   facet_grid(typ~method, scale = 'free')
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err, ymin = err - unc,
-                              ymax = err + unc, color = samp)) +
+  geom_errorbar(mapping = aes(x = n, y = err, ymin = unc.min, ymax = unc.max, color = samp)) +
+  geom_point(mapping = aes(x = n, y = err, color = samp)) +
   facet_grid(typ~method, scale = 'free')
+
 
 # Store data
 err.svm = err.n
@@ -1602,8 +1682,15 @@ nsamp = seq(from = nrow(data.paret)+1, to = nrow(data.cutof), by = 1)
 err0 = SVM.err.n(fine.input = fine.grid, input.data = data.paret)
 
 # Effect of sampling
-err.n = data.frame()
-for(i in nsamp){
+n.cores <- parallel::detectCores() - 1
+my.cluster <- parallel::makeCluster(
+  n.cores,
+  type = "PSOCK"
+  )
+doParallel::registerDoParallel(cl = my.cluster)
+foreach::getDoParRegistered()
+
+err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
   # Adaptive
   res = SVM.err.n(fine.input = fine.grid, input.data = data.cutof[1:i,])
   # Labels
@@ -1612,48 +1699,70 @@ for(i in nsamp){
   res$samp = 'Adaptive'
   # Normalized errors
   res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  err.n = rbind(err.n, res)
+  res$unc.min = res$err;     res$unc.max = res$err
+  res$unc.min.n = res$err.n; res$unc.max.n = res$err.n
+  err.adapt = res
+  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
+  # err.n = rbind(err.n, res)
   
-  # Random
-  res = SVM.err.n(fine.input = fine.grid, input.data = data.rando[1:i,])
-  # Labels
-  res$n = i-nrow(data.paret)
-  res$class = 'Threshold Cutoff'
-  res$samp = 'Random'
-  # Normalized errors
-  res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  err.n = rbind(err.n, res)
+  # Random samples
+  nset = i - nrow(data.paret)
+  res.rando = data.frame()
+  for(j in 1:30){ 
+    # Collect multiple random datasets to get a sense of the variance
+    rando = data.rando[c(1:nrow(data.paret), 
+                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
+    res = SVM.err.n(fine.input = fine.grid, input.data = rando)
+    # Normalized to the starting state
+    res$err.n = res$err/err0$err
+    res.rando = rbind(res.rando, res)
+  }
+  err.rando = data.frame()
+  # Uncertainty correction based on the variance - in this case want the 95% CI
+  for(met in unique(res.rando$method)){
+    for(tp in unique(res.rando$typ)){
+      sub = dplyr::filter(res.rando, method == met, typ == tp)
+      err.rando = rbind(err.rando, data.frame(
+          err = median(sub$err),  err.n = median(sub$err.n),
+          unc.min = quantile(x = sub$err, probs = 0.025), 
+          unc.max = quantile(x = sub$err, probs = 0.975), 
+          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
+          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
+          class = 'Threshold Cutoff', typ = tp, method = met,
+          n = i - nrow(data.paret),
+          samp = 'Random'))
+    }
+  }
+  rbind(err.adapt, err.rando)
 }
-rm(res)
+parallel::stopCluster(cl = my.cluster)
+
 # err.n
 # Combine with 0 state
 err0$n = 0
 err0$class = 'Threshold Cutoff'
 err0$samp = 'Adaptive'
 err0$err.n = 1
-err0$unc.n = 0
+err0$unc.max   = err0$err; err0$unc.min   = err0$err
+err0$unc.max.n = 1;        err0$unc.min.n = 1
 err.n = rbind(err0, err.n)
 err0$samp = 'Random'
 err.n = rbind(err0, err.n)
 
 # Plotting
-err.n
+# err.n
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = err.n - unc.n,
-                              ymax = err.n + unc.n, color = samp)) +
+  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = unc.min.n, ymax = unc.max.n,
+                              color = samp)) +
+  geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
   facet_grid(typ~method, scale = 'free')
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err, ymin = err - unc,
-                              ymax = err + unc, color = samp)) +
+  geom_errorbar(mapping = aes(x = n, y = err, ymin = unc.min, ymax = unc.max, color = samp)) +
+  geom_point(mapping = aes(x = n, y = err, color = samp)) +
   facet_grid(typ~method, scale = 'free')
 
 # Store data
 err.svm = rbind(err.svm, err.n)
-rm(err.n, err0)
-
-write.csv(err.svm, 'SVM_Error-Nsamp.csv', row.names = F)
 
 ```
 
@@ -1676,8 +1785,15 @@ nsamp = seq(from = nrow(data.paret)+1, to = nrow(data.radan), by = 1)
 err0 = SVM.err.n(fine.input = fine.grid, input.data = data.paret)
 
 # Effect of sampling
-err.n = data.frame()
-for(i in nsamp){
+n.cores <- parallel::detectCores() - 1
+my.cluster <- parallel::makeCluster(
+  n.cores,
+  type = "PSOCK"
+  )
+doParallel::registerDoParallel(cl = my.cluster)
+foreach::getDoParRegistered()
+
+err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
   # Adaptive
   res = SVM.err.n(fine.input = fine.grid, input.data = data.radan[1:i,])
   # Labels
@@ -1686,46 +1802,71 @@ for(i in nsamp){
   res$samp = 'Adaptive'
   # Normalized errors
   res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  err.n = rbind(err.n, res)
+  res$unc.min = res$err;     res$unc.max = res$err
+  res$unc.min.n = res$err.n; res$unc.max.n = res$err.n
+  err.adapt = res
+  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
+  # err.n = rbind(err.n, res)
   
-  # Random
-  res = SVM.err.n(fine.input = fine.grid, input.data = data.rando[1:i,])
-  # Labels
-  res$n = i-nrow(data.paret)
-  res$class = 'Utopia Distance'
-  res$samp = 'Random'
-  # Normalized errors
-  res$err.n = res$err/err0$err
-  res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  err.n = rbind(err.n, res)
+  # Random samples
+  nset = i - nrow(data.paret)
+  res.rando = data.frame()
+  for(j in 1:30){ 
+    # Collect multiple random datasets to get a sense of the variance
+    rando = data.rando[c(1:nrow(data.paret), 
+                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
+    res = SVM.err.n(fine.input = fine.grid, input.data = rando)
+    # Normalized to the starting state
+    res$err.n = res$err/err0$err
+    res.rando = rbind(res.rando, res)
+  }
+  err.rando = data.frame()
+  # Uncertainty correction based on the variance - in this case want the 95% CI
+  for(met in unique(res.rando$method)){
+    for(tp in unique(res.rando$typ)){
+      sub = dplyr::filter(res.rando, method == met, typ == tp)
+      err.rando = rbind(err.rando, data.frame(
+          err = median(sub$err),  err.n = median(sub$err.n),
+          unc.min = quantile(x = sub$err, probs = 0.025), 
+          unc.max = quantile(x = sub$err, probs = 0.975), 
+          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
+          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
+          class = 'Utopia Distance', typ = tp, method = met,
+          n = i - nrow(data.paret),
+          samp = 'Random'))
+    }
+  }
+  rbind(err.adapt, err.rando)
 }
-rm(res)
+parallel::stopCluster(cl = my.cluster)
 # err.n
 # Combine with 0 state
 err0$n = 0
 err0$class = 'Utopia Distance'
 err0$samp = 'Adaptive'
 err0$err.n = 1
-err0$unc.n = 0
+err0$unc.max   = err0$err; err0$unc.min   = err0$err
+err0$unc.max.n = 1;        err0$unc.min.n = 1
 err.n = rbind(err0, err.n)
 err0$samp = 'Random'
 err.n = rbind(err0, err.n)
 
 # Plotting
-err.n
+# err.n
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = err.n - unc.n,
-                              ymax = err.n + unc.n, color = samp)) +
+  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = unc.min.n, ymax = unc.max.n,
+                              color = samp)) +
+  geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
   facet_grid(typ~method, scale = 'free')
 ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err, ymin = err - unc,
-                              ymax = err + unc, color = samp)) +
+  geom_errorbar(mapping = aes(x = n, y = err, ymin = unc.min, ymax = unc.max, color = samp)) +
+  geom_point(mapping = aes(x = n, y = err, color = samp)) +
   facet_grid(typ~method, scale = 'free')
 
 # Store data
 err.svm = rbind(err.svm, err.n)
 
+write.csv(err.svm, 'SVM_Error-Nsamp.csv', row.names = F)
 ```
 
 
