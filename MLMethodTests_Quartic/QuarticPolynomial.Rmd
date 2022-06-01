@@ -225,6 +225,7 @@ if(file.exists('GPar_Random.csv') == FALSE){
 }
 data.rando = read.csv(file = 'GPar_Random.csv')
 data.rando = data.rando[1:nrow(data.delta),] # Keep same sample size for initial testing
+# Extra random samples are used later for Monte Carlo
 
 ##
 # Grid of the relevant region to visualize and compare
@@ -418,7 +419,7 @@ ggplot() +
                                 'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
                      values = c('tru' = 'black', 'paret' = 'skyblue2', 'adapt' = 'red', 'rando' = 'green')) +
   labs(x = expression('x'[1]), x = expression('x'[2]), subtitle = 'Criteria: Pareto Distance', color = '') +
-  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85)) +
+  theme_classic() + guides(fill = 'none') + theme(legend.position = c(0.85, 0.85)) +
   scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
 
 ## Threshold
@@ -451,7 +452,7 @@ ggplot() +
                                 'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
                      values = c('tru' = 'black', 'paret' = 'skyblue2', 'adapt' = 'red', 'rando' = 'green')) +
   labs(x = expression('x'[1]), x = expression('x'[2]), subtitle = 'Criteria: Objective function values', color = '') +
-  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85)) +
+  theme_classic() + guides(fill = 'none') + theme(legend.position = c(0.85, 0.85)) +
   scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
 
 ## Radius-angle
@@ -485,12 +486,80 @@ ggplot() +
                      values = c('tru' = 'black', 'paret' = 'skyblue2', 'adapt' = 'red', 'rando' = 'green')) +
   labs(x = expression('x'[1]), x = expression('x'[2]), color = '',
        subtitle = expression('Criteria: Utopia point distance and f'[1]*' Priority > 80%')) +
-  theme_classic() + guides(fill = FALSE) + theme(legend.position = c(0.85, 0.85)) +
+  theme_classic() + guides(fill = 'none') + theme(legend.position = c(0.85, 0.85)) +
   scale_x_continuous(limits = c(0, 5), expand = c(0, 0)) + scale_y_continuous(limits = c(0, 5), expand = c(0, 0))
 
 
 ```
 
+A closer inspection of each GP-discovered boundary compared to the actual boundary based on fine-resolution function evaluation.
+
+```{r GP Marginals Comparison}
+# Single variable conditionals compared to the expected conditionals by integration
+Infer.plt = read.csv('../Ex_Quartic/Marginals_delta.csv')
+ggplot() +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), 
+            mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), 
+            mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat != 'tru'), 
+            mapping = aes(x = x, y = prob, color = cat)) +
+  facet_wrap(var~., nrow = 2) + 
+  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
+        'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
+                     values = c('tru' = 'black', 'start' = 'skyblue2', 
+        'adapt' = 'red', 'rando' = 'green'),
+                     breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
+  labs(x = '', y = 'Probability of Acceptance', 
+       subtitle = expression('Pareto Distance'), color = '') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+Infer.plt = read.csv('../Ex_Quartic/Marginals_cutof.csv')
+ggplot() +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), 
+            mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), 
+            mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat != 'tru'), 
+            mapping = aes(x = x, y = prob, color = cat)) +
+  facet_wrap(var~., nrow = 2) + 
+  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
+        'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
+                     values = c('tru' = 'black', 'start' = 'skyblue2', 
+        'adapt' = 'red', 'rando' = 'green'),
+                     breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
+  labs(x = '', y = 'Probability of Acceptance', 
+       subtitle = expression('Cutoff Thresholds'), color = '') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+Infer.plt = read.csv('../Ex_Quartic/Marginals_radan.csv')
+ggplot() +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), 
+            mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat == 'tru'), 
+            mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
+  geom_path(data = filter(Infer.plt, cat != 'tru'), 
+            mapping = aes(x = x, y = prob, color = cat)) +
+  facet_wrap(var~., nrow = 2, labeller = label_parsed) + 
+  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
+        'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
+                     values = c('tru' = 'black', 'start' = 'skyblue2', 
+        'adapt' = 'red', 'rando' = 'green'),
+                     breaks = c('tru', 'start', 'adapt', 'rando')) +
+  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
+  labs(x = '', y = 'Probability of Acceptance', 
+       subtitle = expression('Utopia Distance + Priority'), color = '') +
+  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
+  theme_bw()
+
+
+```
+
+# GP-based Classifier Error Rates
 
 The error rate in the GP model estimate should account for the built-in uncertainty in the model.
 The probability that the model gives the wrong result given the $(x_1, x_2)$ coordinates is the probability that it accepts the point when it should reject it, or vice versa.
@@ -504,172 +573,9 @@ The calculation separates the terms into type I (P[should reject | accepted]) an
 These conditionals are calcultaed by Bayes rule,
 $P[X|Y] = P[X, Y] P[X] / P[Y]$
 
-```{r GP: Error rate}
-error.rate = data.frame(method = 'GP', source = rep(c('0paret', '1adapt', '2rando'), 3),
-                        criteria = c(rep('Pareto Distance', 3), 
-                                     rep('Threshold Cutoff', 3), 
-                                     rep('Utopia Distance', 3)))
-error.rate$criteria = factor(error.rate$criteria, levels = c("Pareto Distance", 
-                                     "Threshold Cutoff", "Utopia Distance"))
-# Total error rate
-error.rate$rate =
-  c(mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.paret, filter(fine.grid, delta == 0)$prob.delta.paret)),
-    mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.adapt, filter(fine.grid, delta == 0)$prob.delta.adapt)),
-    mean(c(1 - filter(fine.grid, delta == 1)$prob.delta.rando, filter(fine.grid, delta == 0)$prob.delta.rando)),
-    mean(c(1 - filter(fine.grid, cutof == 1)$prob.cutof.paret, filter(fine.grid, cutof == 0)$prob.cutof.paret)),
-    mean(c(1 - filter(fine.grid, cutof == 1)$prob.cutof.adapt, filter(fine.grid, cutof == 0)$prob.cutof.adapt)),
-    mean(c(1 - filter(fine.grid, cutof == 1)$prob.cutof.rando, filter(fine.grid, cutof == 0)$prob.cutof.rando)),
-    mean(c(1 - filter(fine.grid, radan == 1)$prob.radan.paret, filter(fine.grid, radan == 0)$prob.radan.paret)),
-    mean(c(1 - filter(fine.grid, radan == 1)$prob.radan.adapt, filter(fine.grid, radan == 0)$prob.radan.adapt)),
-    mean(c(1 - filter(fine.grid, radan == 1)$prob.radan.rando, filter(fine.grid, radan == 0)$prob.radan.rando)))
-error.rate$err = sqrt(error.rate$rate*(1-error.rate$rate)/nrow(fine.grid))
+Calculating this error rate for as the sample size increases and comparing it to the range of possibilities when randomly sampling.
 
-# Type 2 error = P[should accept | rejected]
-error.rate$typ2 =
-  c(sum(1 - filter(fine.grid, delta == 1)$prob.delta.paret)*nrow(filter(fine.grid, delta == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.delta.paret),
-    sum(1 - filter(fine.grid, delta == 1)$prob.delta.adapt)*nrow(filter(fine.grid, delta == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.delta.adapt),
-    sum(1 - filter(fine.grid, delta == 1)$prob.delta.rando)*nrow(filter(fine.grid, delta == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.delta.rando),
-    sum(1 - filter(fine.grid, cutof == 1)$prob.cutof.paret)*nrow(filter(fine.grid, cutof == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.cutof.paret),
-    sum(1 - filter(fine.grid, cutof == 1)$prob.cutof.adapt)*nrow(filter(fine.grid, cutof == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.cutof.adapt),
-    sum(1 - filter(fine.grid, cutof == 1)$prob.cutof.rando)*nrow(filter(fine.grid, cutof == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.cutof.rando),
-    sum(1 - filter(fine.grid, radan == 1)$prob.radan.paret)*nrow(filter(fine.grid, radan == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.radan.paret),
-    sum(1 - filter(fine.grid, radan == 1)$prob.radan.adapt)*nrow(filter(fine.grid, radan == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.radan.adapt),
-    sum(1 - filter(fine.grid, radan == 1)$prob.radan.rando)*nrow(filter(fine.grid, radan == 1))/nrow(fine.grid)^2/
-      mean(1 - fine.grid$prob.radan.rando))
-error.rate$typ2.err = sqrt(error.rate$typ2*(1-error.rate$typ2) / nrow(fine.grid))
-                       # c(rep(nrow(filter(fine.grid, delta == 0)), 3),
-                       #   rep(nrow(filter(fine.grid, cutof == 0)), 3),
-                       #   rep(nrow(filter(fine.grid, radan == 0)), 3)))
-
-# Type 1 error = P[should reject | accepted]
-error.rate$typ1 =
-  c(sum(filter(fine.grid, delta == 0)$prob.delta.paret)*nrow(filter(fine.grid, delta == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.delta.paret),
-    sum(filter(fine.grid, delta == 0)$prob.delta.adapt)*nrow(filter(fine.grid, delta == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.delta.adapt),
-    sum(filter(fine.grid, delta == 0)$prob.delta.rando)*nrow(filter(fine.grid, delta == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.delta.rando),
-    sum(filter(fine.grid, cutof == 0)$prob.cutof.paret)*nrow(filter(fine.grid, cutof == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.cutof.paret),
-    sum(filter(fine.grid, cutof == 0)$prob.cutof.adapt)*nrow(filter(fine.grid, cutof == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.cutof.adapt),
-    sum(filter(fine.grid, cutof == 0)$prob.cutof.rando)*nrow(filter(fine.grid, cutof == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.cutof.rando),
-    sum(filter(fine.grid, radan == 0)$prob.radan.paret)*nrow(filter(fine.grid, radan == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.radan.paret),
-    sum(filter(fine.grid, radan == 0)$prob.radan.adapt)*nrow(filter(fine.grid, radan == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.radan.adapt),
-    sum(filter(fine.grid, radan == 0)$prob.radan.rando)*nrow(filter(fine.grid, radan == 0))/nrow(fine.grid)^2/
-      mean(fine.grid$prob.radan.rando))
-error.rate$typ1.err = sqrt(error.rate$typ1*(1-error.rate$typ1) / nrow(fine.grid))
-                       # c(rep(nrow(filter(fine.grid, delta == 0)), 3),
-                       #   rep(nrow(filter(fine.grid, cutof == 0)), 3),
-                       #   rep(nrow(filter(fine.grid, radan == 0)), 3)))
-error.rate
-
-g.tot = ggplot(error.rate) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, y = rate, ymin = rate - err, ymax = rate + err), width = 0.5) +
-  facet_wrap(~criteria, scales = 'free') +
-  scale_x_discrete(breaks = c(), labels = c()) +
-  labs(x = '', y = 'Total\nError Rate') +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  theme_classic() + scale_y_continuous(expand = expansion(mult = c(0, .1)))
-g.ty1 = ggplot(error.rate) +
-  geom_col(mapping = aes(x = source, y = typ1, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, y = typ1, ymin = typ1 - typ1.err, ymax = typ1 + typ1.err), width = 0.5) +
-  facet_wrap(~criteria, scales = 'free') +
-  scale_x_discrete(breaks = c(), labels = c()) +
-  labs(x = '', y = 'False Positive\nError Rate') +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  theme_classic() + scale_y_continuous(expand = expansion(mult = c(0, .1)))
-g.ty2 = ggplot(error.rate) +
-  geom_col(mapping = aes(x = source, y = typ2, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, y = typ2, ymin = typ2 - typ2.err, ymax = typ2 + typ2.err), width = 0.5) +
-  facet_wrap(~criteria, scales = 'free') +
-  scale_x_discrete(breaks = c(), labels = c()) +
-  labs(x = '', y = 'False Negative\nError Rate') +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  theme_classic() + scale_y_continuous(expand = expansion(mult = c(0, .1)))
-
-(g.tot + guides(fill = FALSE)) / g.ty1 / (g.ty2 + guides(fill = FALSE))
-
-write.csv(error.rate, 'ErrorRates.csv', row.names = F)
-rm(g.tot, g.ty1, g.ty2)
-```
-
-A closer inspection of each GP-discovered boundary compared to the actual boundary based on fine-resolution function evaluation.
-
-```{r GP Marginals Comparison}
-# Single variable conditionals compared to the expected conditionals by integration
-Infer.plt = read.csv('../Ex_Quartic/Marginals_delta.csv')
-ggplot() +
-  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
-  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
-  geom_path(data = filter(Infer.plt, cat != 'tru'), mapping = aes(x = x, y = prob, color = cat)) +
-  facet_wrap(var~., nrow = 2) + 
-  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
-                                  'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
-                     values = c('tru' = 'black', 'start' = 'skyblue2', 
-                                  'adapt' = 'red', 'rando' = 'green'),
-                     breaks = c('tru', 'start', 'adapt', 'rando')) +
-  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
-  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Pareto Distance'), color = '') +
-  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
-  theme_bw()
-
-Infer.plt = read.csv('../Ex_Quartic/Marginals_cutof.csv')
-ggplot() +
-  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
-  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
-  geom_path(data = filter(Infer.plt, cat != 'tru'), mapping = aes(x = x, y = prob, color = cat)) +
-  facet_wrap(var~., nrow = 2) + 
-  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
-                                  'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
-                     values = c('tru' = 'black', 'start' = 'skyblue2', 
-                                  'adapt' = 'red', 'rando' = 'green'),
-                     breaks = c('tru', 'start', 'adapt', 'rando')) +
-  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
-  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Cutoff Thresholds'), color = '') +
-  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
-  theme_bw()
-
-Infer.plt = read.csv('../Ex_Quartic/Marginals_radan.csv')
-ggplot() +
-  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob - psd, color = cat), linetype = 2) +
-  geom_path(data = filter(Infer.plt, cat == 'tru'), mapping = aes(x = x, y = prob + psd, color = cat), linetype = 2) +
-  geom_path(data = filter(Infer.plt, cat != 'tru'), mapping = aes(x = x, y = prob, color = cat)) +
-  facet_wrap(var~., nrow = 2, labeller = label_parsed) + 
-  scale_color_manual(labels = c('tru' = 'Expected Marginal', 'start' = 'Starting Dataset', 
-                                  'adapt' = '+ Adaptive Sampling', 'rando' = '+ Random Sampling'),
-                     values = c('tru' = 'black', 'start' = 'skyblue2', 
-                                  'adapt' = 'red', 'rando' = 'green'),
-                     breaks = c('tru', 'start', 'adapt', 'rando')) +
-  guides(color = guide_legend(override.aes = list(linetype = c(2, 1, 1, 1)))) +
-  labs(x = '', y = 'Probability of Acceptance', subtitle = expression('Utopia Distance + Priority'), color = '') +
-  scale_y_continuous(expand = c(0, 0.05)) + scale_x_continuous(expand = c(0, 0)) +
-  theme_bw()
-
-
-```
-
-Alternative Metric: Accuracy as n samples are collected
-
-```{r}
+```{r GP: Sample Size Effects on Error - Functions}
 mod.err.n = function(data.dist, data.f, data.rad, test.vector){
   # Given a training and testing dataset, gives the error of the model
   # Intent is to use n samples in the training dataset to compare effect of increasing
@@ -688,11 +594,11 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
                             output.name = 'theta')
   
   # Calculate the predictions
-  res.dist = predict(object = mod.dist,newdata = fine.grid[, c('x1', 'x2')], type = 'UK')
-  res.f1   = predict(object = mod.f1,  newdata = fine.grid[, c('x1', 'x2')], type = "UK")
-  res.f2   = predict(object = mod.f2,  newdata = fine.grid[, c('x1', 'x2')], type = "UK")
-  res.rad  = predict(object = mod.rad, newdata = fine.grid[, c('x1', 'x2')], type = "UK")
-  res.ang  = predict(object = mod.ang, newdata = fine.grid[, c('x1', 'x2')], type = "UK")
+  res.dist = predict(object = mod.dist,newdata = test.vector[, c('x1', 'x2')], type = 'UK')
+  res.f1   = predict(object = mod.f1,  newdata = test.vector[, c('x1', 'x2')], type = "UK")
+  res.f2   = predict(object = mod.f2,  newdata = test.vector[, c('x1', 'x2')], type = "UK")
+  res.rad  = predict(object = mod.rad, newdata = test.vector[, c('x1', 'x2')], type = "UK")
+  res.ang  = predict(object = mod.ang, newdata = test.vector[, c('x1', 'x2')], type = "UK")
 
   # Calculate the error likelihoods
   test.vector$prob.delta = pnorm(q = 0, mean = res.dist$mean - 1, sd = res.dist$sd)
@@ -708,8 +614,7 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
                        dplyr::filter(test.vector, cutof == 0)$prob.cutof)),
             mean(c(1 - dplyr::filter(test.vector, radan == 1)$prob.radan, 
                        dplyr::filter(test.vector, radan == 0)$prob.radan)))
-  # tot.unc = sqrt(tot.err*(1-tot.err)/nrow(test.vector))
-  
+
   neg.err = 
     c(sum(1 - dplyr::filter(test.vector, delta == 1)$prob.delta)*
         nrow(dplyr::filter(test.vector, delta == 1))/nrow(test.vector)^2/
@@ -722,8 +627,7 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
       sum(1 - dplyr::filter(test.vector, radan == 1)$prob.radan)*
         nrow(dplyr::filter(test.vector, radan == 1))/nrow(test.vector)^2/
         mean(1 - test.vector$prob.radan))
-  # neg.unc = sqrt(neg.err*(1-neg.err) / nrow(test.vector))
-  
+
   pos.err = 
     c(sum(dplyr::filter(test.vector, delta == 0)$prob.delta)*
         nrow(dplyr::filter(test.vector, delta == 0))/nrow(test.vector)^2/
@@ -736,132 +640,279 @@ mod.err.n = function(data.dist, data.f, data.rad, test.vector){
       sum(dplyr::filter(test.vector, radan == 0)$prob.radan)*
         nrow(dplyr::filter(test.vector, radan == 0))/nrow(test.vector)^2/
         mean(test.vector$prob.radan))
-  # pos.unc = sqrt(pos.err*(1-pos.err) / nrow(test.vector))
   
-  # For the purposes of data visualization and bounding of a probability, frame 
-  # the uncertainty as the upper and lower bound (+/- SD) such that is it always
-  # bounded between 0 and 1
-  # tot.min = tot.err - tot.unc; tot.max = tot.err + tot.unc
-  # pos.min = pos.err - pos.unc; pos.max = pos.err + pos.unc
-  # neg.min = neg.err - neg.unc; neg.max = neg.err + neg.unc
-  # tot.min[tot.min < 0] = 0; tot.max[tot.max > 1] = 1
-  # pos.min[pos.min < 0] = 0; pos.max[pos.max > 1] = 1
-  # neg.min[neg.min < 0] = 0; neg.max[neg.max > 1] = 1
-  
-  return(data.frame(err = c(tot.err, neg.err, pos.err), 
-            # unc.min = c(tot.min, neg.min, pos.min), 
-            # unc.max = c(tot.max, neg.max, pos.max), 
+  return(data.frame(prob = c(tot.err, neg.err, pos.err), 
             class = c('Pareto Distance', 'Threshold Cutoff', 'Utopia Distance'),
             typ = c(rep('Total', 3), rep('False Negative', 3), 
                     rep('False Positive', 3))))
 }
 
-test.vec = fine.grid[, names(fine.grid) %in% 
-                          c('x1', 'x2', 'delta', 'cutof', 'radan')]
+mod.err.nSamp = function(data.dist, data.f, data.rad, data.rando, 
+                         nParet, nTest, test.vector){
+  # Calculate adaptively sampled and not-adaptively sampled conditions, then
+  # compare them to obtain the percentile
+  # Adaptive samples
+  delta = data.delta[1:(nParet + nTest),]
+  cutof = data.cutof[1:(nParet + nTest),]
+  radan = data.radan[1:(nParet + nTest),]
+  err = mod.err.n(data.dist = delta, data.f = cutof, data.rad = radan, 
+                  test.vector = test.vector)
+  names(err)[1] = 'adapt'
 
-# Using the full random dataset to get its variance
-data.rando = read.csv(file = 'GPar_Random.csv')
-
-nsamp = seq(from = nrow(data.paret) + 1, to = nrow(data.delta), by = 1)
-# Starting point - no samples
-res = mod.err.n(data.dist = data.paret, data.f = data.paret, data.rad = data.paret, 
-                test.vector = test.vec)
-res$n = 0
-res$samp = 'Random'
-res$unc.min = res$err; res$unc.max = res$err
-res$err.n = 1
-res$unc.min.n = 1; res$unc.max.n = 1
-err0 = res
-res$samp = 'Adaptive'
-
-# Run in parallel
-n.cores <- parallel::detectCores() - 1
-my.cluster <- parallel::makeCluster(
-  n.cores, 
-  type = "PSOCK"
-  )
-doParallel::registerDoParallel(cl = my.cluster)
-# foreach::getDoParRegistered()
-
-err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
   # Random samples
-  nset = i - nrow(data.paret)
   res.rando = data.frame()
-  for(j in 1:30){ 
+  # Only need a smaller test set for the random subset because there will be so many
+  rando.subset = test.vector[sample(1:nrow(test.vector), 
+                              size = round(nrow(test.vector)/10)),]
+  for(j in 1:1000){
     # Collect multiple random datasets to get a sense of the variance
-    rando = data.rando[c(1:nrow(data.paret), 
-                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
+    rando = data.rando[c(1:nParet, 
+                         sample(x = (nParet+1):nrow(data.rando), size = nTest)),]
     res = mod.err.n(data.dist = rando, data.f = rando, data.rad = rando, 
-                    test.vector = test.vec)
-    # Normalized to the starting state
-    res$err.n = res$err/err0$err
+                    test.vector = rando.subset)
     res.rando = rbind(res.rando, res)
   }
-  err = data.frame()
-  # Uncertainty correction based on the variance - in this case want the 95% CI
-  for(cls in unique(res.rando$class)){
-    for(tp in unique(res.rando$typ)){
-      sub = dplyr::filter(res.rando, class == cls, typ == tp)
-      err = rbind(err, data.frame(
-          err = median(sub$err),  err.n = median(sub$err.n),
-          unc.min = quantile(x = sub$err, probs = 0.025), 
-          unc.max = quantile(x = sub$err, probs = 0.975), 
-          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
-          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
-          class = cls, typ = tp,
-          n = i - nrow(data.paret),
-          samp = 'Random'))
-    }
-  }
-
-  # Adaptive samples
-  delta = data.delta[1:i,]
-  cutof = data.cutof[1:i,]
-  radan = data.radan[1:i,]
-  res = mod.err.n(data.dist = delta, data.f = cutof, data.rad = radan, 
-                  test.vector = test.vec)
-  res$n = i - nrow(data.paret)
-  res$samp = 'Adaptive'
-  res$err.n = res$err/err0$err
-  # Set the "uncertainty" to zero - the Monte Carlo error is relatively small,
-  # and doesn't quite represent the same error as above
-  res$unc.min = res$err
-  res$unc.max = res$err
-  res$unc.min.n = res$err.n
-  res$unc.max.n = res$err.n
   
-  # res$unc.min.n = res$unc.min/err0$err
-  # res$unc.max.n = res$unc.max/err0$err
-  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  rbind(err, res)
+  # Aggregated information: median, 95% CI window, and percentile
+  err$unc.min = NaN;  err$unc.med = NaN
+  err$unc.max = NaN;  err$ptl = NaN
+  # Uncertainty correction based on the variance - in this case want the 95% CI
+  for(i in 1:nrow(err)){
+    cls = err$class[i]
+    tp = err$typ[i]
+    sub = dplyr::filter(res.rando, class == cls, typ == tp)
+    err$unc.min[i] = unname(quantile(sub$prob, 0.025))
+    err$unc.max[i] = unname(quantile(sub$prob, 0.975))
+    err$unc.med[i] = median(sub$prob)
+    err$ptl[i] = nrow(dplyr::filter(sub, prob > err$adapt[i])) / nrow(sub)
+  }
+  # Further labels
+  err$n = nTest
+  return(err)
 }
 
-err.n = rbind(err0, res, err.n)
-err.n
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, ymin = unc.min, ymax = unc.max, y = err, 
-                    color = samp), width = 0.5) +
-  geom_point(mapping = aes(x = n, y = err, color = samp)) +
-  facet_wrap(factor(typ, levels = c('Total', 'False Positive', 
-              'False Negative'))~class, scales = 'free_y') +
-  labs(x = 'Additional Samples', y = 'Error Rate')
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, ymin = unc.min.n, ymax = unc.max.n, y = err, 
-                    color = samp), width = 0.5) +
-  geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
-  facet_grid(factor(typ, levels = c('Total', 'False Positive', 
-              'False Negative'))~class, scales = 'free_y') +
-  labs(x = 'Additional Samples', y = 'Error Rate')
+```
 
-write.csv(err.n, 'ErrorRates-Nsamp.csv', row.names = F)
+```{r GP: Sample Size Effects on Error - Calculations}
+# Monte Carlo sampling - skip if the calculations were previously performed
+if(!file.exists('ErrorRates-Nsamp.csv')){
+  test.vec = fine.grid[, names(fine.grid) %in% c('x1', 'x2', 'delta', 'cutof', 'radan')]
+  
+  # Using the full random dataset to get its variance
+  data.rando = read.csv(file = 'GPar_Random.csv')
+  # Number of samples collected adaptively
+  nSet = nrow(data.delta) - nrow(data.paret)
+  
+  # Run in parallel
+  n.cores <- parallel::detectCores() - 1
+  my.cluster <- parallel::makeCluster(
+    n.cores, 
+    type = "PSOCK"
+    )
+  doParallel::registerDoParallel(cl = my.cluster)
+  # foreach::getDoParRegistered()
+  
+  err.n = foreach(i = seq(from = 4, to = nSet, by = 4), .combine = 'rbind') %dopar% {
+    mod.err.nSamp(data.dist = data.delta, data.f = data.cutof, data.rad = data.radan, 
+                  data.rando = data.rando, nParet = nrow(data.paret), nTest = i,
+                  test.vector = test.vec)
+  }
+  parallel::stopCluster(cl = my.cluster)
+  
+  # Zero sample state
+  err0 = mod.err.n(data.dist = data.paret, data.f = data.paret, data.rad = data.paret, 
+                  test.vector = test.vec)
+  err0$n = 0
+  names(err0)[1] = 'adapt'
+  err0$unc.min = err0$adapt; err0$unc.med = err0$adapt; 
+  err0$unc.max = err0$adapt; err0$ptl = NaN
+  err.n = rbind(err0, err.n)
+  
+  # Normalized to the starting point for visualization
+  update = c('class', 'typ', 'ptl', 'n')
+  err.norm = err.n[, !names(err.n) %in% update]
+  err.norm = err.norm / err0$adapt
+  names(err.norm) = lapply(names(err.norm), FUN = function(x){paste(x, '.n', sep = "")})
+  rm(update)
+  err.n = cbind(err.n, err.norm)
+  
+  # err.n
+  write.csv(err.n, 'ErrorRates-Nsamp.csv', row.names = F)
+}
 
-parallel::stopCluster(cl = my.cluster)
-rm(err0, res, nsamp, test.vec)
+```
+
+```{r GP: Sample Size Effects on Error - Plotting}
+err.n = read.csv('ErrorRates-Nsamp.csv')
+# Absolute errors
+ggplot() +
+  geom_polygon(data = data.frame(x = c(err.n$n, rev(err.n$n)),
+                                 y = c(err.n$unc.min, rev(err.n$unc.max)),
+                                 typ = c(err.n$typ, rev(err.n$typ)),
+                                 class = c(err.n$class, rev(err.n$class))),
+               mapping = aes(x = x, y = y, fill = 'Random'), alpha = 0.25) +
+  geom_line(data = err.n, mapping = aes(x = n, y = unc.med, color = 'Random')) +
+  geom_line(data = err.n, mapping = aes(x = n, y = adapt, color = 'Adaptive')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = unc.med, color = 'Random')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = adapt, color = 'Adaptive')) +
+  facet_grid(typ~class, scale = 'free') +
+  scale_color_manual(values = c('Random' = 'red', 'Adaptive' = 'blue')) +
+  scale_fill_manual(values = c('Random' = 'red')) +
+  guides(fill = 'none') +
+  labs(x = 'Additional Samples', y = 'Error Rate', color = NULL)
+
+# Normalized errors
+ggplot() +
+  geom_polygon(data = data.frame(x = c(err.n$n, rev(err.n$n)),
+                                 y = c(err.n$unc.min.n, rev(err.n$unc.max.n)),
+                                 typ = c(err.n$typ, rev(err.n$typ)),
+                                 class = c(err.n$class, rev(err.n$class))),
+               mapping = aes(x = x, y = y, fill = 'Random'), alpha = 0.25) +
+  geom_line(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_line(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  facet_grid(typ~class, scale = 'free') +
+  scale_color_manual(values = c('Random' = 'red', 'Adaptive' = 'blue')) +
+  scale_fill_manual(values = c('Random' = 'red')) +
+  guides(fill = 'none') +
+  labs(x = 'Additional Samples', y = 'Relative Error Rate', color = NULL)
+
+# Percentiles
+ggplot() +
+  geom_line(data = err.n, mapping = aes(x = n, y = ptl*100)) +
+  geom_point(data = err.n, mapping = aes(x = n, y = ptl*100)) +
+  facet_grid(typ~class, scale = 'free') +
+  guides(fill = 'none') +
+  labs(x = 'Additional Samples', y = 'Adaptive Sampling Percentile', color = NULL)
+
+```
+
+Generally, finding that the adaptive sample procedure is in the 90th+ percentile of random sample configurations.
+
+# GP-based Importance of Variables: Sobol Method
+
+Compares the contribution to the variance
+
+Using the total-effect index as an aggregate metric that combines all first and higher-order contributions to the variance.
+
+Monte Carlo method based on:
+
+I.M Sobol, "Global sensitivity indices for nonlinear mathematical models and their Monte Carlo estimates,"
+Mathematics and Computers in Simulation, Vol 55, 2001, pp. 271-280, doi:10.1016/S0378-4754(00)00270-6.
+
+```{r GP: Importance by Sobol Method}
+# Sobol method - Total effect index
+sobol.GP = function(nsamp, mod.dist, mod.f1, mod.f2, mod.rad, mod.ang){
+  # Set up the random points - 2 sets
+  tot.rand = nsamp*50 # Repeat 50 times to get the standard error like the other importance metrics
+
+  # tot.rand = nsamp
+  xA = data.frame(x1 = runif(n = tot.rand, min = 0, max = 5),
+                  x2 = runif(n = tot.rand, min = 0, max = 5))
+  xB = data.frame(x1 = runif(n = tot.rand, min = 0, max = 5),
+                  x2 = runif(n = tot.rand, min = 0, max = 5))
+  # Single variable exchanges
+  z1 = data.frame(x1 = xA$x1, x2 = xB$x2)
+  z2 = data.frame(x1 = xB$x1, x2 = xA$x2)
+
+  # Calculate the probabilities
+  # Pareto distance
+  res = predict(object = mod.dist, newdata = xA, type = 'UK')
+  p.xA = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  
+  res = predict(object = mod.dist, newdata = z1, type = 'UK')
+  p.z1 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  
+  res = predict(object = mod.dist, newdata = z2, type = 'UK')
+  p.z2 = pnorm(q = 0, mean = res$mean - 2, sd = res$sd)
+  
+  sobol1 = matrix((p.z1 - p.xA)^2/2, nrow = nsamp)
+  sobol2 = matrix((p.z2 - p.xA)^2/2, nrow = nsamp)
+  sobol = c(mean(sobol1), mean(sobol2))
+  sobol.sd = c(sd(colSums(sobol1)/nsamp), sd(colSums(sobol2)/nsamp))
+  delta = data.frame(var = c('x1', 'x2'), typ = 'Pareto Distance',
+                     import = sobol, sd = sobol.sd,
+                     r.import = sobol/max(sobol),
+                     r.sd = sobol.sd/max(sobol))
+
+  # Threshold Cutoff
+  res1 = predict(object = mod.f1, newdata = xA, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = xA, type = 'UK')
+  p.xA = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  
+  res1 = predict(object = mod.f1, newdata = z1, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = z1, type = 'UK')
+  p.z1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  
+  res1 = predict(object = mod.f1, newdata = z2, type = 'UK')
+  res2 = predict(object = mod.f2, newdata = z2, type = 'UK')
+  p.z2 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    pnorm(q = 0, mean = res2$mean - 2, sd = res2$sd)
+  
+  sobol1 = matrix((p.z1 - p.xA)^2/2, nrow = nsamp)
+  sobol2 = matrix((p.z2 - p.xA)^2/2, nrow = nsamp)
+  sobol = c(mean(sobol1), mean(sobol2))
+  sobol.sd = c(sd(colSums(sobol1)/nsamp), sd(colSums(sobol2)/nsamp))
+  cutof = data.frame(var = c('x1', 'x2'), typ = 'Threshold Cutoff',
+                     import = sobol, sd = sobol.sd,
+                     r.import = sobol/max(sobol),
+                     r.sd = sobol.sd/max(sobol))
+
+  # Utopia distance + Priority
+  res1 = predict(object = mod.rad, newdata = xA, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = xA, type = 'UK')
+  p.xA = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  
+  res1 = predict(object = mod.rad, newdata = z1, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = z1, type = 'UK')
+  p.z1 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+
+  res1 = predict(object = mod.rad, newdata = z2, type = 'UK')
+  res2 = predict(object = mod.ang, newdata = z2, type = 'UK')
+  p.z2 = pnorm(q = 0, mean = res1$mean - 2, sd = res1$sd) * 
+    (1 - pnorm(q = 0, mean = res2$mean - 20, sd = res2$sd))
+  
+  sobol1 = matrix((p.z1 - p.xA)^2/2, nrow = nsamp)
+  sobol2 = matrix((p.z2 - p.xA)^2/2, nrow = nsamp)
+  sobol = c(mean(sobol1), mean(sobol2))
+  sobol.sd = c(sd(colSums(sobol1)/nsamp), sd(colSums(sobol2)/nsamp))
+  radan = data.frame(var = c('x1', 'x2'), typ = 'Utopia Distance',
+                     import = sobol, sd = sobol.sd,
+                     r.import = sobol/max(sobol),
+                     r.sd = sobol.sd/max(sobol))
+  
+  import = rbind(delta, cutof, radan)
+  import$method = 'Sobol-GP'
+  return(import)
+}
+
+# if(!file.exists('Importance-Sobol-GP.csv')){
+  sobol.import = sobol.GP(nsamp = 1500, mod.dist = mod.dist.adapt, 
+           mod.f1 = mod.f1.adapt, mod.f2 = mod.f2.adapt, 
+           mod.rad = mod.rad.adapt, mod.ang = mod.ang.adapt)
+  write.csv(sobol.import, 'Importance-Sobol-GP.csv', row.names = F)
+# }
+
+sobol.import = read.csv('Importance-Sobol-GP.csv')
+sobol.import
+ggplot(sobol.import) +
+  geom_col(mapping = aes(x = var, y = import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymin = import - sd, ymax = import + sd)) +
+  facet_grid(~typ)
+ggplot(sobol.import) +
+  geom_col(mapping = aes(x = var, y = r.import, fill = var)) +
+  geom_errorbar(mapping = aes(x = var, ymin = r.import - r.sd, ymax = r.import + r.sd)) +
+  facet_grid(~typ)
 
 ```
 
 
-# Existing Method: Support Vector Machines
+# Existing Method: Support Vector Machines 
 
 SVM methods require existing labels for the points; in this case, the labels are whether or not the point meets the same three selection criteria as tested with the new GP method.
 
@@ -877,25 +928,25 @@ SVM.input = function(fine.input, mod.rad, mod.lin, mod.pol, mod.sig, tit){
     geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
     geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
     labs(subtitle = 'Linear', x = expression('x'[1]), y = expression('x'[2])) + 
-    guides(color = FALSE)
+    guides(color = 'none')
   res = predict(object = mod.rad, newdata = fine.input[,c('x1', 'x2')])
   fine.input$res = res
   g.rad = ggplot() +
     geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
     geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
-    labs(subtitle = 'Radial', x = expression('x'[1]), y = expression('x'[2]), title = tit) + guides(color = FALSE)
+    labs(subtitle = 'Radial', x = expression('x'[1]), y = expression('x'[2]), title = tit) + guides(color = 'none')
   res = predict(object = mod.pol, newdata = fine.input[,c('x1', 'x2')])
   fine.input$res = res
   g.pol = ggplot() +
     geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
     geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
-    labs(subtitle = 'Polynomial', x = expression('x'[1]), y = expression('x'[2])) + guides(color = FALSE)
+    labs(subtitle = 'Polynomial', x = expression('x'[1]), y = expression('x'[2])) + guides(color = 'none')
   res = predict(object = mod.sig, newdata = fine.input[,c('x1', 'x2')])
   fine.input$res = res
   g.sig = ggplot() +
     geom_point(data = fine.input, mapping = aes(x = x1, y = x2, color = res)) +
     geom_contour(data = fine.input, mapping = aes(x = x1, y = x2, z = cat), breaks = c(0.5)) +
-    labs(subtitle = 'Sigmoid', x = expression('x'[1]), y = expression('x'[2])) + guides(color = FALSE)
+    labs(subtitle = 'Sigmoid', x = expression('x'[1]), y = expression('x'[2])) + guides(color = 'none')
   return((g.rad + g.lin) / (g.pol + g.sig))
 }
 
@@ -913,64 +964,12 @@ SVM.mod.all = function(input.data){
             scale = FALSE, kernel = "sigmoid", cost = 5)
   return(list(rad = fit.rad, lin = fit.lin, pol = fit.pol, sig = fit.sig))
 }
-SVM.err = function(fine.input, mod.list){
-  # Fine grid has the real result; mod.list is the 4 different SVM kernels
-  fine.input$rad = predict(object = mod.list$rad, newdata = fine.input[,c('x1', 'x2')])
-  fine.input$lin = predict(object = mod.list$lin, newdata = fine.input[,c('x1', 'x2')])
-  fine.input$pol = predict(object = mod.list$pol, newdata = fine.input[,c('x1', 'x2')])
-  # fine.input$sig = predict(object = mod.list$sig, newdata = fine.input[,c('x1', 'x2')])
-  
-  # Error rate
-  rad = nrow(dplyr::filter(fine.input, cat == 0, rad == 1)) + 
-    nrow(dplyr::filter(fine.input, cat == 1, rad == 0))
-  lin = nrow(dplyr::filter(fine.input, cat == 0, lin == 1)) + 
-    nrow(dplyr::filter(fine.input, cat == 1, lin == 0))
-  pol = nrow(dplyr::filter(fine.input, cat == 0, pol == 1)) + 
-    nrow(dplyr::filter(fine.input, cat == 1, pol == 0))
-  # sig = nrow(filter(fine.input, cat == 0, sig == 1)) + nrow(filter(fine.input, cat == 1, sig == 0))
-  # rate = c(rad, lin, pol, sig)/nrow(fine.input)
-  rate = c(rad, lin, pol)/nrow(fine.input)
-  # Uncertainty
-  err = sqrt(rate*(1-rate)/nrow(fine.input))
-  
-  # Type I error = P[should reject | accepted] = P[both] P[should reject] / P[accepted]
-  typ1 =
-    c(nrow(dplyr::filter(fine.input, cat == 0, rad == 1))*
-        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
-        nrow(dplyr::filter(fine.input, rad == 1)),
-      nrow(dplyr::filter(fine.input, cat == 0, lin == 1))*
-        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
-        nrow(dplyr::filter(fine.input, lin == 1)),
-      nrow(dplyr::filter(fine.input, cat == 0, pol == 1))*
-        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
-        nrow(dplyr::filter(fine.input, pol == 1)))#,
-      # nrow(filter(fine.input, cat == 0, sig == 1))*nrow(filter(fine.input, cat == 0))/nrow(fine.input)/
-        # nrow(filter(fine.input, sig == 1)) )
-  typ1.err = sqrt(typ1*(1-typ1) / nrow(fine.input))  
-  
-  # Type II error = P[should accept | rejected] = P[both] P[should accept] / P[rejected]
-  typ2 =
-    c(nrow(dplyr::filter(fine.input, cat == 1, rad == 0))*
-        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
-        nrow(dplyr::filter(fine.input, rad == 0)),
-      nrow(dplyr::filter(fine.input, cat == 1, lin == 0))*
-        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
-        nrow(dplyr::filter(fine.input, lin == 0)),
-      nrow(dplyr::filter(fine.input, cat == 1, pol == 0))*
-        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
-        nrow(dplyr::filter(fine.input, pol == 0)))#,
-      # nrow(filter(fine.input, cat == 1, sig == 0))*nrow(filter(fine.input, cat == 1))/nrow(fine.input)/
-        # nrow(filter(fine.input, sig == 0)) )
-  typ2.err = sqrt(typ2*(1-typ2) / nrow(fine.input))
-  # return(data.frame(method = c('SVM-rad', 'SVM-lin', 'SVM-pol', 'SVM-sig'), rate, err, typ1, typ1.err, typ2, typ2.err))
-  return(data.frame(method = c('SVM-rad', 'SVM-lin', 'SVM-pol'), rate, err, typ1, typ1.err, typ2, typ2.err))
-}
 
 # For the radial and polynomial kernels, calculate the marginals and Shapley values for comparison
 marginal = function(mod){
   x.rng = seq(from = 0, to = 5, length.out = 50)
   svm.margin = data.frame()
-  nsamp = 2000
+  nsamp = 1500
   for(x in x.rng){
     # x1 marginal
     temp.frame = data.frame(x1 = x, x2 = runif(n = nsamp, min = 0, max = 5))
@@ -1032,6 +1031,287 @@ SVM.shap = function(mod){
 
 ```
 
+Calculate errors with sample size considerations, compared to the range of random selections
+
+```{r SVM: Sample Size Effects on Error - Functions}
+SVM.err = function(fine.input, mod.list){
+  # Fine grid has the real result; mod.list is the 4 different SVM kernels
+  fine.input$rad = predict(object = mod.list$rad, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$lin = predict(object = mod.list$lin, newdata = fine.input[,c('x1', 'x2')])
+  fine.input$pol = predict(object = mod.list$pol, newdata = fine.input[,c('x1', 'x2')])
+  # fine.input$sig = predict(object = mod.list$sig, newdata = fine.input[,c('x1', 'x2')])
+  
+  # Error rate
+  rad = nrow(dplyr::filter(fine.input, cat == 0, rad == 1)) + 
+    nrow(dplyr::filter(fine.input, cat == 1, rad == 0))
+  lin = nrow(dplyr::filter(fine.input, cat == 0, lin == 1)) + 
+    nrow(dplyr::filter(fine.input, cat == 1, lin == 0))
+  pol = nrow(dplyr::filter(fine.input, cat == 0, pol == 1)) + 
+    nrow(dplyr::filter(fine.input, cat == 1, pol == 0))
+  # sig = nrow(filter(fine.input, cat == 0, sig == 1)) + nrow(filter(fine.input, cat == 1, sig == 0))
+  # rate = c(rad, lin, pol, sig)/nrow(fine.input)
+  rate = c(rad, lin, pol)/nrow(fine.input)
+
+  # Type I error = P[should reject | accepted] = P[both] P[should reject] / P[accepted]
+  typ1 =
+    c(nrow(dplyr::filter(fine.input, cat == 0, rad == 1))*
+        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, rad == 1)),
+      nrow(dplyr::filter(fine.input, cat == 0, lin == 1))*
+        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, lin == 1)),
+      nrow(dplyr::filter(fine.input, cat == 0, pol == 1))*
+        nrow(dplyr::filter(fine.input, cat == 0))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, pol == 1)))#,
+      # nrow(filter(fine.input, cat == 0, sig == 1))*nrow(filter(fine.input, cat == 0))/nrow(fine.input)/
+        # nrow(filter(fine.input, sig == 1)) )
+
+  # Type II error = P[should accept | rejected] = P[both] P[should accept] / P[rejected]
+  typ2 =
+    c(nrow(dplyr::filter(fine.input, cat == 1, rad == 0))*
+        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, rad == 0)),
+      nrow(dplyr::filter(fine.input, cat == 1, lin == 0))*
+        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, lin == 0)),
+      nrow(dplyr::filter(fine.input, cat == 1, pol == 0))*
+        nrow(dplyr::filter(fine.input, cat == 1))/nrow(fine.input)/
+        nrow(dplyr::filter(fine.input, pol == 0)))#,
+      # nrow(filter(fine.input, cat == 1, sig == 0))*nrow(filter(fine.input, cat == 1))/nrow(fine.input)/
+        # nrow(filter(fine.input, sig == 0)) )
+  # return(data.frame(method = c('SVM-rad', 'SVM-lin', 'SVM-pol', 'SVM-sig'), 
+  #   rate, err, typ1, typ1.err, typ2, typ2.err))
+  return(data.frame(method = c('SVM-rad', 'SVM-lin', 'SVM-pol'), 
+                    rate, typ1, typ2))
+}
+
+SVM.err.n = function(fine.input, input.data){
+  mod.list = SVM.mod.all(input.data = input.data)
+  err = SVM.err(fine.input = fine.input, mod.list = mod.list)
+  
+  # Additional processing to make it consistent with the other convention
+  err.n = data.frame(
+    prob = c(err$rate, err$typ1,     err$typ2),
+    method = err$method,
+    typ = c(rep('Total', nrow(err)), rep('False Positive', nrow(err)), 
+            rep('False Negative', nrow(err)))
+  )
+  # Lower limit of errors - for later to avoid divide by 0 issues
+  err.n$prob[err.n$prob < 1e-8] = 1e-8
+  return(err.n)
+}
+
+SVM.err.nSamp = function(data.dist, data.f, data.rad, data.rando, 
+                         nParet, nTest, test.vector){
+  # Calculate adaptively sampled and not-adaptively sampled conditions, then
+  # compare them to obtain the percentile
+  
+  # Data processing for classification problem
+  delta = data.delta[1:(nParet + nTest),]
+  cutof = data.cutof[1:(nParet + nTest),]
+  radan = data.radan[1:(nParet + nTest),]
+  
+  # Classification metric
+  delta$cat = 0; cutof$cat = 0; radan$cat = 0
+  delta$cat[delta$dist <= 1] = 1
+  cutof$cat[cutof$f1.norm <= 1 & cutof$f2.norm <= 1] = 1
+  radan$cat[sqrt(radan$f1.norm^2 + radan$f2.norm^2) <= 1 & radan$theta > 20] = 1
+  # Test vector and random sample get re-used
+  test.vector$cat = 0
+  test.vector$cat.delta = 0; test.vector$cat.cutof = 0; test.vector$cat.radan = 0
+  test.vector$cat.delta[test.vector$dist <= 1] = 1
+  test.vector$cat.cutof[test.vector$f1.norm <= 1 & test.vector$f2.norm <= 1] = 1
+  test.vector$cat.radan[sqrt(test.vector$f1.norm^2 + test.vector$f2.norm^2) <= 1 & 
+                    test.vector$theta > 20] = 1
+  data.rando$cat = 0; 
+  data.rando$cat.delta = 0; data.rando$cat.cutof = 0; data.rando$cat.radan = 0
+  data.rando$cat.delta[data.rando$dist <= 1] = 1
+  data.rando$cat.cutof[data.rando$f1.norm <= 1 & data.rando$f2.norm <= 1] = 1
+  data.rando$cat.radan[sqrt(data.rando$f1.norm^2 + data.rando$f2.norm^2) <= 1 & 
+                    data.rando$theta > 20] = 1
+  
+  # Calculate errors - adaptive sampling
+  test.vector$cat = test.vector$cat.delta
+  err.delta = SVM.err.n(fine.input = test.vector, input.data = delta)
+  err.delta$class = 'Pareto Distance'
+
+  test.vector$cat = test.vector$cat.cutof
+  err.cutof = SVM.err.n(fine.input = test.vector, input.data = cutof)
+  err.cutof$class = 'Threshold Cutoff'
+  
+  test.vector$cat = test.vector$cat.radan
+  err.radan = SVM.err.n(fine.input = test.vector, input.data = radan)
+  err.radan$class = 'Utopia Distance'
+  err = rbind(err.delta, err.cutof, err.radan)
+  # Make it clear the probability is the adaptive sampling probability
+  names(err)[1] = 'adapt' 
+  
+  # Random samples
+  res.rando = data.frame()
+  for(j in 1:5){ #### Update for MC
+    # Collect multiple random datasets to get a sense of the variance
+    rando = data.rando[c(1:nParet, 
+                         sample(x = (nParet+1):nrow(data.rando), size = nTest)),]
+    
+    rando$cat = rando$cat.delta; test.vector$cat = test.vector$cat.delta
+    err.delta = SVM.err.n(fine.input = test.vector, input.data = rando)
+    err.delta$class = 'Pareto Distance'
+    
+    rando$cat = rando$cat.cutof; test.vector$cat = test.vector$cat.cutof
+    err.cutof = SVM.err.n(fine.input = test.vector, input.data = rando)
+    err.cutof$class = 'Threshold Cutoff'
+    
+    rando$cat = rando$cat.radan; test.vector$cat = test.vector$cat.radan
+    err.radan = SVM.err.n(fine.input = test.vector, input.data = rando)
+    err.radan$class = 'Utopia Distance'
+    
+    res.rando = rbind(res.rando, err.delta, err.cutof, err.radan)
+  }
+  
+  # Aggregated information: median, 95% CI window, and percentile
+  err$unc.min = NaN;  err$unc.med = NaN
+  err$unc.max = NaN;  err$ptl = NaN
+  # Uncertainty correction based on the variance - in this case want the 95% CI
+  for(i in 1:nrow(err)){
+    cls = err$class[i]
+    tp = err$typ[i]
+    mod = err$method[i]
+    sub = dplyr::filter(res.rando, class == cls, typ == tp)
+    err$unc.min[i] = unname(quantile(sub$prob, 0.025))
+    err$unc.max[i] = unname(quantile(sub$prob, 0.975))
+    err$unc.med[i] = median(sub$prob)
+    err$ptl[i] = nrow(dplyr::filter(sub, prob > err$adapt[i])) / nrow(sub)
+  }
+  # Further labels
+  err$n = nTest
+  return(err)
+}
+
+
+```
+
+```{r SVM: Sample Size Effects on Error - Calculations}
+if(file.exists('SVM_Error-Nsamp.csv') == FALSE){
+  # Loading data
+  data.delta = read.csv('../Ex_Quartic/GPar_Accept_Delta1.csv')
+  data.cutof = read.csv('../Ex_Quartic/GPar_Accept_Threshold.csv')
+  data.radan = read.csv('../Ex_Quartic/GPar_Accept_Radius.csv')
+  data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
+  
+  # Using the full random dataset to get its variance
+  data.rando = read.csv(file = 'GPar_Random.csv')
+  # Number of samples collected adaptively
+  nSet = nrow(data.delta) - nrow(data.paret)
+  
+  # Test "samples"
+  test.vec = fine.grid[, names(fine.grid) %in% c('x1', 'x2', 'delta', 'cutof', 'radan')]
+  
+  # Effect of sampling
+  n.cores <- parallel::detectCores() - 1
+  my.cluster <- parallel::makeCluster(
+    n.cores,
+    type = "PSOCK"
+    )
+  doParallel::registerDoParallel(cl = my.cluster)
+  # foreach::getDoParRegistered()
+  
+  err.n = foreach(i = seq(from = 4, to = nSet, by = 4), .combine = 'rbind') %dopar% {
+    SVM.err.nSamp(data.dist = data.delta, data.f = data.cutof, data.rad = data.radan, 
+                  data.rando = data.rando, nParet = nrow(data.paret), nTest = i, 
+                  test.vector = test.vec)
+  }
+  parallel::stopCluster(cl = my.cluster)
+  
+  # Reference point is the no sample case
+  err0 = SVM.err.nSamp(data.dist = data.delta, data.f = data.cutof, data.rad = data.radan, 
+                data.rando = data.rando, nParet = nrow(data.paret), nTest = 0, 
+                test.vector = fine.grid)
+  err0$unc.min = err0$adapt; err0$unc.med = err0$adapt
+  err0$unc.max = err0$adapt; err0$ptl = NaN
+  
+  err.n = rbind(err0, err.n)
+  
+  # Normalized to the starting point for visualization
+  update = c('class', 'typ', 'ptl', 'n', 'method')
+  err.norm = err.n[, !names(err.n) %in% update]
+  err.norm = err.norm / err0$adapt
+  names(err.norm) = lapply(names(err.norm), FUN = function(x){paste(x, '.n', sep = "")})
+  rm(update)
+  err.n = cbind(err.n, err.norm)
+  err.n
+  write.csv(err.n, 'SVM_Error-Nsamp.csv', row.names = F)
+}
+```
+
+```{r SVM: Sample Size Effects on Error - Plotting}
+err.all = read.csv('SVM_Error-Nsamp.csv')
+
+# Normalized errors for each kernel function
+err.n = filter(err.all, method == unique(method)[1])
+ggplot() +
+  geom_polygon(data = data.frame(x = c(err.n$n, rev(err.n$n)),
+                                 y = c(err.n$unc.min.n, rev(err.n$unc.max.n)),
+                                 typ = c(err.n$typ, rev(err.n$typ)),
+                                 class = c(err.n$class, rev(err.n$class))),
+               mapping = aes(x = x, y = y, fill = 'Random'), alpha = 0.25) +
+  geom_line(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_line(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  facet_grid(typ~class, scale = 'free') +
+  scale_color_manual(values = c('Random' = 'red', 'Adaptive' = 'blue')) +
+  scale_fill_manual(values = c('Random' = 'red')) +
+  guides(fill = 'none') +
+  labs(x = 'Additional Samples', y = 'Relative Error Rate', color = NULL,
+       subtitle = unique(err.n$method))
+
+err.n = filter(err.all, method == method[2])
+ggplot() +
+  geom_polygon(data = data.frame(x = c(err.n$n, rev(err.n$n)),
+                                 y = c(err.n$unc.min.n, rev(err.n$unc.max.n)),
+                                 typ = c(err.n$typ, rev(err.n$typ)),
+                                 class = c(err.n$class, rev(err.n$class))),
+               mapping = aes(x = x, y = y, fill = 'Random'), alpha = 0.25) +
+  geom_line(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_line(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  facet_grid(typ~class, scale = 'free') +
+  scale_color_manual(values = c('Random' = 'red', 'Adaptive' = 'blue')) +
+  scale_fill_manual(values = c('Random' = 'red')) +
+  guides(fill = 'none') +
+  labs(x = 'Additional Samples', y = 'Relative Error Rate', color = NULL,
+       subtitle = unique(err.n$method))
+
+err.n = filter(err.all, method == method[3])
+ggplot() +
+  geom_polygon(data = data.frame(x = c(err.n$n, rev(err.n$n)),
+                                 y = c(err.n$unc.min.n, rev(err.n$unc.max.n)),
+                                 typ = c(err.n$typ, rev(err.n$typ)),
+                                 class = c(err.n$class, rev(err.n$class))),
+               mapping = aes(x = x, y = y, fill = 'Random'), alpha = 0.25) +
+  geom_line(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_line(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = unc.med.n, color = 'Random')) +
+  geom_point(data = err.n, mapping = aes(x = n, y = adapt.n, color = 'Adaptive')) +
+  facet_grid(typ~class, scale = 'free') +
+  scale_color_manual(values = c('Random' = 'red', 'Adaptive' = 'blue')) +
+  scale_fill_manual(values = c('Random' = 'red')) +
+  guides(fill = 'none') +
+  labs(x = 'Additional Samples', y = 'Relative Error Rate', color = NULL,
+       subtitle = unique(err.n$method))
+
+# Percentile Ranking
+err.n = filter(err.all, typ == 'Total')
+ggplot() +
+  geom_line(data = err.n, mapping = aes(x = n, y = ptl*100)) +
+  geom_point(data = err.n, mapping = aes(x = n, y = ptl*100)) +
+  facet_grid(method~class, scale = 'free') +
+  guides(fill = 'none') +
+  labs(x = 'Additional Samples', y = 'Adaptive Sampling Percentile', color = NULL)
+
+```
+
 ```{r SVM: Distance}
 data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
 data.delta = read.csv('../Ex_Quartic/GPar_Accept_Delta1.csv')
@@ -1065,49 +1345,6 @@ SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')],
           mod.rad = mod.rando$rad, mod.lin = mod.rando$lin, 
           mod.pol = mod.rando$pol, mod.sig = mod.rando$sig,
           tit = 'Pareto Distance, + Random Sampling')
-
-err.paret = SVM.err(fine.input = fine.grid, mod.list = mod.paret)
-err.paret$source = '0paret'; err.paret$criteria = 'Pareto Distance'
-err.adapt = SVM.err(fine.input = fine.grid, mod.list = mod.adapt)
-err.adapt$source = '1adapt'; err.adapt$criteria = 'Pareto Distance'
-err.rando = SVM.err(fine.input = fine.grid, mod.list = mod.rando)
-err.rando$source = '2rando'; err.rando$criteria = 'Pareto Distance'
-
-err.svm.dist = rbind(err.paret, err.adapt, err.rando)
-
-g.rate = ggplot(err.svm.dist) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = rate - err, ymax = rate + err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'Total\nError Rate', subtitle = 'Pareto Distance')
-
-g.typ1 = ggplot(err.svm.dist) +
-  geom_col(mapping = aes(x = source, y = typ1, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = typ1 - typ1.err, ymax = typ1 + typ1.err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'False Positive\nError Rate')
-
-g.typ2 = ggplot(err.svm.dist) +
-  geom_col(mapping = aes(x = source, y = typ2, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = typ2 - typ2.err, ymax = typ2 + typ2.err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'False Negative\nError Rate')
-
-(g.rate + guides(fill = FALSE)) / g.typ1 / (g.typ2 + guides(fill = FALSE))
-write.csv(err.svm.dist, 'SVM_error_delta.csv', row.names = F)
-rm(err.paret, err.adapt, err.rando)
 
 ```
 
@@ -1237,51 +1474,6 @@ SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')],
           mod.pol = mod.rando$pol, mod.sig = mod.rando$sig,
           tit = 'Threshold Cutoff, + Random Sampling')
 
-# Error rates
-err.paret = SVM.err(fine.input = fine.grid, mod.list = mod.paret)
-err.paret$source = '0paret'; err.paret$criteria = 'Threshold Cutoff'
-err.adapt = SVM.err(fine.input = fine.grid, mod.list = mod.adapt)
-err.adapt$source = '1adapt'; err.adapt$criteria = 'Threshold Cutoff'
-err.rando = SVM.err(fine.input = fine.grid, mod.list = mod.rando)
-err.rando$source = '2rando'; err.rando$criteria = 'Threshold Cutoff'
-
-err.svm.cutof = rbind(err.paret, err.adapt, err.rando)
-
-g.rate = ggplot(err.svm.cutof) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = rate - err, ymax = rate + err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'Total\nError Rate', subtitle = 'Cutoff Threshold')
-
-g.typ1 = ggplot(err.svm.cutof) +
-  geom_col(mapping = aes(x = source, y = typ1, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = typ1 - typ1.err, ymax = typ1 + typ1.err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'False Positive\nError Rate')
-
-g.typ2 = ggplot(err.svm.cutof) +
-  geom_col(mapping = aes(x = source, y = typ2, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = typ2 - typ2.err, ymax = typ2 + typ2.err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'False Negative\nError Rate')
-
-(g.rate + guides(fill = FALSE)) / g.typ1 / (g.typ2 + guides(fill = FALSE))
-write.csv(err.svm.cutof, 'SVM_error_cutof.csv', row.names = F)
-
-rm(err.paret, err.adapt, err.rando, g.rate, g.typ1, g.typ2)
-
 ```
 
 ```{r SVM Marginalization: Threshold Cutoff}
@@ -1401,51 +1593,6 @@ SVM.input(fine.input = fine.grid[,c('x1', 'x2', 'cat')],
           mod.pol = mod.rando$pol, mod.sig = mod.rando$sig,
           tit = 'Utopia Distance + Priority, + Random Sampling')
 
-# Error rates
-err.paret = SVM.err(fine.input = fine.grid, mod.list = mod.paret)
-err.paret$source = '0paret'; err.paret$criteria = 'Utopia Distance'
-err.adapt = SVM.err(fine.input = fine.grid, mod.list = mod.adapt)
-err.adapt$source = '1adapt'; err.adapt$criteria = 'Utopia Distance'
-err.rando = SVM.err(fine.input = fine.grid, mod.list = mod.rando)
-err.rando$source = '2rando'; err.rando$criteria = 'Utopia Distance'
-
-err.svm.radan = rbind(err.paret, err.adapt, err.rando)
-
-g.rate = ggplot(err.svm.radan) +
-  geom_col(mapping = aes(x = source, y = rate, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = rate - err, ymax = rate + err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'Total\nError Rate', subtitle = 'Utopia Distance + Priority')
-
-g.typ1 = ggplot(err.svm.radan) +
-  geom_col(mapping = aes(x = source, y = typ1, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = typ1 - typ1.err, ymax = typ1 + typ1.err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'False Positive\nError Rate')
-
-g.typ2 = ggplot(err.svm.radan) +
-  geom_col(mapping = aes(x = source, y = typ2, fill = source)) +
-  geom_errorbar(mapping = aes(x = source, ymin = typ2 - typ2.err, ymax = typ2 + typ2.err), width = 0.5) +
-  facet_wrap(~method, nrow = 1) +
-  scale_fill_manual(labels = c('0paret' = 'Starting Dataset', '1adapt' = '+ Adaptive Sampling', 
-                                 '2rando' = '+ Random Sampling'), name = '',
-                      values = c('0paret' = 'skyblue2', '1adapt' = 'red', '2rando' = 'green')) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) + scale_x_discrete(breaks = '') +
-  theme_bw() + labs(x = '', y = 'False Negative\nError Rate')
-
-(g.rate + guides(fill = FALSE)) / g.typ1 / (g.typ2 + guides(fill = FALSE))
-write.csv(err.svm.cutof, 'SVM_error_radan.csv', row.names = F)
-
-rm(err.paret, err.adapt, err.rando, g.rate, g.typ1, g.typ2)
-
 ```
 
 ```{r SVM Marginals: Utopia Distance}
@@ -1533,342 +1680,7 @@ ggplot(coefdet) +
 
 ```
 
-Alternative Metric: Accuracy as n samples are collected
-
-```{r}
-SVM.err.n = function(fine.input, input.data){
-  mod.list = SVM.mod.all(input.data = input.data)
-  err = SVM.err(fine.input = fine.input, mod.list = mod.list)
-  # return(err)
-  # Additional processing to make it consistent with the other convention
-  err.n = data.frame(
-    method = err$method,
-    err = c(err$rate, err$typ1,     err$typ2),
-    # unc = c(err$err,  err$typ1.err, err$typ2.err),
-    typ = c(rep('Total', nrow(err)), rep('False Positive', nrow(err)), 
-            rep('False Negative', nrow(err)))
-  )
-  # Place limiter on uncertainty
-  # err.n$unc[err.n$unc > err.n$err] = err.n$err[err.n$unc > err.n$err]
-  # Lower bound of 1e-8 to avoid NaN values later
-  # err.n$unc[err.n$unc < 1e-8] = 1e-8
-  err.n$err[err.n$err < 1e-8] = 1e-8
-  return(err.n)
-}
-
-```
-
-```{r SVM: N Sample Effect - Pareto distance}
-# Pareto Distance
-data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
-data.delta = read.csv('../Ex_Quartic/GPar_Accept_Delta1.csv')
-data.rando = read.csv(file = 'GPar_Random.csv')
-
-# Define acceptance
-data.paret$cat = 0; data.delta$cat = 0; data.rando$cat = 0; fine.grid$cat = 0
-data.paret$cat[data.paret$dist <= 1] = 1
-data.delta$cat[data.delta$dist <= 1] = 1
-data.rando$cat[data.rando$dist <= 1] = 1
-fine.grid$cat[fine.grid$dist <= 1] = 1
-
-# Loop
-nsamp = seq(from = nrow(data.paret)+1, to = nrow(data.delta), by = 1)
-
-# Zero sample state
-err0 = SVM.err.n(fine.input = fine.grid, input.data = data.paret)
-
-# Effect of sampling
-n.cores <- parallel::detectCores() - 1
-my.cluster <- parallel::makeCluster(
-  n.cores,
-  type = "PSOCK"
-  )
-doParallel::registerDoParallel(cl = my.cluster)
-foreach::getDoParRegistered()
-
-err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
-  # Adaptive
-  res = SVM.err.n(fine.input = fine.grid, input.data = data.delta[1:i,])
-  # Labels
-  res$n = i-nrow(data.paret)
-  res$class = 'Pareto Distance'
-  res$samp = 'Adaptive'
-  # Normalized errors
-  res$err.n = res$err/err0$err
-  res$unc.min = res$err;     res$unc.max = res$err
-  res$unc.min.n = res$err.n; res$unc.max.n = res$err.n
-  err.adapt = res
-  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  # err.n = rbind(err.n, res)
-  
-  # Random samples
-  nset = i - nrow(data.paret)
-  res.rando = data.frame()
-  for(j in 1:30){ 
-    # Collect multiple random datasets to get a sense of the variance
-    rando = data.rando[c(1:nrow(data.paret), 
-                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
-    res = SVM.err.n(fine.input = fine.grid, input.data = rando)
-    # Normalized to the starting state
-    res$err.n = res$err/err0$err
-    res.rando = rbind(res.rando, res)
-  }
-  err.rando = data.frame()
-  # Uncertainty correction based on the variance - in this case want the 95% CI
-  for(met in unique(res.rando$method)){
-    for(tp in unique(res.rando$typ)){
-      sub = dplyr::filter(res.rando, method == met, typ == tp)
-      err.rando = rbind(err.rando, data.frame(
-          err = median(sub$err),  err.n = median(sub$err.n),
-          unc.min = quantile(x = sub$err, probs = 0.025), 
-          unc.max = quantile(x = sub$err, probs = 0.975), 
-          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
-          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
-          class = 'Pareto Distance', typ = tp, method = met,
-          n = i - nrow(data.paret),
-          samp = 'Random'))
-    }
-  }
-  rbind(err.adapt, err.rando)
-}
-parallel::stopCluster(cl = my.cluster)
-
-# err.n
-# Combine with 0 state
-err0$n = 0
-err0$class = 'Pareto Distance'
-err0$samp = 'Adaptive'
-err0$err.n = 1
-err0$unc.max   = err0$err; err0$unc.min   = err0$err
-err0$unc.max.n = 1;        err0$unc.min.n = 1
-err.n = rbind(err0, err.n)
-err0$samp = 'Random'
-err.n = rbind(err0, err.n)
-
-# Plotting
-# err.n
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = unc.min.n, ymax = unc.max.n,
-                              color = samp)) +
-  geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
-  facet_grid(typ~method, scale = 'free')
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err, ymin = unc.min, ymax = unc.max, color = samp)) +
-  geom_point(mapping = aes(x = n, y = err, color = samp)) +
-  facet_grid(typ~method, scale = 'free')
-
-
-# Store data
-err.svm = err.n
-
-```
-
-```{r SVM: N Sample Effect - Threshold Cutoff}
-data.paret = read.csv('../Ex_Quartic/GPar_all_start.csv')
-data.cutof = read.csv('../Ex_Quartic/GPar_Accept_Threshold.csv')
-data.rando = read.csv(file = 'GPar_Random.csv')
-
-# Define acceptance
-data.paret$cat = 0; data.cutof$cat = 0; data.rando$cat = 0; fine.grid$cat = 0
-data.paret$cat[data.paret$f1.norm <= 1 & data.paret$f2.norm <= 1] = 1
-data.cutof$cat[data.cutof$f1.norm <= 1 & data.cutof$f2.norm <= 1] = 1
-data.rando$cat[data.rando$f1.norm <= 1 & data.rando$f2.norm <= 1] = 1
-fine.grid$cat[fine.grid$f1.norm <= 1 & fine.grid$f2.norm <= 1] = 1
-
-# Loop
-nsamp = seq(from = nrow(data.paret)+1, to = nrow(data.cutof), by = 1)
-
-# Zero sample state
-err0 = SVM.err.n(fine.input = fine.grid, input.data = data.paret)
-
-# Effect of sampling
-n.cores <- parallel::detectCores() - 1
-my.cluster <- parallel::makeCluster(
-  n.cores,
-  type = "PSOCK"
-  )
-doParallel::registerDoParallel(cl = my.cluster)
-foreach::getDoParRegistered()
-
-err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
-  # Adaptive
-  res = SVM.err.n(fine.input = fine.grid, input.data = data.cutof[1:i,])
-  # Labels
-  res$n = i-nrow(data.paret)
-  res$class = 'Threshold Cutoff'
-  res$samp = 'Adaptive'
-  # Normalized errors
-  res$err.n = res$err/err0$err
-  res$unc.min = res$err;     res$unc.max = res$err
-  res$unc.min.n = res$err.n; res$unc.max.n = res$err.n
-  err.adapt = res
-  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  # err.n = rbind(err.n, res)
-  
-  # Random samples
-  nset = i - nrow(data.paret)
-  res.rando = data.frame()
-  for(j in 1:30){ 
-    # Collect multiple random datasets to get a sense of the variance
-    rando = data.rando[c(1:nrow(data.paret), 
-                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
-    res = SVM.err.n(fine.input = fine.grid, input.data = rando)
-    # Normalized to the starting state
-    res$err.n = res$err/err0$err
-    res.rando = rbind(res.rando, res)
-  }
-  err.rando = data.frame()
-  # Uncertainty correction based on the variance - in this case want the 95% CI
-  for(met in unique(res.rando$method)){
-    for(tp in unique(res.rando$typ)){
-      sub = dplyr::filter(res.rando, method == met, typ == tp)
-      err.rando = rbind(err.rando, data.frame(
-          err = median(sub$err),  err.n = median(sub$err.n),
-          unc.min = quantile(x = sub$err, probs = 0.025), 
-          unc.max = quantile(x = sub$err, probs = 0.975), 
-          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
-          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
-          class = 'Threshold Cutoff', typ = tp, method = met,
-          n = i - nrow(data.paret),
-          samp = 'Random'))
-    }
-  }
-  rbind(err.adapt, err.rando)
-}
-parallel::stopCluster(cl = my.cluster)
-
-# err.n
-# Combine with 0 state
-err0$n = 0
-err0$class = 'Threshold Cutoff'
-err0$samp = 'Adaptive'
-err0$err.n = 1
-err0$unc.max   = err0$err; err0$unc.min   = err0$err
-err0$unc.max.n = 1;        err0$unc.min.n = 1
-err.n = rbind(err0, err.n)
-err0$samp = 'Random'
-err.n = rbind(err0, err.n)
-
-# Plotting
-# err.n
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = unc.min.n, ymax = unc.max.n,
-                              color = samp)) +
-  geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
-  facet_grid(typ~method, scale = 'free')
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err, ymin = unc.min, ymax = unc.max, color = samp)) +
-  geom_point(mapping = aes(x = n, y = err, color = samp)) +
-  facet_grid(typ~method, scale = 'free')
-
-# Store data
-err.svm = rbind(err.svm, err.n)
-
-```
-
-```{r SVM: N Sample Effect - Utopia Distance}
-data.paret = read.csv(file = '../Ex_Quartic/GPar_all_start.csv')
-data.radan = read.csv('../Ex_Quartic/GPar_Accept_Radius.csv')
-data.rando = read.csv(file = 'GPar_Random.csv')
-
-# Define acceptance
-data.paret$cat = 0; data.radan$cat = 0; data.rando$cat = 0; fine.grid$cat = 0
-data.paret$cat[sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2) <= 1 & data.paret$theta > 20] = 1
-data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 1 & data.radan$theta > 20] = 1
-data.rando$cat[sqrt(data.rando$f1.norm^2 + data.rando$f2.norm^2) <= 1 & data.rando$theta > 20] = 1
-fine.grid$cat[sqrt(fine.grid$f1.norm^2 + fine.grid$f2.norm^2) <= 1 & fine.grid$ang > 20] = 1
-
-# Loop
-nsamp = seq(from = nrow(data.paret)+1, to = nrow(data.radan), by = 1)
-
-# Zero sample state
-err0 = SVM.err.n(fine.input = fine.grid, input.data = data.paret)
-
-# Effect of sampling
-n.cores <- parallel::detectCores() - 1
-my.cluster <- parallel::makeCluster(
-  n.cores,
-  type = "PSOCK"
-  )
-doParallel::registerDoParallel(cl = my.cluster)
-foreach::getDoParRegistered()
-
-err.n = foreach(i = nsamp, .combine = 'rbind') %dopar% {
-  # Adaptive
-  res = SVM.err.n(fine.input = fine.grid, input.data = data.radan[1:i,])
-  # Labels
-  res$n = i-nrow(data.paret)
-  res$class = 'Utopia Distance'
-  res$samp = 'Adaptive'
-  # Normalized errors
-  res$err.n = res$err/err0$err
-  res$unc.min = res$err;     res$unc.max = res$err
-  res$unc.min.n = res$err.n; res$unc.max.n = res$err.n
-  err.adapt = res
-  # res$unc.n = sqrt(res$err.n^2 * ((res$unc/res$err)^2 + (err0$unc/err0$err)^2))
-  # err.n = rbind(err.n, res)
-  
-  # Random samples
-  nset = i - nrow(data.paret)
-  res.rando = data.frame()
-  for(j in 1:30){ 
-    # Collect multiple random datasets to get a sense of the variance
-    rando = data.rando[c(1:nrow(data.paret), 
-                         sample(x = (nrow(data.paret)+1):nrow(data.rando), size = nset)),]
-    res = SVM.err.n(fine.input = fine.grid, input.data = rando)
-    # Normalized to the starting state
-    res$err.n = res$err/err0$err
-    res.rando = rbind(res.rando, res)
-  }
-  err.rando = data.frame()
-  # Uncertainty correction based on the variance - in this case want the 95% CI
-  for(met in unique(res.rando$method)){
-    for(tp in unique(res.rando$typ)){
-      sub = dplyr::filter(res.rando, method == met, typ == tp)
-      err.rando = rbind(err.rando, data.frame(
-          err = median(sub$err),  err.n = median(sub$err.n),
-          unc.min = quantile(x = sub$err, probs = 0.025), 
-          unc.max = quantile(x = sub$err, probs = 0.975), 
-          unc.min.n = quantile(x = sub$err.n, probs = 0.025), 
-          unc.max.n = quantile(x = sub$err.n, probs = 0.975), 
-          class = 'Utopia Distance', typ = tp, method = met,
-          n = i - nrow(data.paret),
-          samp = 'Random'))
-    }
-  }
-  rbind(err.adapt, err.rando)
-}
-parallel::stopCluster(cl = my.cluster)
-# err.n
-# Combine with 0 state
-err0$n = 0
-err0$class = 'Utopia Distance'
-err0$samp = 'Adaptive'
-err0$err.n = 1
-err0$unc.max   = err0$err; err0$unc.min   = err0$err
-err0$unc.max.n = 1;        err0$unc.min.n = 1
-err.n = rbind(err0, err.n)
-err0$samp = 'Random'
-err.n = rbind(err0, err.n)
-
-# Plotting
-# err.n
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err.n, ymin = unc.min.n, ymax = unc.max.n,
-                              color = samp)) +
-  geom_point(mapping = aes(x = n, y = err.n, color = samp)) +
-  facet_grid(typ~method, scale = 'free')
-ggplot(err.n) +
-  geom_errorbar(mapping = aes(x = n, y = err, ymin = unc.min, ymax = unc.max, color = samp)) +
-  geom_point(mapping = aes(x = n, y = err, color = samp)) +
-  facet_grid(typ~method, scale = 'free')
-
-# Store data
-err.svm = rbind(err.svm, err.n)
-
-write.csv(err.svm, 'SVM_Error-Nsamp.csv', row.names = F)
-```
-
+Importance Rankings for SVM
 
 ```{r Importance Ranking Method Comparison: Calculating Marginal Importance for SVM}
 import.marginal = function(svm.margin, typ){
@@ -1906,13 +1718,60 @@ svm.import.margin = rbind(import.marginal(svm.margin = read.csv('Margin_SVM_dist
 ```
 
 
+```{r SVM: Sobol Importance}
+# Sobol method - Total effect index
+SVM.sobol = function(mod){
+  # Strumbelj et al. (2014) Monte Carlo estimate.
+  # Since this is a classification setting, only a difference of 0 or 1 is possible 
+  # i.e. a difference of -1 is the same as a difference of 1, as it is simply a misclassification
+  nsamp = 1500*50 # Same number of samples as other methods for consistency
+  x0 = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
+                  x2 = runif(n = nsamp, min = 0, max = 5))
+  z1 = data.frame(x1 = x0$x1,
+                  x2 = runif(n = nsamp, min = 0, max = 5))
+  z2 = data.frame(x1 = runif(n = nsamp, min = 0, max = 5),
+                  x2 = x0$x2)
+  # Apply functions to all
+  res.pol = as.numeric(predict(object = mod$pol, newdata = x0))
+  res.rad = as.numeric(predict(object = mod$rad, newdata = x0))
+  x0$pol = res.pol; x0$rad = res.rad
+  res.pol = as.numeric(predict(object = mod$pol, newdata = z1))
+  res.rad = as.numeric(predict(object = mod$rad, newdata = z1))
+  z1$pol = res.pol; z1$rad = res.rad
+  res.pol = as.numeric(predict(object = mod$pol, newdata = z2))
+  res.rad = as.numeric(predict(object = mod$rad, newdata = z2))
+  z2$pol = res.pol; z2$rad = res.rad
+  # Calculate mean and standard error of the differences
+  shap = c(mean((x0$pol - z1$pol)^2/2), mean((x0$pol - z2$pol)^2/2),
+           mean((x0$rad - z1$rad)^2/2), mean((x0$rad - z2$rad)^2/2))
+  r.shap = c(shap[1:2]/max(shap[1:2]), shap[3:4]/max(shap[3:4]))
+  # For standard error, calculate standard error of the mean with n = 1500
+  # to be consistent with the other standard errors
+  pol.x1m = apply(matrix((x0$pol - z1$pol)^2, nrow = 1500), 2, mean)
+  rad.x1m = apply(matrix((x0$rad - z1$rad)^2, nrow = 1500), 2, mean)
+  pol.x2m = apply(matrix((x0$pol - z2$pol)^2, nrow = 1500), 2, mean)
+  rad.x2m = apply(matrix((x0$rad - z2$rad)^2, nrow = 1500), 2, mean)
+  
+  shap.err = c(sd(pol.x1m), sd(pol.x2m),
+               sd(rad.x1m), sd(rad.x2m))
+  # r.err = c(shap.err[1:2]/max(shap[1:2]), shap.err[3:4]/max(shap[3:4]))
+  return(data.frame(import = shap, var = c('x1', 'x2'), 
+                    sd = shap.err, r.import = r.shap, 
+                    method = c('Sobol-pol', 'Sobol-pol', 
+                               'Sobol-rad', 'Sobol-rad')))
+}
+
+```
+
 ```{r SVM: Importance Rankings}
 import.rank = read.csv('../Ex_Quartic/Importance.csv')
 import.rank = import.rank[, !names(import.rank) %in% c('X')]
 import.rank$method = unlist(lapply(import.rank$method, function(x) paste(x, '-GP', sep = '')))
 import.rank
 # import.rank$method[import.rank$method == 'Shapley'] = 'Shapley-GP'
+import.rank.sobol = read.csv('Importance-Sobol-GP.csv')
 
+# Shapley
 SVM.shap.delta = SVM.shap(mod = mod.adapt.delta)
 SVM.shap.delta$typ = 'Pareto Distance'
 SVM.shap.cutof = SVM.shap(mod = mod.adapt.cutof)
@@ -1920,27 +1779,37 @@ SVM.shap.cutof$typ = 'Threshold Cutoff'
 SVM.shap.radan = SVM.shap(mod = mod.adapt.radan)
 SVM.shap.radan$typ = 'Utopia Distance'
 
+# Sobol
+SVM.sobol.delta = SVM.sobol(mod = mod.adapt.delta)
+SVM.sobol.delta$typ = 'Pareto Distance'
+SVM.sobol.cutof = SVM.sobol(mod = mod.adapt.cutof)
+SVM.sobol.cutof$typ = 'Threshold Cutoff'
+SVM.sobol.radan = SVM.sobol(mod = mod.adapt.radan)
+SVM.sobol.radan$typ = 'Utopia Distance'
 
 ggplot(rbind(import.rank, SVM.shap.delta, SVM.shap.cutof, SVM.shap.radan, svm.import.margin)) +
   geom_col(mapping = aes(x = var, y = abs(r.import), fill = var)) +
   facet_grid(method~typ, scales = 'free_y') +
   labs(x = '', y = 'Relative Importance') +
-  guides(fill = FALSE) + scale_x_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])))
+  guides(fill = 'none') + scale_x_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])))
 
 ggplot(rbind(import.rank, SVM.shap.delta, SVM.shap.cutof, SVM.shap.radan, svm.import.margin)) +
   geom_col(mapping = aes(x = var, y = import, fill = var)) +
   facet_grid(method~typ, scales = 'free_y') +
   labs(x = '', y = 'Relative Importance') +
-  guides(fill = FALSE) + scale_x_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])))
+  guides(fill = 'none') + scale_x_discrete(labels = c('x1' = expression('x'[1]), 'x2' = expression('x'[2])))
 
 # Rows: Selection method = Pareto distance, Objective Cutoff, Utopia Distance + Priority
 # Columns: method = Shapley with SVM, Shapley with GP, new method
 
 ```
 
+
 ```{r}
 # Split up by model method
-import.all = rbind(import.rank, SVM.shap.delta, SVM.shap.cutof, SVM.shap.radan, svm.import.margin)
+import.all = rbind(import.rank, import.rank.sobol[, names(import.rank.sobol) %in% names(import.rank)],
+                   SVM.shap.delta, SVM.shap.cutof, SVM.shap.radan, svm.import.margin,
+                   SVM.sobol.delta, SVM.sobol.cutof, SVM.sobol.radan, SVM.sobol.delta)
 # Classification split
 split = unlist(lapply(import.all$method, strsplit, '-'))
 import.all$method = split[c(TRUE, FALSE)]
@@ -1980,6 +1849,7 @@ write.csv(import.all, 'ImportRank_Method.csv', row.names = F)
 It is clear that the importance metric that was developed here provided more consistent results for the global importance than Shapley values. 
 The importance among different ML models gives slightly different results, suggesting differences in the models more than problems with the importance metric.
 
+Sobol method for the importance based on the variance contribution shows the opposite result with x2 having greater importance - contrary to what is expected based on the marginals.
 
 # Existing Method: Gaussian Mixtures
 
@@ -2116,7 +1986,8 @@ ggplot() +
        color = 'Group', fill = 'Group', 
        subtitle = '(f1, f2)') +
   theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
   guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
 
 res = predict(object = cluster.all, newdata = fine.grid[c('x1', 'x2', 'f1', 'f2')])
@@ -2132,7 +2003,8 @@ ggplot() +
        color = 'Group', fill = 'Group', 
        subtitle = '(x1, x2, f1, f2)') +
   theme_classic() + #theme(legend.position = c(0.85, 0.75)) + 
-  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
+  scale_x_continuous(expand = c(0, 0), limits = c(0, 5)) + 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 5)) +
   guides(colour = guide_legend(override.aes = list(fill = alpha('white', 1))))
 
 ggplot() +
@@ -2181,9 +2053,9 @@ for(x in x.rng){
   }
   classes = data.frame(group = classes)
   gm.margin = rbind(gm.margin, data.frame(x = x, var = 'x1', 
-                         p.pare = nrow(filter(classes, group == 5 | group == 6))/(nsamp.f*nsamp.x), 
-                         p.near = nrow(filter(classes, group == 2 | group == 3 | group == 7))/(nsamp.f*nsamp.x), 
-                         p.dist = nrow(filter(classes, group == 1 | group == 4 | group == 8))/(nsamp.f*nsamp.x)))
+           p.pare = nrow(filter(classes, group == 5 | group == 6))/(nsamp.f*nsamp.x), 
+           p.near = nrow(filter(classes, group == 2 | group == 3 | group == 7))/(nsamp.f*nsamp.x), 
+           p.dist = nrow(filter(classes, group == 1 | group == 4 | group == 8))/(nsamp.f*nsamp.x)))
   # x2
   # Sample x2
   inframe = data.frame(x2 = x, x1 = runif(n = nsamp.x, min = 0, max = 5))
@@ -2200,9 +2072,9 @@ for(x in x.rng){
   }
   classes = data.frame(group = classes)
   gm.margin = rbind(gm.margin, data.frame(x = x, var = 'x2', 
-                         p.pare = nrow(filter(classes, group == 5 | group == 6))/(nsamp.f*nsamp.x), 
-                         p.near = nrow(filter(classes, group == 2 | group == 3 | group == 7))/(nsamp.f*nsamp.x), 
-                         p.dist = nrow(filter(classes, group == 1 | group == 4 | group == 8))/(nsamp.f*nsamp.x)))
+           p.pare = nrow(filter(classes, group == 5 | group == 6))/(nsamp.f*nsamp.x), 
+           p.near = nrow(filter(classes, group == 2 | group == 3 | group == 7))/(nsamp.f*nsamp.x), 
+           p.dist = nrow(filter(classes, group == 1 | group == 4 | group == 8))/(nsamp.f*nsamp.x)))
 }
 
 write.csv(gm.margin, 'Margin_GM.csv', row.names = F)

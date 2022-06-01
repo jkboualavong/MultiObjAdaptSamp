@@ -69,21 +69,16 @@ Set up the functions
 The ZDT4 function has been modified slightly (changing the frequency of the cosine term) to have fewer local optima. This helps speed up calculations, as well as makes it more representative of the physical systems of interest, which are not going to have such rapid oscillatory behavior.
 
 ```{r Objective Functions}
-
 ZDT4.mod = function (x) 
 {
   if (is.null(dim(x))) {
     x <- matrix(x, nrow = 1)
   }
   n <- ncol(x)
-  # Corrected g term
   g <- 1 + 10 * (n - 1) + rowSums((x[, 2:n, drop = FALSE] * 
-    0.5 - 0.25)^2 - 2.5 * cos(0.5 * pi * (x[, 2:n, drop = FALSE] * 
+    0.5 - 0.25)^2 - 10 * cos(0.5 * pi * (x[, 2:n, drop = FALSE] * 
     10 - 5)))
-  # Adjustment term: parabolic - makes sure the "side" minima are close, but not 
-  # identical
-  f <- rowSums(10*(x[, 2:n, drop = FALSE] - 0.5)^2)
-  return(cbind(x[, 1], f+(g * (1 - sqrt(x[, 1]/g))) ))
+  return(cbind(x[, 1], g * (1 - sqrt(x[, 1]/g))))
 }
 
 ```
@@ -184,7 +179,7 @@ fill.sample.mod = function(GPar.data, input.name, output.name){
   return(mod.out)
 }
 
-fill.sample.delta = function(x, model, weight){
+fill.sample.delta = function(x, model){
   # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
   # the function will output the objective function evaluated at x = (x1, x2)
   
@@ -192,19 +187,15 @@ fill.sample.delta = function(x, model, weight){
   res = predict(object = model, newdata = data.frame(x1 = x[1], x2 = x[2], x3 = x[3]), type = 'UK')
   
   # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res$mean - 0.5, sd = res$sd)
+  prob = pnorm(q = 0, mean = res$mean - 3, sd = res$sd)
 
-  # Objective result. Adjust the probability weight so the maximum and minimum have
-  # the appropriate ratio
-  # The weight given is the ratio of the minimum to maximum probabity term
-  # i.e. ratio of prob = 0.5 to prob = 0 or 1
-  epsilon = 0.25/(weight-1)
-  return(res$sd*(prob*(1-prob) + epsilon))
+  # Objective result. Adjust the probability weight so the maximum is only 2 orders of magnitude greater than the minimum.
+  return(res$sd*(prob*(1-prob) + 0.25/99))
   # Offset on the uncertainty so that 0 uncertainty (p = 0 or 1) does not give a 0 result; 
   # instead these points give a 1 order of magnitude less weight
 }
 
-fill.sample.cutof = function(x, model.f1, model.f2, weight){
+fill.sample.cutof = function(x, model.f1, model.f2){
   # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), 
   # and the normalized distance of (f1, f2) to the Pareto front
   # the function will output the objective function evaluated at x = (x1, x2)
@@ -214,23 +205,18 @@ fill.sample.cutof = function(x, model.f1, model.f2, weight){
   res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2], x3 = x[3]), type = 'UK')
   
   # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * 
-    pnorm(q = 0, mean = res.f2$mean - 1, sd = res.f2$sd)
+  prob = pnorm(q = 0, mean = res.f1$mean - 3, sd = res.f1$sd) * 
+    pnorm(q = 0, mean = res.f2$mean - 3, sd = res.f2$sd)
   
   # Variance based on propagation of errors, assuming independent measures
   sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2)
 
-  # Objective result. Adjust the probability weight so the maximum and minimum have
-  # the appropriate ratio
-  # The weight given is the ratio of the minimum to maximum probabity term
-  # i.e. ratio of prob = 0.5 to prob = 0 or 1
-  epsilon = 0.25/(weight-1)
-  return(sd*(prob*(1-prob) + epsilon))
+  # Objective result. Adjust the probability weight so the maximum is only 2 orders of magnitude greater than the minimum.
+  return(sd*(prob*(1-prob) + 0.25/99))
 }
 
-fill.sample.radan = function(x, model.f1, model.f2, weight){
-  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), 
-  #and the normalized distance of (f1, f2) to the Pareto front
+fill.sample.radan = function(x, model.f1, model.f2){
+  # Given data that contains: function evaluations (f1, f2) at inputs (x1, x2), and the normalized distance of (f1, f2) to the Pareto front
   # the function will output the objective function evaluated at x = (x1, x2)
   
   # Evaluate the Kriging model function at x 
@@ -238,18 +224,14 @@ fill.sample.radan = function(x, model.f1, model.f2, weight){
   res.f2 = predict(object = model.f2, newdata = data.frame(x1 = x[1], x2 = x[2], x3 = x[3]), type = 'UK')
   
   # Probability distribution fits a Gaussian distribution
-  prob = pnorm(q = 0, mean = res.f1$mean - 1, sd = res.f1$sd) * 
+  prob = pnorm(q = 0, mean = res.f1$mean - 3, sd = res.f1$sd) * 
     (1 - pnorm(q = 0, mean = res.f2$mean - 20, sd = res.f2$sd))
   
   # Variance based on propagation of errors
   sd = (res.f1$sd^2*res.f2$mean^2 + res.f2$sd^2*res.f1$mean^2) 
 
-  # Objective result. Adjust the probability weight so the maximum and minimum have
-  # the appropriate ratio
-  # The weight given is the ratio of the minimum to maximum probabity term
-  # i.e. ratio of prob = 0.5 to prob = 0 or 1
-  epsilon = 0.25/(weight-1)
-  return(sd*(prob*(1-prob) + epsilon))
+  # Objective result. Adjust the probability weight so the maximum is only 2 orders of magnitude greater than the minimum.
+  return(sd*(prob*(1-prob) + 0.25/99))
 }
 
 fill.sample.update = function(GPar.front.old, GPar.data, GPar.new){
@@ -282,18 +264,14 @@ fill.sample.update = function(GPar.front.old, GPar.data, GPar.new){
   if(new.pareto > 0){ # Need to update all points in the front
     dist = c()
     for(i in 1:nrow(GPar.data)){
-      dist = c(dist, n.dist(f1.norm = GPar.data$f1.norm[i], 
-                            f2.norm = GPar.data$f2.norm[i], 
-                            GPar.front = GPar.front.new))
+      dist = c(dist, n.dist(f1.norm = GPar.data$f1.norm[i], f2.norm = GPar.data$f2.norm[i], GPar.front = GPar.front.new))
     }
     GPar.data$dist = dist
   } 
   # Need to calculate the new point's distance
   dist = c()
   for(i in 1:nrow(GPar.new)){
-    dist = c(dist, n.dist(f1.norm = GPar.new$f1.norm[i], 
-                          f2.norm = GPar.new$f2.norm[i], 
-                          GPar.front = GPar.front.new))
+    dist = c(dist, n.dist(f1.norm = GPar.new$f1.norm[i], f2.norm = GPar.new$f2.norm[i], GPar.front = GPar.front.new))
   }
   GPar.new$dist = dist
   GPar.new$order = max(GPar.data$order) + 1
@@ -321,7 +299,7 @@ marginal.dist = function(mod.dist){
                             x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)),
                             x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
     res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 0.5, sd = res$sd)
+    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
     Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], 
                                           prob = mean(fill.frame$p.del1), 
                                           psd = sd(fill.frame$p.del1),
@@ -331,7 +309,7 @@ marginal.dist = function(mod.dist){
                             x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                             x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
     res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 0.5, sd = res$sd)
+    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
     Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], 
                                           psd = sd(fill.frame$p.del1),
                                           prob = mean(fill.frame$p.del1),
@@ -341,7 +319,7 @@ marginal.dist = function(mod.dist){
                             x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)),
                             x2 = runif(n = MCsamp, min = min(x2.rng), max = max(x2.rng)))
     res = predict(object = mod.dist, newdata = fill.frame, type = 'UK')
-    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 0.5, sd = res$sd)
+    fill.frame$p.del1 = pnorm(q = 0, mean = res$mean - 1, sd = res$sd)
     Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], 
                                           psd = sd(fill.frame$p.del1),
                                           prob = mean(fill.frame$p.del1),
@@ -366,8 +344,7 @@ marginal.cut = function(mod.f1, mod.f2){
                             x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
     res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
     res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-      pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
     Infer.x1 = rbind(Infer.x1, data.frame(x = x1.seq[i], prob = mean(fill.frame$p.del1), 
                                           psd = sd(fill.frame$p.del1),
                                           var = 'x1', ncond = 'None'))  
@@ -377,8 +354,7 @@ marginal.cut = function(mod.f1, mod.f2){
                             x3 = runif(n = MCsamp, min = min(x3.rng), max = max(x3.rng)))
     res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
     res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-      pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
     Infer.x2 = rbind(Infer.x2, data.frame(x = x2.seq[i], prob = mean(fill.frame$p.del1), 
                                           psd = sd(fill.frame$p.del1),
                                           var = 'x2', ncond = 'None'))
@@ -388,8 +364,7 @@ marginal.cut = function(mod.f1, mod.f2){
                             x1 = runif(n = MCsamp, min = min(x1.rng), max = max(x1.rng)))
     res1 = predict(object = mod.f1, newdata = fill.frame, type = 'UK')
     res2 = predict(object = mod.f2, newdata = fill.frame, type = 'UK')
-    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * 
-      pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
+    fill.frame$p.del1 = pnorm(q = 0, mean = res1$mean - 1, sd = res1$sd) * pnorm(q = 0, mean = res2$mean - 1, sd = res2$sd)
     Infer.x3 = rbind(Infer.x3, data.frame(x = x3.seq[i], prob = mean(fill.frame$p.del1), 
                                           psd = sd(fill.frame$p.del1),
                                           var = 'x3', ncond = 'None'))  
@@ -451,80 +426,12 @@ marginal.rad = function(mod.rad, mod.ang){
 
 ```
 
-Plot the contours of the original functions to preview what it should look like
-```{r Plot Objective Functions}
-# Fine grid spacing
-sz.fine = 100
-x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
-x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
-# x3.rng = seq(from = 0, to = 1, length.out = 5)
-x3.rng = 0.5 # Simple slice for visualization
-con.fine = expand.grid(x1.rng, x2.rng, x3.rng)
-con.fine = con.fine[,1:3]
-names(con.fine) = c('x1', 'x2', 'x3')
-
-# Calculate
-res = ZDT4.mod(x = as.matrix(con.fine))
-con.fine$f1 = res[,1]; con.fine$f2 = res[,2]
-
-ggplot() +
-  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = f1, color = 'f1'), bins = 10) +
-  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = f2, color = 'f2'), bins = 10) +
-  labs(x = expression('x'[1]), y = expression('x'[2])) +
-  scale_color_manual(name = 'Objective', values = c('f1' = 'red', 'f2' = 'blue'), 
-                     labels = c('f1' = expression('F'[1]), 'f2' = expression('F'[2]))) +
-  theme_classic() +
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-
-# Lower resolution but include multiple slices
-sz.fine = 51
-x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
-x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
-x3.rng = seq(from = 0, to = 1, length.out = 9) # Simple slice for visualization
-con.fine = expand.grid(x1.rng, x2.rng, x3.rng)
-con.fine = con.fine[,1:3]
-names(con.fine) = c('x1', 'x2', 'x3')
-
-# Calculate
-res = ZDT4.mod(x = as.matrix(con.fine))
-con.fine$f1 = res[,1]; con.fine$f2 = res[,2]
-
-ggplot() +
-  geom_point(data = con.fine, 
-                      mapping = aes(x = x1, y = x2, color = f2)) +
-  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[2])) +
-  theme_classic() + facet_wrap(~x3) + 
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-
-ggplot() +
-  geom_point(data = con.fine, 
-                      mapping = aes(x = x1, y = x2, color = f1)) +
-  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[1])) +
-  theme_classic() + facet_wrap(~x3) + 
-  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-
-ggplot() +
-  geom_point(data = con.fine, mapping = aes(x = f1, y = f2), alpha = 0.5) +
-  labs(x = expression('f'[1]), y = expression('f'[2])) +
-  theme_classic() + #facet_wrap(~x3) + 
-  scale_x_continuous(expand = c(0, 0.05)) + scale_y_continuous(expand = c(0, 0.05))
-
-ggplot() +
-  geom_point(data = filter(con.fine, x1 == median(x1)), 
-                      mapping = aes(x = x2, y = f2,
-                                    color = (x2 > 0.05 & x2 < 0.2))) +
-  labs(x = expression('x'[2]), y = expression('f'[2]), 
-       subtitle = expression('x'[1]*' = 0.5')) +
-  theme_classic() + facet_wrap(~x3) 
-
-rm(res, con.fine, x1.rng, x2.rng, x3.rng)
-```
-
 1. Solve objective functions with a space filling method to obtain an initial set of data.
 The function takes three inputs, defined $x_1$, $x_2$, and $x_3$ to produce two outputs $f_1$ and $f_2$. 
 The domain of all $x_i$ is [0,1]. 
 
 The initial search obtains the extremes of the 4 corners, the center points on each edge, the central point, and 3*(number of inputs) random points in each quadrant.
+
 
 ```{r Grid Setup}
 # Set up simple grid
@@ -545,12 +452,15 @@ for(i in 1:2){
         data.frame(x1 = runif(n = npt, min = bounds[i], max = bounds[i+1]),
                    x2 = runif(n = npt, min = bounds[j], max = bounds[j+1]),
                    x3 = runif(n = npt, min = bounds[k], max = bounds[k+1])))
+        # data.frame(x1 = runif(n = length(names(des.start))*npt, min = bounds[i], max = bounds[i+1]),
+        #            x2 = runif(n = length(names(des.start))*npt, min = bounds[j], max = bounds[j+1]),
+        #            x3 = runif(n = length(names(des.start))*npt, min = bounds[k], max = bounds[k+1])))
     }
   }
 }
 
 # Solve edge cases
-Pareto.budget = min(100, nrow(des.start)) # Want a clearly defined Pareto front, but a max budget of 100
+Pareto.budget = min(100, 2*nrow(des.start)) # Want a clearly defined Pareto front, but a max budget of 100
 des.start = matrix(c(des.start$x1, des.start$x2, des.start$x3), ncol = 3, nrow = nrow(des.start))
 res.start = ZDT4.mod(x = des.start)
 
@@ -614,6 +524,64 @@ write.csv(x = GPar.front, file = 'GPar_fnt_start.csv')
 
 ```
 
+Plot the contours of the original functions
+```{r Plot Objective Functions}
+# Fine grid spacing
+sz.fine = 100
+x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
+x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
+# x3.rng = seq(from = 0, to = 1, length.out = 5)
+# x3.rng = unique(c(x3.rng, unique(GPar.front$x3)))
+x3.rng = 0.5 # Simple slice for visualization
+con.fine = expand.grid(x1.rng, x2.rng, x3.rng)
+con.fine = con.fine[,1:3]
+names(con.fine) = c('x1', 'x2', 'x3')
+
+# Calculate
+res = ZDT4.mod(x = as.matrix(con.fine))
+con.fine$f1 = res[,1]; con.fine$f2 = res[,2]
+
+ggplot() +
+  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = f1, color = 'f1'), bins = 10) +
+  geom_contour(data = con.fine, mapping = aes(x = x1, y = x2, z = f2, color = 'f2'), bins = 10) +
+  labs(x = expression('x'[1]), y = expression('x'[2])) +
+  geom_point(data = GPar.front, mapping = aes(x = x1, y = x2), color = "black") +
+  geom_smooth(data = GPar.front, mapping = aes(x = x1, y = x2), color = "black", method = 'loess', formula = (y~x)) +
+  scale_color_manual(name = 'Objective', values = c('f1' = 'red', 'f2' = 'blue'), 
+                     labels = c('f1' = expression('F'[1]), 'f2' = expression('F'[2]))) +
+  theme_classic() +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+# Lower resolution but include multiple slices
+sz.fine = 50
+x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
+x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
+x3.rng = seq(from = 0, to = 1, length.out = 9) # Simple slice for visualization
+con.fine = expand.grid(x1.rng, x2.rng, x3.rng)
+con.fine = con.fine[,1:3]
+names(con.fine) = c('x1', 'x2', 'x3')
+
+# Calculate
+res = ZDT4.mod(x = as.matrix(con.fine))
+con.fine$f1 = res[,1]; con.fine$f2 = res[,2]
+
+ggplot() +
+  geom_point(data = con.fine, 
+                      mapping = aes(x = x1, y = x2, color = f2)) +
+  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[2])) +
+  theme_classic() + facet_wrap(~x3) + 
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+ggplot() +
+  geom_point(data = con.fine, 
+                      mapping = aes(x = x1, y = x2, color = f1)) +
+  labs(x = expression('x'[1]), y = expression('x'[2]*' or x'[3]), color = expression('F'[1])) +
+  theme_classic() + facet_wrap(~x3) + 
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+rm(res, con.fine, x1.rng, x2.rng, x3.rng)
+```
+
 Three different selection criteria are to be tested: (1) normalized distance to the Pareto frontier, (2) independent threshold values of the two objective functions, (3) distance to the utopia point and relative prioritization. 
 
 While the region of interest is often small, no physical system is of interest if it is not viable at all.
@@ -658,7 +626,7 @@ test.samp$dist = unlist(dist)
 rm(dist, cl)
 
 # Fraction meeting dist < specific value
-dist.check = data.frame(x = seq(from = 0, to = 2, length.out = 20),
+dist.check = data.frame(x = seq(from = 0, to = 4, length.out = 20),
                         delta = 0, cutof = 0, radan = 0)
 for(i in 1:nrow(dist.check)){
   bound = dist.check$x[i]
@@ -673,7 +641,6 @@ ggplot(dist.check) +
   geom_point(mapping = aes(x = x, y = delta, color = 'delta', shape = 'delta'), size = sz) +
   geom_point(mapping = aes(x = x, y = cutof, color = 'cutof', shape = 'cutof'), size = sz) +
   geom_point(mapping = aes(x = x, y = radan, color = 'radan', shape = 'radan'), size = sz) +
-  geom_hline(yintercept = c(0.05, 0.1), linetype = 2) +
   scale_color_manual(values = c('delta' = 'red', 'cutof' = 'blue', 'radan' = 'green3'),
                      labels = c('delta' = 'P.Dist', 'cutof' = 'Cutoff', 'radan' = 'U.Dist'), 
                      name = '') +
@@ -686,14 +653,13 @@ rm(bounds, nsamp, test.samp, sz, dist.check, next.grid, res)
 
 ```
 
-Based on this Monte Carlo estimate, the cutoff value should be approximately 3 for all 3 criteria to guarantee 10~20% of the total hypervolume space is accepted, which is the expected fraction for the electrochemical process of study.
+Based on this Monte Carlo estimate, the cutoff value should be approximately 3 for all 3 criteria to guarantee 7~10% of the total hypervolume space is accepted.
 
 Determine the expected 1-variable marginals with the above criteria for comparison to the surrogate functions later.
 The code is set so it only runs once due to the large dataset size.
 
 ```{r Expected Marginals}
-# Approximate the true result by with a grid. Use the same grid size as 
-# the resolution for the marginalization measures
+# Approximate the true result by with a grid. Use the same grid size as the resolution for the marginalization measures
 if(file.exists('ExpectedMarginal_delta.csv') == FALSE){
 grid.sz = 75
 fine.grid = expand.grid(x1 = seq(from = 0, to = 1, length.out = grid.sz), 
@@ -733,9 +699,9 @@ for(x in unique(fine.grid$x1)){
   sub3 = filter(fine.grid, x3 == x)
   
   # Distance criteria: Pareto distance less than 1
-  p1 = nrow(filter(sub1, dist <= 0.5)) / nrow(sub1)
-  p2 = nrow(filter(sub2, dist <= 0.5)) / nrow(sub2)
-  p3 = nrow(filter(sub3, dist <= 0.5)) / nrow(sub3)
+  p1 = nrow(filter(sub1, dist <= 1)) / nrow(sub1)
+  p2 = nrow(filter(sub2, dist <= 1)) / nrow(sub2)
+  p3 = nrow(filter(sub3, dist <= 1)) / nrow(sub3)
   p = c(p1, p2, p3)
   # Monte carlo error = sqrt(p*(1-p)/samples)
   psd = sqrt(p * (1-p) / nrow(sub1))
@@ -776,20 +742,18 @@ write.csv(radan.tru, 'ExpectedMarginal_radan.csv')
 Plot the full dataset in the objective space
 ```{r Visualize GPareto and Normalization, fig.width=6, fig.height=6}
 gplt.GPar = ggplot() +
-  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + 
-  geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
   geom_line(data = GPar.front, mapping = aes(x = f1, y = f2), color = "black") +
   geom_point(data = GPar.all, mapping = aes(x = f1, y = f2, color = (order > 0), 
                                             shape = (dist == 0)), size = 2) +
   labs(x = "Function 1", y = "Function 2", color = "") +  
   scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
   scale_shape_discrete(labels = c('Pareto frontier'), breaks = c(TRUE)) +
-  theme_classic() + theme(legend.position = c(0.85, 0.85), 
-                          legend.background = element_rect(fill = 'white'), 
+  theme_classic() + theme(legend.position = c(0.85, 0.85), legend.background = element_rect(fill = 'white'), 
                           legend.title = element_blank())
+
 gplt.Norm = ggplot() +
-  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + 
-  geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
+  geom_hline(yintercept = 0, linetype = 'dotted', color = 'black') + geom_vline(xintercept = 0, linetype = 'dotted', color = 'black') +
   geom_line(data = GPar.front, mapping = aes(x = f1.norm, y = f2.norm), color = "black") +
   geom_point(data = GPar.all, mapping = aes(x = f1.norm, y = f2.norm, color = (order > 0),
                                             shape = (dist == 0)), size = 2) +
@@ -797,8 +761,7 @@ gplt.Norm = ggplot() +
   scale_color_discrete(labels = c('Starting Data', 'Pareto Search'), breaks = c(FALSE, TRUE)) +
   scale_shape_discrete(labels = c('Pareto frontier'), breaks = c(TRUE)) +
   guides(color = FALSE, shape = FALSE) +
-  theme_classic() + theme(legend.position = c(0.85, 0.85), 
-                          legend.background = element_rect(fill = 'white'),
+  theme_classic() + theme(legend.position = c(0.85, 0.85), legend.background = element_rect(fill = 'white'),
                           legend.title = element_blank())
 
 gplt.GPar / gplt.Norm
@@ -808,7 +771,7 @@ rm(gplt.GPar, gplt.Norm)
 ## II. Acceptable suboptimal performance (the "near-Pareto set")
 4. Establish a selection criteria for acceptable suboptimal performance (eg. within some tolerance of the Pareto front).
 
-For this example, defines $\delta$ as the distance between the point and the point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 0.5$.
+For this example, defines $\delta$ as the distance between the point and the point on the Pareto frontier with the same value of theta. Accept only points with $\delta < 3$.
 
 ```{r Load data: Accept Distance less than 3}
 # Load data
@@ -837,7 +800,7 @@ Visualize the first iteration to show that it actually samples the point that is
 # Search for the first point
 mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'dist')
 GA.pred = ga(type = 'real-valued',
-             fitness = function(x){fill.sample.delta(x, model = mod.dist, weight = 3)},
+             fitness = function(x){fill.sample.delta(x, model = mod.dist)},
              lower = c(0, 0, 0), upper = c(1, 1, 1),
              popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
              parallel = 2)
@@ -874,7 +837,7 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 0.5, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
@@ -919,7 +882,7 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 0.5, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
@@ -965,7 +928,7 @@ When the value drops by 2 orders of magnitude, then the next point is not likely
 
 The computational budget is (number of inputs)*10
 ```{r Iteration loop: Accept distance less than 1, message=FALSE, warning=FALSE}
-budget = Pareto.budget
+budget = 30
 
 next.fit = start.fit
 while(next.fit > start.fit*0.01 & max(GPar.all$order) < budget+Pareto.budget){
@@ -973,10 +936,8 @@ while(next.fit > start.fit*0.01 & max(GPar.all$order) < budget+Pareto.budget){
   mod.dist = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'dist')
   
   # Run the optimization to find the best point
-  # Weight is based on number of iterations taken
-  weight = (max(GPar.all$order) - Pareto.budget + 1)*3
   GA.pred = ga(type = 'real-valued',
-               fitness = function(x){fill.sample.delta(x, model = mod.dist, weight = weight)},
+               fitness = function(x){fill.sample.delta(x, model = mod.dist)},
                lower = c(0, 0, 0), upper = c(1, 1, 1),
                popSize = 50, maxiter = 50, run = 10, monitor = FALSE,
                parallel = 2)
@@ -1025,7 +986,7 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 0.5, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
@@ -1073,7 +1034,7 @@ fine.grid$dist.mean = res$mean
 fine.grid$dist.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 0.5, sd = fine.grid$dist.sd)
+fine.grid$dist.p1 = pnorm(q = 0, mean = fine.grid$dist.mean - 2, sd = fine.grid$dist.sd)
 fine.grid$uncert = fine.grid$dist.p1*(1-fine.grid$dist.p1)+1e-10
 ncolor = 7
 g1 = ggplot(fine.grid) +
@@ -1243,7 +1204,7 @@ For the purpose of illustration, the above method will be repeated with two othe
 * Within a specific normalized distance of the utopia point and a specified prioritization of the two objective functions.
 
 ### Threshold cutoff
-For simplicity, the cutoff values are the normalized values of 1 for both objectives. This is criteria, the acceptable points are those that fall within the normalized box defined by the utopia point (0,0) and the pseudo-nadir point (1,1).
+For simplicity, the cutoff values are the normalized values of 1 for both objectives. This is criteria, the acceptable points are those that fall within the normalized box defined by the utopia point (0,0) and the pseudo-nadir point (2,2).
 
 Load the original dataset (after solving the Pareto front).
 
@@ -1267,8 +1228,7 @@ while(names(GPar.front)[1] != 'x1'){
 mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'f1.norm')
 mod.f2 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'f2.norm')
 GA.pred = ga(type = 'real-valued',
-             fitness = function(x){fill.sample.cutof(x, model.f1 = mod.f1, model.f2 = mod.f2,
-                                                     weight = 3)},
+             fitness = function(x){fill.sample.cutof(x, model.f1 = mod.f1, model.f2 = mod.f2)},
              lower = c(0, 0, 0), upper = c(1, 1, 1),
              popSize = 100, maxiter = 100, run = 10, monitor = FALSE,
              parallel = 2)
@@ -1317,8 +1277,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1372,8 +1332,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1412,17 +1372,14 @@ rm(g1, g2, g3, fine.grid)
 ```
 
 ```{r Threshold: Iterations, message=FALSE, warning=FALSE}
-budget = Pareto.budget
+budget = 30
 next.fit = start.fit
 while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
   # Create a Kriging model for the distance
   mod.f1 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'f1.norm')
   mod.f2 = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'f2.norm')
-  # Weight is based on number of iterations taken
-  weight = (max(GPar.all$order) - Pareto.budget + 1)*3
   GA.pred = ga(type = 'real-valued',
-               fitness = function(x){fill.sample.cutof(x, model.f1 = mod.f1, model.f2 = mod.f2,
-                                                       weight = weight)},
+               fitness = function(x){fill.sample.cutof(x, model.f1 = mod.f1, model.f2 = mod.f2)},
                lower = c(0, 0, 0), upper = c(1, 1, 1),
                popSize = 100, maxiter = 100, run = 10, monitor = FALSE,
                parallel = 2)
@@ -1451,7 +1408,7 @@ write.csv(GPar.all, 'GPar_Accept_Threshold.csv')
 rm(res)
 ```
 
-```{r Threshold: Visualize Iterations}
+```{r Treshold: Visualize Iterations}
 # Plot results on top of the most recent Kriging model
 GPar.all = read.csv(file = 'GPar_Accept_Threshold.csv')
 # Create a Kriging model for the distance
@@ -1476,8 +1433,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1534,8 +1491,8 @@ fine.grid$f2.mean = res$mean
 fine.grid$f2.sd = res$sd
 
 # Probability that the distance is less than 1
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 1, sd = fine.grid$f1.sd) * 
-  pnorm(q = 0, mean = fine.grid$f2.mean - 1, sd = fine.grid$f2.sd)
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$f1.mean - 2, sd = fine.grid$f1.sd) * 
+  pnorm(q = 0, mean = fine.grid$f2.mean - 2, sd = fine.grid$f2.sd)
 fine.grid$uncert = fine.grid$prob*(1-fine.grid$prob)+1e-10
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1722,8 +1679,7 @@ GPar.all$rad = sqrt(GPar.all$f1.norm^2 + GPar.all$f2.norm^2)
 mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'rad')
 mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'theta')
 GA.pred = ga(type = 'real-valued',
-             fitness = function(x){fill.sample.radan(x, model.f1 = mod.rad, model.f2 = mod.ang,
-                                                     weight = 3)},
+             fitness = function(x){fill.sample.radan(x, model.f1 = mod.rad, model.f2 = mod.ang)},
              lower = c(0, 0, 0), upper = c(1, 1, 1),
              popSize = 100, maxiter = 100, run = 10, monitor = FALSE,
              parallel = 2)
@@ -1771,7 +1727,7 @@ fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 
 # Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -1906,17 +1862,14 @@ rm(g1, g2, g3, fine.grid)
 ```
 
 ```{r Utopia Distance: Repeated Iterations, message=FALSE, warning=FALSE}
-budget = Pareto.budget
+budget = 30
 next.fit = start.fit
 while(next.fit > start.fit*0.005 & max(GPar.all$order) < budget+Pareto.budget){
   # Create a Kriging model for the distance
   mod.rad = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'rad')
   mod.ang = fill.sample.mod(GPar.data = GPar.all, input.name = c('x1', 'x2', 'x3'), output.name = 'theta')
-  # Weight is based on number of iterations taken
-  weight = (max(GPar.all$order) - Pareto.budget + 1)*3
   GA.pred = ga(type = 'real-valued',
-               fitness = function(x){fill.sample.radan(x, model.f1 = mod.rad, model.f2 = mod.ang,
-                                                       weight = weight)},
+               fitness = function(x){fill.sample.radan(x, model.f1 = mod.rad, model.f2 = mod.ang)},
                lower = c(0, 0, 0), upper = c(1, 1, 1),
                popSize = 100, maxiter = 100, run = 10, monitor = FALSE,
                parallel = 2)
@@ -1972,7 +1925,7 @@ fine.grid$ang.mean = res$mean
 fine.grid$ang.sd = res$sd
 
 # Uncertainty = P(success)*(1 - P(success))
-fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
 
 # Information gain = variance = (var1*mean2)^2 + (var2*mean1)^2
@@ -2105,63 +2058,62 @@ g3 = ggplot() +
   guides(color=guide_legend(override.aes=list(fill=NA))) # Remove fill in the legend
 
 g1 + g2 + g3
-rm(g1, g2, g3)
 
-# # x3 slices
-# sz.fine = 100
-# x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
-# x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
-# x3.rng = seq(from = 0, to = 1, length.out = 9) # Simple slice for visualization
-# fine.grid = expand.grid(x1.rng, x2.rng, x3.rng)
-# fine.grid = fine.grid[,1:3]
-# names(fine.grid) = c('x1', 'x2', 'x3')
-# 
-# # Calculate
-# res = predict(object = mod.rad, newdata = fine.grid, type = "UK")
-# fine.grid$rad.mean = res$mean
-# fine.grid$rad.sd = res$sd
-# res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, 
-#                       x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-# fine.grid$ang.mean = res$mean
-# fine.grid$ang.sd = res$sd
-# # Uncertainty = P(success)*(1 - P(success))
-# fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
-#   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
-# 
-# ggplot() +
-#   geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = prob)) +
-#   labs(x = expression('x'[1]), y = expression('x'[2]), color = expression('P[accept]')) +
-#   theme_classic() + facet_wrap(~x3) + 
-#   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-# 
-# # x2 slices
-# sz.fine = 100
-# x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
-# x3.rng = seq(from = 0, to = 1, length.out = sz.fine)
-# x2.rng = seq(from = 0, to = 1, length.out = 9) # Simple slice for visualization
-# fine.grid = expand.grid(x1.rng, x2.rng, x3.rng)
-# fine.grid = fine.grid[,1:3]
-# names(fine.grid) = c('x1', 'x2', 'x3')
-# 
-# # Calculate
-# res = predict(object = mod.rad, newdata = fine.grid, type = "UK")
-# fine.grid$rad.mean = res$mean
-# fine.grid$rad.sd = res$sd
-# res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, 
-#                       x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
-# fine.grid$ang.mean = res$mean
-# fine.grid$ang.sd = res$sd
-# # Uncertainty = P(success)*(1 - P(success))
-# fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 1, sd = fine.grid$rad.sd) * 
-#   (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
-# 
-# ggplot() +
-#   geom_point(data = fine.grid, mapping = aes(x = x1, y = x3, color = prob)) +
-#   labs(x = expression('x'[1]), y = expression('x'[3]), color = expression('P[accept]')) +
-#   theme_classic() + facet_wrap(~x2) + 
-#   scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
-# rm(fine.grid, res)
+# x3 slices
+sz.fine = 100
+x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
+x2.rng = seq(from = 0, to = 1, length.out = sz.fine)
+x3.rng = seq(from = 0, to = 1, length.out = 9) # Simple slice for visualization
+fine.grid = expand.grid(x1.rng, x2.rng, x3.rng)
+fine.grid = fine.grid[,1:3]
+names(fine.grid) = c('x1', 'x2', 'x3')
 
+# Calculate
+res = predict(object = mod.rad, newdata = fine.grid, type = "UK")
+fine.grid$rad.mean = res$mean
+fine.grid$rad.sd = res$sd
+res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, 
+                      x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
+fine.grid$ang.mean = res$mean
+fine.grid$ang.sd = res$sd
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
+  (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
+
+ggplot() +
+  geom_point(data = fine.grid, mapping = aes(x = x1, y = x2, color = prob)) +
+  labs(x = expression('x'[1]), y = expression('x'[2]), color = expression('P[accept]')) +
+  theme_classic() + facet_wrap(~x3) + 
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+# x2 slices
+sz.fine = 100
+x1.rng = seq(from = 0, to = 1, length.out = sz.fine)
+x3.rng = seq(from = 0, to = 1, length.out = sz.fine)
+x2.rng = seq(from = 0, to = 1, length.out = 9) # Simple slice for visualization
+fine.grid = expand.grid(x1.rng, x2.rng, x3.rng)
+fine.grid = fine.grid[,1:3]
+names(fine.grid) = c('x1', 'x2', 'x3')
+
+# Calculate
+res = predict(object = mod.rad, newdata = fine.grid, type = "UK")
+fine.grid$rad.mean = res$mean
+fine.grid$rad.sd = res$sd
+res = predict(object = mod.ang, newdata = data.frame(x1 = fine.grid$x1, 
+                      x2 = fine.grid$x2, x3 = fine.grid$x3), type = "UK")
+fine.grid$ang.mean = res$mean
+fine.grid$ang.sd = res$sd
+# Uncertainty = P(success)*(1 - P(success))
+fine.grid$prob = pnorm(q = 0, mean = fine.grid$rad.mean - 2, sd = fine.grid$rad.sd) * 
+  (1 - pnorm(q = 0, mean = fine.grid$ang.mean - 20, sd = fine.grid$ang.sd))
+
+ggplot() +
+  geom_point(data = fine.grid, mapping = aes(x = x1, y = x3, color = prob)) +
+  labs(x = expression('x'[1]), y = expression('x'[3]), color = expression('P[accept]')) +
+  theme_classic() + facet_wrap(~x2) + 
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0))
+
+rm(g1, g2, g3, fine.grid, res)
 ```
 
 ```{r Utopia distance: Marginalization}
