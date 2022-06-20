@@ -1361,27 +1361,27 @@ inputs = c('x1', 'x2', 'x3')
 
 # Define acceptance: Pareto distance
 data.paret$cat = 0; data.delta$cat = 0; data.rando$cat = 0
-data.paret$cat[data.paret$dist <= 2] = 1
-data.delta$cat[data.delta$dist <= 2] = 1
-data.rando$cat[data.rando$dist <= 2] = 1
+data.paret$cat[data.paret$dist <= 0.5] = 1
+data.delta$cat[data.delta$dist <= 0.5] = 1
+data.rando$cat[data.rando$dist <= 0.5] = 1
 SVMmod.delta.paret = SVM.mod.all(input.data = data.paret)
 SVMmod.delta.adapt = SVM.mod.all(input.data = data.delta)
 SVMmod.delta.rando = SVM.mod.all(input.data = data.rando)
 
 # Define acceptance: cutoff
 data.paret$cat = 0; data.cutof$cat = 0; data.rando$cat = 0
-data.paret$cat[data.paret$f1.norm <= 2 & data.paret$f2.norm <= 2] = 1
-data.cutof$cat[data.cutof$f1.norm <= 2 & data.cutof$f2.norm <= 2] = 1
-data.rando$cat[data.rando$f1.norm <= 2 & data.rando$f2.norm <= 2] = 1
+data.paret$cat[data.paret$f1.norm <= 1 & data.paret$f2.norm <= 1] = 1
+data.cutof$cat[data.cutof$f1.norm <= 1 & data.cutof$f2.norm <= 1] = 1
+data.rando$cat[data.rando$f1.norm <= 1 & data.rando$f2.norm <= 1] = 1
 SVMmod.cutof.paret = SVM.mod.all(input.data = data.paret)
 SVMmod.cutof.adapt = SVM.mod.all(input.data = data.cutof)
 SVMmod.cutof.rando = SVM.mod.all(input.data = data.rando)
 
 # Define acceptance: utopia distance and priority
 data.paret$cat = 0; data.radan$cat = 0; data.rando$cat = 0
-data.paret$cat[sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2) <= 2 & data.paret$theta > 20] = 1
-data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 2 & data.radan$theta > 20] = 1
-data.rando$cat[sqrt(data.rando$f1.norm^2 + data.rando$f2.norm^2) <= 2 & data.rando$theta > 20] = 1
+data.paret$cat[sqrt(data.paret$f1.norm^2 + data.paret$f2.norm^2) <= 1 & data.paret$theta > 20] = 1
+data.radan$cat[sqrt(data.radan$f1.norm^2 + data.radan$f2.norm^2) <= 1 & data.radan$theta > 20] = 1
+data.rando$cat[sqrt(data.rando$f1.norm^2 + data.rando$f2.norm^2) <= 1 & data.rando$theta > 20] = 1
 SVMmod.radan.paret = SVM.mod.all(input.data = data.paret)
 SVMmod.radan.adapt = SVM.mod.all(input.data = data.radan)
 SVMmod.radan.rando = SVM.mod.all(input.data = data.rando)
