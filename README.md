@@ -1,7 +1,11 @@
 # MultiObjAdaptSamp
 MultiObjAdaptSamp is a repository of the R code that was used in the following publication
 
-(citation)
+Boualavong, J.; Papakonstantinou, K.G.; Gorski, C.A. 
+"Determining desired sorbent properties for proton-coupled electron transfer-controlled CO2 capture using an adaptive sampling-refined classifier." 
+*Chemical Engineering Science* 2023, vol. 274, pp. 118673.
+[doi:10.1016/j.ces.2023.118673](https://doi.org/10.1016/j.ces.2023.118673)
+
 
 This R repository shows a methodology for using Gaussian processes to aid in the design of experiments for improving the accuracy of a binary classifier that is dependent on two objective criteria, ie. points that do not satisfy two different criteria are rejected.
 The method also demonstrates a way of interpreting the classifier to determine how the input variables affect the classifier results.
@@ -14,9 +18,7 @@ The program was written in R v.4.0.3 with the following packages: [dplyr](https:
 The following additional packages are suggested. While not necessary for implementation, they were used in visualization throughout the examples: [patchwork](https://cran.r-project.org/web/packages/patchwork/index.html), [ggplot2](https://cran.r-project.org/web/packages/ggplot2/index.html)
 
 ## Citation
-If you are using these adaptive sampling or classifier interpretation methods in your research, please cite the following publication:
-
-((DOI://))
+If you are using these adaptive sampling or classifier interpretation methods in your research, please cite the above publication: [doi:10.1016/j.ces.2023.118673](https://doi.org/10.1016/j.ces.2023.118673)
 
 ## Examples
 Five test systems were studied: four purely mathematical bi-objective optimization problems and the practical case of carbon capture using quinone electrochemistry to drive pH swings. The mathematical systems are 
